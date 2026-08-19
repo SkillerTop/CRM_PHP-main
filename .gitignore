@@ -1,0 +1,15 @@
+.env
+.runtime/
+.phpunit.cache/
+.tmp/
+storage/logs/*.log
+storage/uploads/**/*
+!storage/logs/.gitkeep
+!storage/uploads/.gitkeep
+deploy/package/
+frontend/node_modules/
+frontend/dist/
+frontend/.next/
+frontend/.env.local
+work/
+

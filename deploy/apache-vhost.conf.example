@@ -1,0 +1,25 @@
+<VirtualHost *:80>
+    ServerName crm.example.com
+    DocumentRoot /var/www/client-data-crm/public
+
+    <Directory /var/www/client-data-crm/public>
+        AllowOverride All
+        Options -Indexes +FollowSymLinks
+        Require all granted
+    </Directory>
+
+    <FilesMatch "\.php$">
+        SetHandler "proxy:unix:/run/php/php8.3-fpm.sock|fcgi://localhost/"
+    </FilesMatch>
+
+    <Directory /var/www/client-data-crm>
+        Require all denied
+    </Directory>
+    <Directory /var/www/client-data-crm/public>
+        Require all granted
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/client-data-crm-error.log
+    CustomLog ${APACHE_LOG_DIR}/client-data-crm-access.log combined
+</VirtualHost>
+

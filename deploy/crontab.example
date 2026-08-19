@@ -1,0 +1,4 @@
+*/15 * * * * cd /var/www/client-data-crm && /usr/bin/php bin/console reminders:run >> storage/logs/cron.log 2>&1
+17 2 * * * cd /var/www/client-data-crm && /usr/bin/php bin/console cleanup >> storage/logs/cron.log 2>&1
+35 2 * * * /var/www/client-data-crm/deploy/backup.sh >> /var/www/client-data-crm/storage/logs/backup.log 2>&1
+

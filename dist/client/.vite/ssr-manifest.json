@@ -1,0 +1,24 @@
+{
+  "\u0000rolldown/runtime.js": [
+    "assets/rolldown-runtime-S-ySWqyJ.js"
+  ],
+  "\u0000virtual:vinext-client-entry": [],
+  "\u0000vite/preload-helper.js": [],
+  "frontend/node_modules/react/cjs/react.production.js": [
+    "assets/framework-DynTZPNH.js"
+  ],
+  "frontend/node_modules/react/index.js": [
+    "assets/framework-DynTZPNH.js"
+  ],
+  "frontend/node_modules/vinext/dist/client/empty-module.js": [],
+  "frontend/node_modules/vinext/dist/client/instrumentation-client-state.js": [],
+  "frontend/node_modules/vinext/dist/client/instrumentation-client.js": [],
+  "frontend/node_modules/vinext/dist/client/validate-module-path.js": [],
+  "frontend/node_modules/vinext/dist/client/window-next.js": [],
+  "frontend/node_modules/vinext/dist/shims/internal/router-context.js": [],
+  "frontend/node_modules/vinext/dist/shims/router.js": [],
+  "frontend/node_modules/vinext/dist/shims/url-utils.js": [],
+  "frontend/node_modules/vinext/dist/utils/base-path.js": [],
+  "frontend/node_modules/vinext/dist/utils/domain-locale.js": [],
+  "frontend/node_modules/vinext/dist/utils/query.js": []
+}

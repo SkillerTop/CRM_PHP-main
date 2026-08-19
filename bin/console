@@ -1,0 +1,88 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use CRM\Config\Config;
+use CRM\Config\Env;
+use CRM\Database\Database;
+use CRM\Database\MigrationRunner;
+use CRM\Domain\AuditLogger;
+use CRM\Domain\IcsGenerator;
+use CRM\Domain\Mailer;
+use CRM\Domain\ReminderService;
+use CRM\Security\AuthContext;
+use CRM\Security\Password;
+use CRM\Support\Clock;
+
+require dirname(__DIR__) . '/src/autoload.php';
+Env::load(dirname(__DIR__) . '/.env');
+Config::bootstrap(dirname(__DIR__));
+
+$command = $argv[1] ?? 'help';
+$db = Database::connection();
+
+try {
+    if ($command === 'migrate') {
+        $completed = (new MigrationRunner($db))->run();
+        echo $completed === [] ? "No pending migrations.\n" : "Applied: " . implode(', ', $completed) . "\n";
+        exit(0);
+    }
+
+    if ($command === 'create-admin') {
+        $name = (string) Config::get('ADMIN_NAME', 'CRM Administrator');
+        $email = mb_strtolower((string) Config::get('ADMIN_EMAIL', ''));
+        $password = (string) Config::get('ADMIN_PASSWORD', '');
+        if ($email === '' || filter_var($email, FILTER_VALIDATE_EMAIL) === false || mb_strlen($password) < 8) {
+            throw new RuntimeException('Set ADMIN_EMAIL and ADMIN_PASSWORD (at least 8 characters) in .env.');
+        }
+        $stmt = $db->prepare(
+            "INSERT INTO users
+                (full_name, email, password_hash, role, is_active, pending_approval, must_change_password, created_at, updated_at)
+             VALUES (:name, :email, :hash, 'admin', 1, 0, 1, :created_at, :updated_at)
+             ON DUPLICATE KEY UPDATE full_name = VALUES(full_name), password_hash = VALUES(password_hash),
+                role = 'admin', is_active = 1, pending_approval = 0, must_change_password = 1, updated_at = VALUES(updated_at)"
+        );
+        $now = Clock::dbNow();
+        $stmt->execute([
+            'name' => $name, 'email' => $email, 'hash' => Password::hash($password),
+            'created_at' => $now, 'updated_at' => $now,
+        ]);
+        echo "Admin account is ready for {$email}; password change is required after login.\n";
+        exit(0);
+    }
+
+    if ($command === 'reminders:run') {
+        $auth = new AuthContext($db);
+        $audit = new AuditLogger($db, $auth);
+        $service = new ReminderService($db, $audit, new Mailer(), new IcsGenerator());
+        $result = $service->run();
+        $heartbeat = $db->prepare(
+            "INSERT INTO settings (setting_key, setting_value, updated_at)
+             VALUES ('scheduler_last_run_at', :last_run_at, :updated_at)
+             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = VALUES(updated_at)"
+        );
+        $heartbeat->execute(['last_run_at' => Clock::dbNow(), 'updated_at' => Clock::dbNow()]);
+        echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
+        exit($result['failed'] > 0 ? 2 : 0);
+    }
+
+    if ($command === 'cleanup') {
+        $db->exec("DELETE FROM user_sessions WHERE expires_at < UTC_TIMESTAMP(6) OR revoked_at < UTC_TIMESTAMP(6) - INTERVAL 30 DAY");
+        $db->exec("DELETE FROM password_tokens WHERE expires_at < UTC_TIMESTAMP(6) - INTERVAL 7 DAY OR used_at < UTC_TIMESTAMP(6) - INTERVAL 7 DAY");
+        $db->exec("DELETE FROM auth_attempts WHERE updated_at < UTC_TIMESTAMP(6) - INTERVAL 30 DAY");
+        echo "Expired transient data removed. ChangeEvent records were not touched.\n";
+        exit(0);
+    }
+
+    echo "Client Data CRM console\n\n";
+    echo "Commands:\n";
+    echo "  migrate         Apply MySQL migrations and lookup seeds\n";
+    echo "  create-admin    Create/update the first Admin from ADMIN_* env vars\n";
+    echo "  reminders:run   Send due reminders (schedule every 15 minutes)\n";
+    echo "  cleanup         Remove expired sessions/tokens/rate-limit rows\n";
+    exit(0);
+} catch (Throwable $error) {
+    fwrite(STDERR, $error->getMessage() . "\n");
+    exit(1);
+}

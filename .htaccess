@@ -1,0 +1,9 @@
+Options -Indexes
+RewriteEngine On
+
+RewriteRule ^\.(?!well-known(?:/|$)) - [F,L,NC]
+RewriteRule ^(?:src|database|storage|tools|deploy|docs|postman|vendor)(?:/|$) - [F,L,NC]
+RewriteRule ^(?:\.env|bootstrap\.php|composer\.(?:json|lock))$ - [F,L,NC]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ public/index.php [QSA,L]
