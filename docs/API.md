@@ -30,8 +30,8 @@
 | GET | `/companies/{id}/tasks` | вкладка карточки |
 | GET | `/companies/{id}/log` | ChangeEvent компании |
 | POST | `/ocr/business-card` | multipart `file`; Tesseract OCR, возвращает `raw_text`, `draft`, `confidence`; запись не сохраняется автоматически |
-| GET/POST | `/contacts` | `company`, `source`, `has_linkedin`, `q`, `page`, `sort`, `dir`; `include_archived=1` только Admin |
-| GET/PUT | `/contacts/{id}` | перенос в другую компанию — только Admin |
+| GET/POST | `/contacts` | `company`, `source`, `status`, `has_linkedin`, `q`, `page`, `sort`, `dir`; `include_archived=1` только Admin; contact `status`: `active`/`inactive` |
+| GET/PUT | `/contacts/{id}` | перенос в другую компанию — только Admin; `status` принимает `active` или `inactive` |
 | POST | `/contacts/{id}/archive` | Admin |
 | GET | `/contacts/{id}/log` | ChangeEvent контакта |
 | GET/POST | `/tasks` | `manager`, `company`, `state`, `page`, `sort`, `dir`; `include_archived=1` только Admin |
@@ -94,4 +94,3 @@ Audit filters: `from=YYYY-MM-DD`, `to=YYYY-MM-DD`, `user`, `action`, `entity_typ
 ## Возможные дубликаты
 
 Компания с совпадающим именем и контакт с совпадающим email возвращают 409 `possible_duplicate`. Чтобы осознанно сохранить, повторите запрос с `allow_duplicate: true`.
-

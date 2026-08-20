@@ -45,6 +45,7 @@ final class EntityMapper
             'id' => (int) $row['id'],
             'company_id' => (int) $row['company_id'],
             'company' => $row['company_name'] ?? null,
+            'status' => (string) ($row['contact_status'] ?? 'active'),
             'first_name' => (string) $row['first_name'],
             'last_name' => $row['last_name'],
             'position' => $row['position'],
@@ -105,4 +106,3 @@ final class EntityMapper
         ];
     }
 }
-

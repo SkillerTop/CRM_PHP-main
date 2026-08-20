@@ -31,7 +31,7 @@ final class SearchController
         );
         $companies->execute($this->needles($like, 6));
         $contacts = $this->db->prepare(
-            "SELECT k.id, k.company_id, c.name AS company, k.first_name, k.last_name, k.position, k.email, k.phone, k.linkedin,
+            "SELECT k.id, k.company_id, c.name AS company, k.contact_status AS status, k.first_name, k.last_name, k.position, k.email, k.phone, k.linkedin,
                     src.value AS source, COALESCE(ini.value, k.initiated_by_text) AS initiated_by
              FROM contacts k JOIN companies c ON c.id = k.company_id
              LEFT JOIN lookups src ON src.id = k.source_lookup_id LEFT JOIN lookups ini ON ini.id = k.initiated_by_lookup_id

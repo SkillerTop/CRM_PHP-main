@@ -40,14 +40,14 @@ final class ContactController
         $total = (int) $count->fetchColumn();
         $sorts = [
             'first_name' => 'k.first_name', 'last_name' => 'k.last_name', 'company' => 'c.name',
-            'position' => 'k.position', 'source' => 'source_value', 'initiated_by' => 'initiated_by_value',
+            'position' => 'k.position', 'status' => 'k.contact_status', 'source' => 'source_value', 'initiated_by' => 'initiated_by_value',
             'email' => 'k.email', 'updated_at' => 'k.updated_at',
         ];
         $sort = $sorts[(string) ($request->query['sort'] ?? 'last_name')] ?? 'k.last_name';
         $dir = strtolower((string) ($request->query['dir'] ?? 'asc')) === 'desc' ? 'DESC' : 'ASC';
         $stmt = $this->db->prepare(
             "SELECT k.id, k.company_id, k.first_name, k.last_name, k.position, k.phone, k.email, k.linkedin,
-                    k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id,
+                    k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id, k.contact_status,
                     k.manager_lookup_id, k.initiated_by_text, k.is_archived, k.created_at, k.updated_at,
                     k.created_by, k.updated_by, c.name AS company_name, src.value AS source_value, ini.value AS initiated_by_value,
                     mgr.value AS manager_value, mgr.email AS manager_email,
@@ -76,7 +76,7 @@ final class ContactController
         $this->assertCompany($companyId);
         $stmt = $this->db->prepare(
             'SELECT k.id, k.company_id, k.first_name, k.last_name, k.position, k.phone, k.email, k.linkedin,
-                    k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id,
+                    k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id, k.contact_status,
                     k.manager_lookup_id, k.initiated_by_text, k.is_archived, k.created_at, k.updated_at,
                     k.created_by, k.updated_by, c.name AS company_name, src.value AS source_value, ini.value AS initiated_by_value,
                     mgr.value AS manager_value, mgr.email AS manager_email,
@@ -110,10 +110,10 @@ final class ContactController
             $stmt = $this->db->prepare(
                 'INSERT INTO contacts
                     (company_id, first_name, last_name, position, phone, email, linkedin, source_lookup_id,
-                     source_detail, referred_by, initiated_by_lookup_id, manager_lookup_id, initiated_by_text, photo_data_url,
+                     source_detail, referred_by, initiated_by_lookup_id, contact_status, manager_lookup_id, initiated_by_text, photo_data_url,
                      is_archived, created_by, updated_by, created_at, updated_at)
                  VALUES (:company_id, :first_name, :last_name, :position, :phone, :email, :linkedin, :source_id,
-                         :source_detail, :referred_by, :initiated_by_id, :manager_id, :initiated_by_text, :photo_data_url,
+                         :source_detail, :referred_by, :initiated_by_id, :contact_status, :manager_id, :initiated_by_text, :photo_data_url,
                          0, :created_by, :updated_by, :created_at, :updated_at)'
             );
             $stmt->execute($data + [
@@ -151,7 +151,7 @@ final class ContactController
                 'UPDATE contacts SET company_id = :company_id, first_name = :first_name, last_name = :last_name,
                     position = :position, phone = :phone, email = :email, linkedin = :linkedin,
                     source_lookup_id = :source_id, source_detail = :source_detail, referred_by = :referred_by,
-                    initiated_by_lookup_id = :initiated_by_id, manager_lookup_id = :manager_id,
+                    initiated_by_lookup_id = :initiated_by_id, contact_status = :contact_status, manager_lookup_id = :manager_id,
                     initiated_by_text = :initiated_by_text, photo_data_url = :photo_data_url,
                     updated_by = :user_id, updated_at = :now
                  WHERE id = :id'
@@ -160,7 +160,7 @@ final class ContactController
             $after = $this->findForUpdate($id);
             $label = trim($data['first_name'] . ' ' . ($data['last_name'] ?? ''));
             $this->audit->logDiff('Contact', $id, $label, $before, $after, [
-                'company_id' => 'Company', 'first_name' => 'First name', 'last_name' => 'Last name',
+                'company_id' => 'Company', 'contact_status' => 'Contact status', 'first_name' => 'First name', 'last_name' => 'Last name',
                 'position' => 'Position', 'phone' => 'Phone', 'email' => 'Email', 'linkedin' => 'LinkedIn',
                 'source_lookup_id' => 'First Contact Source', 'source_detail' => 'Source detail',
                 'referred_by' => 'Referred By', 'initiated_by_lookup_id' => 'Initiated By',
@@ -224,6 +224,7 @@ final class ContactController
         $sourceId = Arr::int($input, 'source_id');
         $initiatedById = Arr::int($input, 'initiated_by_id');
         $managerId = Arr::int($input, 'manager_id');
+        $contactStatus = strtolower(trim((string) ($input['status'] ?? $input['contact_status'] ?? ($current['contact_status'] ?? 'active'))));
         $initiatedByText = Arr::nullableString($input, 'initiated_by_text');
         $source = $sourceId ? $this->lookups->getForAssignment(
             $sourceId,
@@ -243,6 +244,7 @@ final class ContactController
             'source_detail' => $source && $source['requires_detail'] ? Validator::required($sourceDetail) : '',
             'referred_by' => $source && $source['requires_referral'] ? Validator::required($referredBy) : '',
             'manager_id' => $managerId === null ? 'Обязательное поле.' : '',
+            'status' => in_array($contactStatus, ['active', 'inactive'], true) ? '' : 'Допустимы только значения active или inactive.',
             'initiated_by' => $initiatedById === null ? Validator::required($initiatedByText) : '',
         ]);
         $this->assertCompany((int) $companyId);
@@ -271,6 +273,7 @@ final class ContactController
             'referred_by' => $referredBy,
             'initiated_by_id' => $initiatedById,
             'manager_id' => $managerId,
+            'contact_status' => $contactStatus,
             'initiated_by_text' => $initiatedById === null ? $initiatedByText : null,
             'photo_data_url' => ImageDataUrl::validate(
                 Arr::nullableString($input, 'photo_data_url'), 5 * 1024 * 1024, ['image/jpeg', 'image/png', 'image/webp'],
@@ -291,6 +294,11 @@ final class ContactController
                 $where[] = "{$column} = :{$queryKey}";
                 $params[$queryKey] = $value;
             }
+        }
+        $status = strtolower(trim((string) ($query['status'] ?? '')));
+        if (in_array($status, ['active', 'inactive'], true)) {
+            $where[] = 'k.contact_status = :status';
+            $params['status'] = $status;
         }
         $hasLinkedin = (string) ($query['has_linkedin'] ?? 'any');
         if ($hasLinkedin === 'has') {
