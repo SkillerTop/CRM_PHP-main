@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { readUrlFilter, urlWithFilter } from "../app/url-filters.mjs";
+import { readUrlFilter, urlWithFilter } from "../src/shared/utils/url-filters.mjs";
 import "./responsive-layout.test.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -36,17 +36,17 @@ test("renders the CRM frontend shell", async () => {
 
 test("connects the application to the PHP API and stays responsive", async () => {
   const [component, apiClient, proxy, css, packageJson, hosting, ssrBundle] = await Promise.all([
-    readFile(new URL("app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("app/api-client.ts", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/shared/api/api-client.ts", root), "utf8"),
     readFile(new URL("app/api/backend/[...path]/route.ts", root), "utf8"),
-    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
     readFile(new URL(".openai/hosting.json", root), "utf8"),
     readFile(new URL("dist/server/ssr/index.js", root), "utf8"),
   ]);
 
   assert.doesNotMatch(component, /dangerouslySetInnerHTML/);
-  assert.match(component, /apiRequest<\{ data: WorkspacePayload \}>\("\/app\/bootstrap"\)/);
+  assert.match(component, /apiRequest<\{ data: WorkspacePayload \}>\("\/app\/bootstrap\?include_records=0"\)/);
   assert.match(component, /apiRequest<\{ data: \{ user: ApiRecord; csrf_token: string \} \}>\("\/auth\/login"/);
   assert.match(component, /apiRequest<\{ data: \{ user: ApiRecord; csrf_token: string \} \}>\("\/auth\/me"\)/);
   assert.match(component, /apiRequest\("\/profile\/password", \{ method: "PUT"/);
@@ -72,8 +72,8 @@ test("connects the application to the PHP API and stays responsive", async () =>
 });
 
 test("keeps list filters in shareable URL parameters", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
-  const urlHook = await readFile(new URL("app/hooks/use-url-string-state.ts", root), "utf8");
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
+  const urlHook = await readFile(new URL("src/shared/hooks/use-url-string-state.ts", root), "utf8");
 
   const companyUrl = urlWithFilter("http://localhost/?view=companies", "company_status", "Lead", "All statuses");
   assert.equal(companyUrl, "/?view=companies&company_status=Lead");

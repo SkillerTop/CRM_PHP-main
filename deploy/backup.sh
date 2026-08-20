@@ -8,7 +8,7 @@ set -eu
 : "${DB_PASSWORD:?DB_PASSWORD is required}"
 : "${BACKUP_DIR:=/var/backups/client-data-crm}"
 : "${PROJECT_ROOT:=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
-: "${UPLOAD_DIR:=$PROJECT_ROOT/storage/uploads}"
+: "${UPLOAD_DIR:=$PROJECT_ROOT/backend/storage/uploads}"
 
 umask 077
 mkdir -p "$BACKUP_DIR"

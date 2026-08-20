@@ -1,0 +1,21 @@
+CREATE TABLE contact_attachments (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    contact_id BIGINT UNSIGNED NOT NULL,
+    original_name VARCHAR(255) NOT NULL,
+    stored_path VARCHAR(700) NOT NULL,
+    mime_type VARCHAR(150) NOT NULL,
+    size_bytes BIGINT UNSIGNED NOT NULL,
+    attachment_kind VARCHAR(40) NOT NULL DEFAULT 'business_card',
+    author_user_id BIGINT UNSIGNED NULL,
+    author_name VARCHAR(150) NOT NULL,
+    deleted_at DATETIME(6) NULL,
+    created_by BIGINT UNSIGNED NULL,
+    updated_by BIGINT UNSIGNED NULL,
+    created_at DATETIME(6) NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    KEY ix_contact_attachments_contact (contact_id, deleted_at),
+    CONSTRAINT fk_contact_attachments_contact FOREIGN KEY (contact_id) REFERENCES contacts(id),
+    CONSTRAINT fk_contact_attachments_author FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT fk_contact_attachments_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT fk_contact_attachments_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

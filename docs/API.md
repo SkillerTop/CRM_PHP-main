@@ -23,17 +23,18 @@
 
 | Метод | Путь | Примечание |
 |---|---|---|
-| GET/POST | `/companies` | `type`, `status`, `q`, `page`, `sort`, `dir` |
+| GET/POST | `/companies` | `type`, `status`, `q`, `page`, `sort`, `dir`; `include_archived=1` только Admin |
 | GET/PUT | `/companies/{id}` | PUT требует `updated_at` |
 | POST | `/companies/{id}/archive` | Admin; `{archived, updated_at}` |
 | GET | `/companies/{id}/contacts` | вкладка карточки |
 | GET | `/companies/{id}/tasks` | вкладка карточки |
 | GET | `/companies/{id}/log` | ChangeEvent компании |
-| GET/POST | `/contacts` | `company`, `source`, `has_linkedin`, `q`, `page`, `sort`, `dir` |
+| POST | `/ocr/business-card` | multipart `file`; Tesseract OCR, возвращает `raw_text`, `draft`, `confidence`; запись не сохраняется автоматически |
+| GET/POST | `/contacts` | `company`, `source`, `has_linkedin`, `q`, `page`, `sort`, `dir`; `include_archived=1` только Admin |
 | GET/PUT | `/contacts/{id}` | перенос в другую компанию — только Admin |
 | POST | `/contacts/{id}/archive` | Admin |
 | GET | `/contacts/{id}/log` | ChangeEvent контакта |
-| GET/POST | `/tasks` | `manager`, `company`, `state`, `page`, `sort`, `dir` |
+| GET/POST | `/tasks` | `manager`, `company`, `state`, `page`, `sort`, `dir`; `include_archived=1` только Admin |
 | GET/PUT | `/tasks/{id}` | одинаковый набор полей для create/edit |
 | POST | `/tasks/{id}/archive` | Admin |
 | GET/POST | `/tasks/{id}/comments` | комментарии immutable |
@@ -42,6 +43,7 @@
 | GET | `/tasks/{id}/reminder.ics` | Outlook-compatible event |
 | POST | `/tasks/{id}/attachments` | multipart, поле `file`, до 20 МБ |
 | GET/DELETE | `/tasks/{id}/attachments/{attachmentId}` | delete: автор или Admin |
+| POST | `/speech/transcribe` | multipart `file`; Whisper CLI, возвращает распознанный текст для вставки в поле |
 
 `state` для задач: `actual` (по умолчанию), `overdue`, `completed`, `deferred`, `canceled`, `all`.
 
@@ -50,9 +52,9 @@
 | Метод | Путь | Доступ |
 |---|---|---|
 | GET | `/dashboard` | auth |
-| GET | `/app/bootstrap` | auth; начальный снимок данных для frontend, включая CSRF, задачи со счётчиками/доступностью напоминаний, комментарии, вложения и доступные роли/справочники |
+| GET | `/app/bootstrap` | auth; компактный начальный снимок для frontend: CSRF, identity, справочники, роли и аудит. Записи загружаются отдельными страницами по 50, детали комментариев и вложений — при открытии задачи |
 | GET | `/pipeline` | auth |
-| GET | `/search?q=` | auth |
+| GET | `/search?q=` | auth; не более 25 результатов каждого типа |
 | GET | `/lookups` | auth, активные значения всех типов |
 | GET | `/lookups/{type}` | auth; `include_inactive=1` только Admin |
 | POST | `/lookups/{type}` | Admin |
@@ -73,7 +75,7 @@
 
 Для напоминаний email связанного User имеет приоритет над fallback email менеджера. Если связанный User деактивирован или ожидает подтверждения, fallback не используется и задача возвращается с `reminder_possible: false`.
 
-Audit filters: `from=YYYY-MM-DD`, `to=YYYY-MM-DD`, `user`, `action`, `entity_type`, `page`; для CSV добавьте `format=csv`.
+Audit filters: `from=YYYY-MM-DD`, `to=YYYY-MM-DD`, `user`, `action`, `entity_type`, `page`; для CSV добавьте `format=csv` (не более 10 000 строк за выгрузку).
 
 ## Оптимистическая блокировка
 

@@ -1,11 +1,11 @@
 
 Локальный запуск
 
-Backend из корня проекта:
+Backend:
 
 ```powershell
 $php = (Resolve-Path ".runtime\php\php.exe").Path
-& $php -S 127.0.0.1:8080 -t public public/index.php
+& $php -S 127.0.0.1:8080 -t backend/public backend/public/index.php
 ```
 
 Frontend:
@@ -19,14 +19,23 @@ npm run dev
 
 Production
 
-- примените `php bin/console migrate` до переключения трафика;
-- backend `.env`: `APP_ENV=production`, `APP_DEBUG=false`, `SESSION_SECURE=true`, публичный HTTPS `APP_URL`;
+- примените `php backend/bin/console migrate` до переключения трафика;
+- backend `.env` находится в `backend/.env`: `APP_ENV=production`, `APP_DEBUG=false`, `SESSION_SECURE=true`, публичный HTTPS `APP_URL`; `TRUSTED_PROXIES` должен содержать только адреса reverse proxy, которые действительно передают клиентский IP;
 - frontend runtime: `CRM_BACKEND_URL` должен указывать на доступный frontend-серверу HTTPS endpoint PHP API;
-- соберите frontend командой `npm run build`, затем запустите `npm run start`;
+- PHP-архив собирается из корня командой `& .\deploy\build-package.ps1`; он содержит только `backend/` и не содержит локальный `.env`;
+- frontend соберите отдельно командой `npm run build`, затем запустите `npm run start`;
 - оставьте cron из корневого README для напоминаний и cleanup;
-- не публикуйте `.env`, `.env.local`, пароли или содержимое `storage/uploads`.
+- не публикуйте `backend/.env`, `.env.local`, пароли или содержимое `backend/storage/uploads`.
 
 После развёртывания проверьте: health, вход, смену пароля, создание/изменение/архивирование записи, конфликт `updated_at`, роли Read-only/Admin, комментарий, `.ics` и Audit CSV.
+
+OCR и голосовой ввод
+
+- Для скана визиток установите Tesseract на сервер и укажите `OCR_TESSERACT_BIN`. Языки по умолчанию: `eng+ukr+rus`.
+- Для голосового ввода установите Whisper CLI и укажите `WHISPER_BIN`. Модель задаётся через `WHISPER_MODEL`, например `base`; локальный каталог моделей — через `WHISPER_MODEL_DIR`.
+- Оба механизма локальные: данные клиентов не отправляются в облачные API. Если бинарники не установлены, соответствующая кнопка покажет ошибку настройки, но остальная CRM продолжит работать.
+- Проверка OCR: откройте форму создания контакта, нажмите **Scan / upload card**, загрузите изображение визитки, убедитесь что поля заполнились черновиком и сохранение происходит только после нажатия **Create contact**.
+- Проверка Voice: в форме задачи или комментарии нажмите **Voice**, произнесите текст, нажмите **Stop** и убедитесь, что распознанный текст вставился в поле.
 
 Регрессионная проверка функционала ТЗ v3.1
 

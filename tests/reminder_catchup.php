@@ -11,9 +11,10 @@ use CRM\Domain\Mailer;
 use CRM\Domain\ReminderService;
 use CRM\Security\AuthContext;
 
-require dirname(__DIR__) . '/src/autoload.php';
-Env::load(dirname(__DIR__) . '/.env');
-Config::bootstrap(dirname(__DIR__));
+$backendRoot = dirname(__DIR__) . '/backend';
+require $backendRoot . '/src/autoload.php';
+Env::load($backendRoot . '/.env');
+Config::bootstrap($backendRoot);
 
 if (strtolower((string) Config::get('MAIL_TRANSPORT', 'log')) !== 'log') {
     fwrite(STDERR, "Reminder catch-up test requires MAIL_TRANSPORT=log.\n");

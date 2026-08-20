@@ -22,13 +22,29 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   }
   headers.set("x-forwarded-host", request.headers.get("host") ?? request.nextUrl.host);
   headers.set("x-forwarded-proto", request.nextUrl.protocol.replace(":", ""));
+  const forwardedFor = request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip");
+  if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
 
-  const upstream = await fetch(target, {
-    method: request.method,
-    headers,
-    body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer(),
-    redirect: "manual",
-  });
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, {
+      method: request.method,
+      headers,
+      body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer(),
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    return Response.json(
+      {
+        error: {
+          code: "backend_unavailable",
+          message: "Сервер CRM временно недоступен. Проверьте запуск backend.",
+        },
+      },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
 
   const responseHeaders = new Headers();
   for (const name of ["content-type", "content-disposition", "cache-control", "set-cookie"]) {

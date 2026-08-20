@@ -2,14 +2,20 @@
 .runtime/
 .phpunit.cache/
 .tmp/
-storage/logs/*.log
-storage/uploads/**/*
-!storage/logs/.gitkeep
-!storage/uploads/.gitkeep
+__pycache__/
+*.pyc
+storage/tmp/
+**/storage/logs/*.log
+**/storage/uploads/**/*
+!**/storage/logs/.gitkeep
+!**/storage/uploads/.gitkeep
+deploy/client-data-crm-backend.zip
 deploy/package/
 frontend/node_modules/
 frontend/dist/
 frontend/.next/
+frontend/.wrangler/
 frontend/.env.local
+frontend/tsconfig.tsbuildinfo
 work/
 

@@ -47,11 +47,24 @@ function Ensure-FtpDirectory([string]$relativeDirectory) {
     }
 }
 
-Get-ChildItem -LiteralPath $source -Recurse -File | ForEach-Object {
+function Test-ExcludedPath([string]$normalized) {
+    if ($normalized -match '(^|/)\.env(?:\..*)?$' -and $normalized -notmatch '(^|/)\.env\.example$') { return $true }
+    if ($normalized -match '(^|/)(\.git|\.runtime|node_modules|\.next|\.wrangler|dist|frontend|tests|tools|postman|docs|deploy)(/|$)') { return $true }
+    if ($normalized -match '(^|/)database/queries/') { return $true }
+    if ($normalized -match '(^|/)storage/uploads/(?!\.gitkeep$).+') { return $true }
+    if ($normalized -match '(^|/)storage/logs/(?!\.gitkeep$).+') { return $true }
+    if ($normalized -match '(^|/)README\.md$|(^|/)\.git(?:ignore|attributes)$') { return $true }
+    return $false
+}
+
+Get-ChildItem -LiteralPath $source -Recurse -Force -File | ForEach-Object {
     $relative = $_.FullName.Substring($source.Length).TrimStart('\', '/')
+    $normalized = $relative.Replace('\', '/')
+    if (Test-ExcludedPath $normalized) { return }
+
     $relativeDirectory = Split-Path -Parent $relative
     Ensure-FtpDirectory $relativeDirectory
-    $remoteFile = (($RemotePath.TrimEnd('/') + '/' + $relative.Replace('\', '/')).Split('/') | ForEach-Object {
+    $remoteFile = (($RemotePath.TrimEnd('/') + '/' + $normalized).Split('/') | ForEach-Object {
         if ($_ -eq '') { '' } else { [uri]::EscapeDataString($_) }
     }) -join '/'
     $uri = "ftp://${HostName}:${Port}${remoteFile}"
@@ -62,6 +75,5 @@ Get-ChildItem -LiteralPath $source -Recurse -File | ForEach-Object {
     try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Close() }
     $response = $request.GetResponse()
     $response.Close()
-    Write-Output "Uploaded $relative"
+    Write-Output "Uploaded $normalized"
 }
-

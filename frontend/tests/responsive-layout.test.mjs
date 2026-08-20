@@ -80,8 +80,8 @@ async function readBuiltAssets() {
 
 test("keeps Lookups controls contained at the 360 px and 768 px breakpoints", async () => {
   const [component, css] = await Promise.all([
-    readFile(new URL("app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
   ]);
 
   assert.match(component, /className="lookup-add-form"[\s\S]*?<span>New option<\/span>[\s\S]*?name="lookupValue"[\s\S]*?Add option/);
@@ -128,7 +128,7 @@ test("keeps Lookups controls contained at the 360 px and 768 px breakpoints", as
 });
 
 test("contains wide content inside its own responsive scroller", async () => {
-  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
 
   const appShell = blockAfter(css, ".app-shell");
   assert.match(appShell, /min-width:\s*0/);
@@ -155,8 +155,8 @@ test("contains wide content inside its own responsive scroller", async () => {
 
 test("reflows all eight Companies fields into contained cards below 1280 px", async () => {
   const [component, css] = await Promise.all([
-    readFile(new URL("app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
   ]);
   const companiesView = sectionBetween(component, "function Companies(", "function Contacts(");
 
@@ -224,7 +224,7 @@ test("reflows all eight Companies fields into contained cards below 1280 px", as
 });
 
 test("keeps Contacts, Users, and Audit card rows fully labelled", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   const tableContracts = [
     { name: "Contacts", source: sectionBetween(component, "function Contacts(", "function Activity("), labels: 7 },
     { name: "Users", source: sectionBetween(component, "function Users(", "function Audit("), labels: 6 },
@@ -244,7 +244,7 @@ test("keeps Contacts, Users, and Audit card rows fully labelled", async () => {
 });
 
 test("keeps the Companies page contained at 360, 768, 901, 1024, and 1280 px", async () => {
-  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
   const viewportContract = [
     { width: 360, mode: "cards", cardColumns: 1 },
     { width: 768, mode: "cards", cardColumns: 2 },
@@ -307,7 +307,7 @@ test("keeps the Companies page contained at 360, 768, 901, 1024, and 1280 px", a
 });
 
 test("keeps the desktop header and session footer pinned while records scroll", async () => {
-  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
   const crmApp = blockAfter(css, ".crm-app");
   const topbar = blockAfter(css, ".topbar");
   const appShell = blockAfter(css, ".app-shell");
@@ -334,8 +334,8 @@ test("keeps the desktop header and session footer pinned while records scroll", 
 
 test("removes the Priority panel and keeps Recent changes contained", async () => {
   const [component, css] = await Promise.all([
-    readFile(new URL("app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
   ]);
 
   assert.doesNotMatch(component, /Priority tasks|priority-panel|priority-row|dashboard-grid/);
@@ -355,8 +355,8 @@ test("removes the Priority panel and keeps Recent changes contained", async () =
 
 test("keeps seeded statuses while allowing Admin to manage the workflow", async () => {
   const [component, css] = await Promise.all([
-    readFile(new URL("app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
   ]);
   const expectedStatuses = [
     "New Organization",
@@ -399,22 +399,21 @@ test("keeps seeded statuses while allowing Admin to manage the workflow", async 
   assert.match(tablet, /\.funnel-list\s*\{[^}]*grid-template-columns:\s*1fr/s);
 });
 
-test("supports permissioned Pipeline drag-and-drop and accessible status changes", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
+test("keeps Pipeline status changes explicit and disables card drag-and-drop", async () => {
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   const pipeline = sectionBetween(component, "function Pipeline(", "function Companies(");
   const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
 
-  assert.match(pipeline, /draggable=\{canMove\}/);
-  assert.match(pipeline, /onDragStart[\s\S]*?dataTransfer\.setData\("text\/plain", company\.id\)/);
-  assert.match(pipeline, /onDragOver[\s\S]*?onDrop[\s\S]*?moveCompany\(draggedCompanyId, status\)/);
-  assert.match(pipeline, /Drag a company card to another column/);
+  assert.doesNotMatch(pipeline, /draggable=/);
+  assert.doesNotMatch(pipeline, /onDragStart|onDragEnd|onDragOver|onDrop|dataTransfer|draggedCompanyId/);
+  assert.doesNotMatch(pipeline, /Drag a company card/);
   assert.match(pipeline, /\{canMove && <select className="pipeline-stage-select" value=\{company\.status\}[\s\S]*?onChange=\{\(event\) => \{ event\.stopPropagation\(\); moveCompany\(company\.id, event\.target\.value\); \}\}/);
   assert.match(pipeline, /\{items\.length === 0 && <div className="kanban-empty">No companies<\/div>\}/);
   assert.match(app, /<Pipeline[\s\S]*?canMove=\{hasPermission\(currentRole, "pipeline\.move"\)\}[\s\S]*?moveCompany=\{moveCompany\}/);
 });
 
 test("keeps Activity contact creation permissioned and selects quick-created contacts", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   const activity = sectionBetween(component, "function Activity(", "function Lookups(");
   const taskForm = sectionBetween(component, "function TaskForm(", "function UserForm(");
   const contactForm = sectionBetween(component, "function ContactForm(", "function TaskForm(");
@@ -485,10 +484,10 @@ test("keeps Activity contact creation permissioned and selects quick-created con
 
 test("validates, processes, previews, and wires profile and entity images", async () => {
   const [component, css] = await Promise.all([
-    readFile(new URL("app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
   ]);
-  const identity = await readFile(new URL("app/components/identity.tsx", root), "utf8");
+  const identity = await readFile(new URL("src/shared/components/identity.tsx", root), "utf8");
   const imageHelpers = `${identity}\n${sectionBetween(component, "const ACCEPTED_IMAGE_TYPES", "const INFO_TEXT")}`;
   const companyForm = sectionBetween(component, "function CompanyForm(", "function ContactForm(");
   const contactForm = sectionBetween(component, "function ContactForm(", "function TaskForm(");
@@ -535,7 +534,9 @@ test("validates, processes, previews, and wires profile and entity images", asyn
   assert.match(companyDetail, /onProcessingChange=\{setImageProcessing\}[\s\S]*?type="submit" disabled=\{imageProcessing\}/);
   assert.match(contactForm, /onSubmit=\{\(event\) => \{ if \(imageProcessing\) event\.preventDefault\(\); else \{[\s\S]*?onSubmit\(event, photoDataUrl\)\.then/);
   assert.match(contactForm, /<ImageField label="Contact photo"[^>]*value=\{photoDataUrl\}[^>]*onChange=\{setPhotoDataUrl\}/);
-  assert.match(contactForm, /onProcessingChange=\{setImageProcessing\}[\s\S]*?type="submit" disabled=\{imageProcessing \|\| submitting\}/);
+  assert.match(contactForm, /apiRequest<\{ data: OcrResult \}>\("\/ocr\/business-card", \{ method: "POST", body \}\)/);
+  assert.match(contactForm, /Review everything before saving/);
+  assert.match(contactForm, /type="submit" disabled=\{imageProcessing \|\| cardScanning \|\| submitting\}/);
   assert.match(contactDetail, /useState\(contact\.photoDataUrl \?\? ""\)[\s\S]*?<ImageField label="Contact photo"/);
   assert.match(contactDetail, /onProcessingChange=\{setImageProcessing\}[\s\S]*?type="submit" disabled=\{imageProcessing\}/);
   assert.match(taskForm, /photoDataUrl: quickPhoto/);
@@ -560,8 +561,8 @@ test("validates, processes, previews, and wires profile and entity images", asyn
 
 test("provides contained 44 px page scroll controls and suppresses them behind overlays", async () => {
   const [component, css] = await Promise.all([
-    readFile(new URL("app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
   ]);
   const controls = sectionBetween(component, "function PageScrollControls(", "const INFO_TEXT");
 
@@ -586,7 +587,7 @@ test("provides contained 44 px page scroll controls and suppresses them behind o
 });
 
 test("centralizes overlay scroll locking and traps keyboard focus inside modals", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   const modal = sectionBetween(component, "function Modal(", "function AuthScreen(");
   const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
 
@@ -616,7 +617,7 @@ test("centralizes overlay scroll locking and traps keyboard focus inside modals"
 });
 
 test("reserves bottom clearance for page controls at every viewport width", async () => {
-  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
   const selector = ".crm-app:has(.page-scroll-controls) .main-content";
   const reserve = blockAfter(css, selector);
   const pixels = Number(reserve.match(/padding-bottom:\s*calc\((\d+)px/)?.[1]);
@@ -629,7 +630,7 @@ test("reserves bottom clearance for page controls at every viewport width", asyn
 });
 
 test("derives each company next activity from the earliest open task", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   assert.doesNotMatch(component, /\bnextStep\b/, "The obsolete manually maintained next-step field must stay removed");
 
   const helper = sectionBetween(component, "function nextActivityLabel(", "const ACCEPTED_IMAGE_TYPES");
@@ -645,7 +646,7 @@ test("derives each company next activity from the earliest open task", async () 
 });
 
 test("tracks record creators and scopes notifications to records connected to the signed-in user", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   const companyType = sectionBetween(component, "type Company = {", "type Contact = {");
   const taskType = sectionBetween(component, "type Task = {", "type TaskComment = {");
   const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
@@ -689,7 +690,7 @@ test("tracks record creators and scopes notifications to records connected to th
 });
 
 test("sends profile changes to server-side validation", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   const updateProfile = sectionBetween(component, "function updateProfile(", "function updatePreferences(");
 
   assert.match(updateProfile, /await apiRequest\("\/profile", \{ method: "PUT"/);
@@ -700,7 +701,7 @@ test("sends profile changes to server-side validation", async () => {
 });
 
 test("keeps primary mobile CRM copy readable at 360 px", async () => {
-  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
   const phone = blocksAfter(css, "@media (max-width: 700px)").join("\n");
 
   assert.match(phone, /\.crm-app\s*\{[^}]*font-size:\s*15px[^}]*line-height:\s*1\.45/s);
@@ -800,7 +801,7 @@ test("ships the Companies card breakpoint and containment rules in compiled CSS"
 });
 
 test("covers the v3.1 audit gaps in the integrated frontend", async () => {
-  const component = await readFile(new URL("app/CRMApp.tsx", root), "utf8");
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
   const activity = sectionBetween(component, "function Activity(", "function Lookups(");
   const users = sectionBetween(component, "function Users(", "function Audit(");

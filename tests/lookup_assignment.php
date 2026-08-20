@@ -8,10 +8,11 @@ use CRM\Database\Database;
 use CRM\Domain\LookupService;
 use CRM\Http\ApiException;
 
-require dirname(__DIR__) . '/src/autoload.php';
+$backendRoot = dirname(__DIR__) . '/backend';
+require $backendRoot . '/src/autoload.php';
 
-Env::load(dirname(__DIR__) . '/.env');
-Config::bootstrap(dirname(__DIR__));
+Env::load($backendRoot . '/.env');
+Config::bootstrap($backendRoot);
 
 $db = Database::connection();
 $db->beginTransaction();
