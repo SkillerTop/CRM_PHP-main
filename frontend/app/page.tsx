@@ -1,4 +1,4 @@
-import { CRMApp } from "../src/app/CRMApp";
+import { CRMApp } from "./CRMApp";
 
 export default function Home() {
   return <CRMApp />;

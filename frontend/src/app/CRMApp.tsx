@@ -1,11 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, apiDownload, apiMessage, apiRequest, setCsrfToken } from "../shared/api/api-client";
-import { Avatar, EntityLogo } from "../shared/components/identity";
-import { useUrlStringState } from "../shared/hooks/use-url-string-state";
-import { currentKyivStamp, formatDateTime, formatKyivDateTime, formatKyivDateTimeInput, kyivGreeting, todayKyiv } from "../shared/utils/dates";
-import { readUrlFilter, urlWithFilter } from "../shared/utils/url-filters.mjs";
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 
 type View =
   | "dashboard"
@@ -16,10 +11,6 @@ type View =
   | "lookups"
   | "users"
   | "audit";
-
-const ALL_VIEWS: readonly View[] = ["dashboard", "pipeline", "companies", "contacts", "activity", "lookups", "users", "audit"];
-const TASK_FILTER_VALUES = ["Actual", "Overdue", "Completed", "Deferred", "Canceled", "All"] as const;
-const CONTACT_LINKEDIN_VALUES = ["Any LinkedIn", "Has LinkedIn", "No LinkedIn"] as const;
 
 type Company = {
   id: string;
@@ -38,16 +29,14 @@ type Company = {
   linkedin?: string;
   logoDataUrl?: string;
   description: string;
-  typeId?: number;
-  statusId?: number;
-  managerId?: number;
-  updatedAt?: string;
-  isArchived?: boolean;
 };
+
+type ContactStatus = "Active" | "Inactive";
 
 type Contact = {
   id: string;
   companyId: string;
+  status: ContactStatus;
   name: string;
   position: string;
   email: string;
@@ -61,15 +50,6 @@ type Contact = {
   ownerUserEmail?: string;
   initiatedByUserEmail?: string;
   photoDataUrl?: string;
-  businessCardDataUrl?: string;
-  businessCardFileName?: string;
-  firstName?: string;
-  lastName?: string;
-  sourceId?: number;
-  initiatedById?: number;
-  managerId?: number;
-  updatedAt?: string;
-  isArchived?: boolean;
 };
 
 type Task = {
@@ -89,16 +69,6 @@ type Task = {
   outcomeStatus?: string;
   outcomeNotes?: string;
   reminderLeads?: string[];
-  reminderLeadIds?: number[];
-  managerId?: number;
-  statusId?: number;
-  outcomeStatusId?: number;
-  updatedAt?: string;
-  isArchived?: boolean;
-  contactPerson?: string;
-  reminderPossible?: boolean;
-  commentCount?: number;
-  changeCount?: number;
 };
 
 type TaskComment = {
@@ -107,25 +77,6 @@ type TaskComment = {
   author: string;
   createdAt: string;
   text: string;
-  authorUserId?: number;
-  isHidden?: boolean;
-};
-
-type TaskAttachment = {
-  id: number;
-  taskId: string;
-  name: string;
-  mimeType: string;
-  sizeBytes: number;
-  authorUserId: number;
-  author: string;
-  createdAt: string;
-};
-
-type SystemSettings = {
-  systemNotificationEmail: string;
-  notifyNewRegistrations: boolean;
-  registrationAllowedDomains: string[];
 };
 
 type AuditEvent = {
@@ -135,8 +86,6 @@ type AuditEvent = {
   action: string;
   entity: string;
   detail: string;
-  actorUserId?: number;
-  entityType?: string;
 };
 
 type Role = "Admin" | "Manager" | "Editor" | "Read-only";
@@ -157,18 +106,15 @@ type Permission =
   | "audit.export";
 
 type CRMUser = {
-  id?: number;
   name: string;
   email: string;
   role: Role;
   state: "Active" | "Inactive" | "Pending";
   lastLogin: string;
   photoDataUrl?: string;
-  updatedAt?: string;
 };
 
 type AuthIdentity = {
-  id?: number;
   name: string;
   email: string;
   accountEmail: string;
@@ -178,7 +124,7 @@ type AuthIdentity = {
   photoDataUrl?: string;
 };
 
-type LookupItem = { id: string; value: string; active: boolean; keyCode?: string; updatedAt?: string; userId?: number; email?: string };
+type LookupItem = { id: string; value: string; active: boolean };
 type LookupGroup = { type: string; label: string; items: LookupItem[] };
 
 type AppNotification = {
@@ -198,6 +144,8 @@ type Preferences = {
 
 type ContactDraft = {
   companyId: string;
+  companyName?: string;
+  status?: ContactStatus;
   firstName: string;
   lastName?: string;
   position?: string;
@@ -210,8 +158,6 @@ type ContactDraft = {
   initiatedBy?: string;
   initiatedByUserEmail?: string;
   photoDataUrl?: string;
-  businessCardDataUrl?: string;
-  businessCardFileName?: string;
 };
 
 type ContactCreationResult = {
@@ -221,12 +167,9 @@ type ContactCreationResult = {
 };
 
 type ToastState = { message: string; tone: "success" | "warning" };
-type GlobalSearchResult = { type: "Company" | "Contact" | "Task"; label: string; meta: string; id: string };
-type OcrDraft = { first_name?: string; last_name?: string; position?: string; phone?: string; email?: string; linkedin?: string; website?: string; company?: string };
-type OcrResult = { raw_text: string; draft: OcrDraft; confidence: "low" | "medium" | "high" };
 
 const DEFAULT_PREFERENCES: Preferences = { deadlineReminders: true, overdueNotifications: true, workspaceSummary: true };
-const AI_INPUTS_ENABLED = false;
+const CONTACT_STATUSES: ContactStatus[] = ["Active", "Inactive"];
 
 const ROLE_ORDER: Role[] = ["Admin", "Manager", "Editor", "Read-only"];
 
@@ -255,6 +198,8 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   Editor: ["company.create", "company.edit", "pipeline.move", "contact.create", "contact.edit", "task.create", "task.edit", "task.comment"],
   "Read-only": [],
 };
+
+const TEST_PASSWORD = "Client2026";
 
 const CJN_MANAGER_VALUES = [
   "Andrey Zherebetsky",
@@ -440,15 +385,15 @@ const INITIAL_COMPANIES: Company[] = [
 ];
 
 const INITIAL_CONTACTS: Contact[] = [
-  { id: "K01", companyId: "C-0001", name: "Seonju Moon", position: "External Relations Manager", email: "junglobal@jun-eng.kr", phone: "+82 10 4845 4889", source: "Exhibition / Conference", sourceDetail: "SMM Hamburg", owner: "Vitalii Vyshnevskyi" },
-  { id: "K02", companyId: "C-0001", name: "Hyeong Jin Jeon", position: "CEO", email: "juneng0214@gmail.com", phone: "+82 55 761 0634", source: "Referral (word of mouth)", owner: "Vitalii Vyshnevskyi" },
-  { id: "K03", companyId: "C-0002", name: "Bernardino Salinas", position: "Engineering Manager", email: "bernardino.salinas@keppelamfels.com", phone: "+1 956 592 6175", source: "Outbound (cold outreach)", owner: "Andrey Zherebetsky" },
-  { id: "K04", companyId: "C-0003", name: "Rene J. Leonard", position: "Vice President", email: "rjleonard@conradindustries.com", phone: "+1 985 665 9057", source: "Referral (word of mouth)", owner: "Mikhail Bardin" },
-  { id: "K05", companyId: "C-0003", name: "Shaun D. Hunter", position: "General Manager", email: "sdhunter@conradindustries.com", phone: "+1 985 413 9709", source: "Referral (word of mouth)", owner: "Mikhail Bardin" },
-  { id: "K06", companyId: "C-0006", name: "Terrence Hickey", position: "Director Engineering", email: "terrence.hickey@us.fincantieri.com", phone: "—", source: "Outbound LinkedIn", owner: "Vitalii Vyshnevskyi" },
-  { id: "K07", companyId: "C-0007", name: "Jason Nunn", position: "External Relations Director", email: "jason.nunn@icedesign.info", phone: "—", source: "Outbound LinkedIn", owner: "Olga Kalnauz" },
-  { id: "K08", companyId: "C-0008", name: "Dirk Höflich", position: "Director, Client Relations", email: "dirk.hoflich@norsepower.com", phone: "+49 151 2910 0117", source: "Inbound (website / email)", owner: "Olga Kalnauz" },
-  { id: "K09", companyId: "C-0009", name: "Karl-Gustav Kalm", position: "External Relations Director", email: "karl.kalm@bwb.ee", phone: "+372 45 21 140", source: "Exhibition / Conference", sourceDetail: "Industry conference", owner: "Vitalii Vyshnevskyi" },
+  { id: "K01", companyId: "C-0001", status: "Active", name: "Seonju Moon", position: "External Relations Manager", email: "junglobal@jun-eng.kr", phone: "+82 10 4845 4889", source: "Exhibition / Conference", sourceDetail: "SMM Hamburg", owner: "Vitalii Vyshnevskyi" },
+  { id: "K02", companyId: "C-0001", status: "Active", name: "Hyeong Jin Jeon", position: "CEO", email: "juneng0214@gmail.com", phone: "+82 55 761 0634", source: "Referral (word of mouth)", owner: "Vitalii Vyshnevskyi" },
+  { id: "K03", companyId: "C-0002", status: "Active", name: "Bernardino Salinas", position: "Engineering Manager", email: "bernardino.salinas@keppelamfels.com", phone: "+1 956 592 6175", source: "Outbound (cold outreach)", owner: "Andrey Zherebetsky" },
+  { id: "K04", companyId: "C-0003", status: "Active", name: "Rene J. Leonard", position: "Vice President", email: "rjleonard@conradindustries.com", phone: "+1 985 665 9057", source: "Referral (word of mouth)", owner: "Mikhail Bardin" },
+  { id: "K05", companyId: "C-0003", status: "Active", name: "Shaun D. Hunter", position: "General Manager", email: "sdhunter@conradindustries.com", phone: "+1 985 413 9709", source: "Referral (word of mouth)", owner: "Mikhail Bardin" },
+  { id: "K06", companyId: "C-0006", status: "Active", name: "Terrence Hickey", position: "Director Engineering", email: "terrence.hickey@us.fincantieri.com", phone: "—", source: "Outbound LinkedIn", owner: "Vitalii Vyshnevskyi" },
+  { id: "K07", companyId: "C-0007", status: "Active", name: "Jason Nunn", position: "External Relations Director", email: "jason.nunn@icedesign.info", phone: "—", source: "Outbound LinkedIn", owner: "Olga Kalnauz" },
+  { id: "K08", companyId: "C-0008", status: "Active", name: "Dirk Höflich", position: "Director, Client Relations", email: "dirk.hoflich@norsepower.com", phone: "+49 151 2910 0117", source: "Inbound (website / email)", owner: "Olga Kalnauz" },
+  { id: "K09", companyId: "C-0009", status: "Active", name: "Karl-Gustav Kalm", position: "External Relations Director", email: "karl.kalm@bwb.ee", phone: "+372 45 21 140", source: "Exhibition / Conference", sourceDetail: "Industry conference", owner: "Vitalii Vyshnevskyi" },
 ];
 
 const INITIAL_TASKS: Task[] = [
@@ -483,122 +428,6 @@ const INITIAL_USERS: CRMUser[] = [
   { name: "Yurii Maksymov", email: "y.maksymov@cjn.example", role: "Read-only", state: "Active", lastLogin: "2026-07-29 11:02" },
 ];
 
-type ApiRecord = Record<string, unknown>;
-type WorkspacePayload = {
-  identity: ApiRecord;
-  csrf_token: string;
-  companies: ApiRecord[];
-  contacts: ApiRecord[];
-  tasks: ApiRecord[];
-  comments: ApiRecord[];
-  attachments: ApiRecord[];
-  lookups: Record<string, ApiRecord[]>;
-  users: ApiRecord[];
-  audit: ApiRecord[];
-};
-
-type PagedRecords = { data: ApiRecord[]; meta: ApiMeta };
-
-type ApiMeta = {
-  page: number;
-  per_page: number;
-  total: number;
-  pages: number;
-};
-
-const apiString = (record: ApiRecord, key: string) => String(record[key] ?? "");
-const apiNumber = (record: ApiRecord, key: string) => record[key] == null ? undefined : Number(record[key]);
-const apiBoolean = (record: ApiRecord, key: string) => Boolean(record[key]);
-const roleFromApi = (value: unknown): Role => ({ admin: "Admin", manager: "Manager", editor: "Editor", readonly: "Read-only" }[String(value)] as Role | undefined) ?? "Read-only";
-const roleToApi = (value: Role) => ({ Admin: "admin", Manager: "manager", Editor: "editor", "Read-only": "readonly" }[value]);
-const lookupTypeToUi = (value: string) => ({
-  company_type: "company-type", client_status: "client-status", task_status: "task-status",
-  outcome_status: "outcome-status", contact_source: "contact-source",
-  reminder_lead_time: "reminder-lead", cjn_manager: "cjn-manager",
-}[value] ?? value.replaceAll("_", "-"));
-const lookupTypeToApi = (value: string) => ({
-  "company-type": "company_type", "client-status": "client_status", "task-status": "task_status",
-  "outcome-status": "outcome_status", "contact-source": "contact_source",
-  "reminder-lead": "reminder_lead_time", "cjn-manager": "cjn_manager",
-}[value] ?? value.replaceAll("-", "_"));
-
-function mapCompany(record: ApiRecord): Company {
-  return {
-    id: apiString(record, "id"), name: apiString(record, "name"), kind: apiString(record, "type"),
-    country: apiString(record, "country"), city: apiString(record, "city"), status: apiString(record, "status"),
-    contacts: 0, lastContact: apiString(record, "last_contact_date") || "—", owner: apiString(record, "manager") || "Unassigned",
-    createdBy: apiString(record, "created_by_name"), ownerUserEmail: apiString(record, "manager_email").toLowerCase() || undefined,
-    createdByUserEmail: apiString(record, "created_by_email").toLowerCase() || undefined,
-    website: apiString(record, "website"), linkedin: apiString(record, "linkedin") || undefined,
-    logoDataUrl: apiString(record, "logo_data_url") || undefined, description: apiString(record, "description"),
-    typeId: apiNumber(record, "type_id"), statusId: apiNumber(record, "status_id"), managerId: apiNumber(record, "manager_id"),
-    updatedAt: apiString(record, "updated_at"), isArchived: apiBoolean(record, "is_archived"),
-  };
-}
-
-function mapContact(record: ApiRecord): Contact {
-  const firstName = apiString(record, "first_name");
-  const lastName = apiString(record, "last_name");
-  return {
-    id: apiString(record, "id"), companyId: apiString(record, "company_id"), name: [firstName, lastName].filter(Boolean).join(" "),
-    firstName, lastName, position: apiString(record, "position"), email: apiString(record, "email"), phone: apiString(record, "phone"),
-    linkedin: apiString(record, "linkedin") || undefined, source: apiString(record, "source"), sourceDetail: apiString(record, "source_detail"),
-    referredBy: apiString(record, "referred_by"), owner: apiString(record, "manager") || "Unassigned", initiatedBy: apiString(record, "initiated_by"),
-    ownerUserEmail: apiString(record, "manager_email").toLowerCase() || undefined, photoDataUrl: apiString(record, "photo_data_url") || undefined,
-    sourceId: apiNumber(record, "source_id"), initiatedById: apiNumber(record, "initiated_by_id"), managerId: apiNumber(record, "manager_id"),
-    updatedAt: apiString(record, "updated_at"), isArchived: apiBoolean(record, "is_archived"),
-  };
-}
-
-function mapTask(record: ApiRecord): Task {
-  const rawLeads = Array.isArray(record.reminder_leads) ? record.reminder_leads as ApiRecord[] : [];
-  return {
-    id: apiString(record, "id"), companyId: apiString(record, "company_id"), title: apiString(record, "name"),
-    contactDate: apiString(record, "contact_date"), deadline: formatKyivDateTimeInput(apiString(record, "deadline")), owner: apiString(record, "manager"),
-    createdBy: apiString(record, "created_by_name"), ownerUserEmail: apiString(record, "manager_email").toLowerCase() || undefined,
-    createdByUserEmail: apiString(record, "created_by_email").toLowerCase() || undefined,
-    contactPersonId: apiString(record, "contact_person_id") || undefined, status: apiString(record, "status"),
-    priority: (apiString(record, "priority") || "Normal") as Task["priority"], note: apiString(record, "description"),
-    outcomeStatus: apiString(record, "outcome_status"), outcomeNotes: apiString(record, "outcome_notes"),
-    reminderLeads: rawLeads.map((lead) => apiString(lead, "value")), reminderLeadIds: rawLeads.map((lead) => Number(lead.id)),
-    managerId: apiNumber(record, "manager_id"), statusId: apiNumber(record, "status_id"), outcomeStatusId: apiNumber(record, "outcome_status_id"),
-    updatedAt: apiString(record, "updated_at"), isArchived: apiBoolean(record, "is_archived"),
-    contactPerson: apiString(record, "contact_person") || undefined,
-    reminderPossible: record.reminder_possible == null ? undefined : apiBoolean(record, "reminder_possible"),
-    commentCount: apiNumber(record, "comment_count"), changeCount: apiNumber(record, "change_count"),
-  };
-}
-
-function mapUser(record: ApiRecord): CRMUser {
-  return {
-    id: apiNumber(record, "id"), name: apiString(record, "full_name"), email: apiString(record, "email"), role: roleFromApi(record.role),
-    state: apiBoolean(record, "pending_approval") ? "Pending" : apiBoolean(record, "is_active") ? "Active" : "Inactive",
-    lastLogin: formatKyivDateTime(apiString(record, "last_login_at")) || (apiBoolean(record, "pending_approval") ? "Awaiting approval" : "Not signed in yet"),
-    photoDataUrl: apiString(record, "photo_data_url") || undefined, updatedAt: apiString(record, "updated_at"),
-  };
-}
-
-function mapIdentity(record: ApiRecord): AuthIdentity {
-  const email = apiString(record, "email").toLowerCase();
-  return { id: apiNumber(record, "id"), name: apiString(record, "full_name"), email, accountEmail: email, method: "Email", role: roleFromApi(record.role), phone: apiString(record, "phone") || undefined, photoDataUrl: apiString(record, "photo_data_url") || undefined };
-}
-
-function mapAuditEvent(event: ApiRecord): AuditEvent {
-  const from = apiString(event, "from");
-  const to = apiString(event, "to");
-  const field = apiString(event, "field");
-  return {
-    id: `E-${apiString(event, "id")}`,
-    at: formatKyivDateTime(apiString(event, "timestamp")),
-    actor: apiString(event, "actor"),
-    actorUserId: apiNumber(event, "actor_user_id"),
-    action: apiString(event, "action"),
-    entityType: apiString(event, "entity_type"),
-    entity: `${apiString(event, "entity_type")} · ${apiString(event, "entity_id")}`,
-    detail: field ? `${field}: ${from || "—"} → ${to || "—"}` : apiString(event, "entity_label"),
-  };
-}
-
 const VIEW_META: Record<View, { label: string; eyebrow: string; icon: string }> = {
   dashboard: { label: "Dashboard", eyebrow: "Team overview", icon: "⌂" },
   pipeline: { label: "Relationship Board", eyebrow: "Client workflow", icon: "◇" },
@@ -612,6 +441,36 @@ const VIEW_META: Record<View, { label: string; eyebrow: string; icon: string }> 
 
 function companyName(companies: Company[], id: string) {
   return companies.find((company) => company.id === id)?.name ?? "Unknown company";
+}
+
+function formatDateTime(value: string) {
+  if (!value) return "—";
+  return value.replace("T", " · ");
+}
+
+function currentKyivStamp() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Kyiv",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
+}
+
+function todayKyiv() {
+  return currentKyivStamp().slice(0, 10);
+}
+
+function kyivGreeting() {
+  const hour = Number(currentKyivStamp().slice(11, 13));
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
 }
 
 function useMediaQuery(query: string) {
@@ -665,6 +524,34 @@ function nextActivityLabel(tasks: Task[], companyId?: string) {
     .filter((task) => (!companyId || task.companyId === companyId) && isOpenTask(task) && Boolean(task.deadline))
     .sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
   return nextTask ? `${isOverdue(nextTask) ? "Overdue · " : ""}${formatDateTime(nextTask.deadline)}` : "No open activity";
+}
+
+function initials(name: string) {
+  return name.split(" ").filter(Boolean).map((part) => part[0]).slice(0, 2).join("").toUpperCase() || "?";
+}
+
+function autocompleteRank(primary: string, values: string[], query: string) {
+  const normalizedPrimary = primary.toLowerCase();
+  if (normalizedPrimary.startsWith(query)) return 0;
+  if (normalizedPrimary.split(/\s+/).some((word) => word.startsWith(query))) return 1;
+  if (normalizedPrimary.includes(query)) return 2;
+  return values.some((value) => value.toLowerCase().includes(query)) ? 3 : 4;
+}
+
+function Avatar({ name, src, className = "avatar", lazy = false }: { name: string; src?: string; className?: string; lazy?: boolean }) {
+  return (
+    <span className={className} aria-hidden="true">
+      {src ? <img src={src} alt="" loading={lazy ? "lazy" : undefined} decoding="async" /> : initials(name)}
+    </span>
+  );
+}
+
+function EntityLogo({ name, src, className = "company-logo", lazy = false }: { name: string; src?: string; className?: string; lazy?: boolean }) {
+  return (
+    <span className={className} aria-hidden="true">
+      {src ? <img src={src} alt="" loading={lazy ? "lazy" : undefined} decoding="async" /> : name.slice(0, 2).toUpperCase()}
+    </span>
+  );
 }
 
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -766,6 +653,140 @@ function ImageField({ label, name, value, onChange, onProcessingChange, kind = "
   );
 }
 
+function CompanyPicker({ companies, defaultCompanyId, autoFocus = false }: { companies: Company[]; defaultCompanyId?: string; autoFocus?: boolean }) {
+  const initialCompany = companies.find((company) => company.id === defaultCompanyId);
+  const [query, setQuery] = useState(initialCompany?.name ?? "");
+  const [selectedId, setSelectedId] = useState(initialCompany?.id ?? "");
+  const [open, setOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const generatedId = useId().replace(/:/g, "");
+  const inputId = `contact-company-${generatedId}`;
+  const listId = `${inputId}-suggestions`;
+  const helpId = `${inputId}-help`;
+  const normalizedQuery = query.trim().toLowerCase();
+  const selectedCompany = companies.find((company) => company.id === selectedId);
+  const suggestions = useMemo(() => {
+    const ranked = companies
+      .filter((company) => !normalizedQuery || [company.name, company.city, company.country].some((value) => value.toLowerCase().includes(normalizedQuery)))
+      .sort((a, b) => {
+        const rank = (company: Company) => {
+          const name = company.name.toLowerCase();
+          if (!normalizedQuery || name.startsWith(normalizedQuery)) return 0;
+          if (name.split(/\s+/).some((word) => word.startsWith(normalizedQuery))) return 1;
+          if (name.includes(normalizedQuery)) return 2;
+          return 3;
+        };
+        return rank(a) - rank(b) || a.name.localeCompare(b.name);
+      });
+    return ranked.slice(0, 6);
+  }, [companies, normalizedQuery]);
+
+  useEffect(() => {
+    if (activeSuggestion < 0) return;
+    pickerRef.current?.querySelector<HTMLElement>(".contact-company-suggestions > button.active")?.scrollIntoView({ block: "nearest" });
+  }, [activeSuggestion]);
+
+  function selectCompany(company: Company) {
+    setQuery(company.name);
+    setSelectedId(company.id);
+    inputRef.current?.setCustomValidity("");
+    setOpen(false);
+    setActiveSuggestion(-1);
+  }
+
+  function updateQuery(value: string) {
+    const normalizedValue = value.trim().toLowerCase();
+    const exactMatches = companies.filter((company) => company.name.toLowerCase() === normalizedValue);
+    setQuery(value);
+    setSelectedId(exactMatches.length === 1 ? exactMatches[0].id : "");
+    inputRef.current?.setCustomValidity(exactMatches.length === 1 || !normalizedValue ? "" : "Select an existing company from the suggestions.");
+    setOpen(Boolean(normalizedValue));
+    setActiveSuggestion(-1);
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      if (!open) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      setActiveSuggestion(-1);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setOpen(true);
+      if (suggestions.length) setActiveSuggestion((current) => (current + 1) % suggestions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setOpen(true);
+      if (suggestions.length) setActiveSuggestion((current) => current <= 0 ? suggestions.length - 1 : current - 1);
+    } else if (event.key === "Enter" && open && activeSuggestion >= 0) {
+      event.preventDefault();
+      selectCompany(suggestions[activeSuggestion]);
+    }
+  }
+
+  return (
+    <div className="field contact-company-field" ref={pickerRef} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setOpen(false); setActiveSuggestion(-1); } }}>
+      <label className="field-label" htmlFor={inputId}>Company *</label>
+      <div className="contact-company-picker">
+        <input
+          ref={inputRef}
+          id={inputId}
+          name="companyName"
+          type="text"
+          value={query}
+          required
+          minLength={2}
+          maxLength={255}
+          autoFocus={autoFocus}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Start typing a company name"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open && Boolean(normalizedQuery)}
+          aria-controls={listId}
+          aria-activedescendant={activeSuggestion >= 0 ? `${inputId}-option-${suggestions[activeSuggestion]?.id}` : undefined}
+          aria-describedby={helpId}
+          onChange={(event) => updateQuery(event.target.value)}
+          onFocus={() => setOpen(Boolean(normalizedQuery))}
+          onKeyDown={handleKeyDown}
+        />
+        <span className={`contact-company-picker-state${selectedCompany ? " selected" : ""}`} aria-hidden="true">{selectedCompany ? "✓" : "⌕"}</span>
+        <input name="companyId" type="hidden" value={selectedId} />
+        {open && normalizedQuery && (
+          <div className="contact-company-suggestions" id={listId} role="listbox" aria-label="Existing companies">
+            {suggestions.map((company, index) => (
+              <button
+                id={`${inputId}-option-${company.id}`}
+                className={activeSuggestion === index ? "active" : ""}
+                type="button"
+                role="option"
+                tabIndex={-1}
+                aria-selected={company.id === selectedId}
+                key={company.id}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectCompany(company)}
+              >
+                <EntityLogo name={company.name} src={company.logoDataUrl} lazy />
+                <span><b>{company.name}</b><small>{[company.city, company.country].filter(Boolean).join(", ")} · {company.kind}</small></span>
+                <span aria-hidden="true">›</span>
+              </button>
+            ))}
+            {suggestions.length === 0 && <div className="contact-company-empty">No existing company matches this name. Add the company in Companies first.</div>}
+          </div>
+        )}
+      </div>
+      <small className="field-help" id={helpId}>{selectedCompany ? `${selectedCompany.city}, ${selectedCompany.country} · ${selectedCompany.kind}` : "Type a company name, then choose it from the list."}</small>
+      <span className="sr-only" aria-live="polite">{normalizedQuery ? `${suggestions.length} company choices` : ""}</span>
+    </div>
+  );
+}
+
 function PageScrollControls({ hidden = false }: { hidden?: boolean }) {
   const [state, setState] = useState({ scrollable: false, atTop: true, atBottom: false });
 
@@ -861,6 +882,36 @@ function CountBadge({ count, label, detail }: { count: number; label: string; de
   );
 }
 
+function downloadTaskIcs(task: Task, company: string) {
+  const escapeIcs = (value: string) => value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
+  const localStart = task.deadline.replace(/[-:]/g, "").replace("T", "T") + "00";
+  const [datePart, timePart] = task.deadline.split("T");
+  const [year, month, day] = datePart.split("-").map(Number);
+  const [hour, minute] = timePart.split(":").map(Number);
+  const endDate = new Date(Date.UTC(year, month - 1, day, hour + 1, minute));
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const localEnd = `${endDate.getUTCFullYear()}${pad(endDate.getUTCMonth() + 1)}${pad(endDate.getUTCDate())}T${pad(endDate.getUTCHours())}${pad(endDate.getUTCMinutes())}00`;
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Client Data CRM//Tasks//UK",
+    "BEGIN:VEVENT",
+    `UID:${task.id}@client-data-crm`,
+    `DTSTART;TZID=Europe/Kyiv:${localStart}`,
+    `DTEND;TZID=Europe/Kyiv:${localEnd}`,
+    `SUMMARY:${escapeIcs(task.title)}`,
+    `DESCRIPTION:${escapeIcs(`${company} · ${task.note}`)}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+  const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${task.id}-${task.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "task"}.ics`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function Modal({ title, eyebrow, onClose, children, wide = false }: { title: string; eyebrow?: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const dialogRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
@@ -933,17 +984,17 @@ function Modal({ title, eyebrow, onClose, children, wide = false }: { title: str
   );
 }
 
-function AuthScreen({ onLogin, onRegister, onRecover }: {
-  onLogin: (email: string, password: string) => Promise<string | null>;
-  onRegister: (name: string, email: string, password: string) => Promise<string | null>;
-  onRecover: (email: string) => Promise<string | null>;
+function AuthScreen({ users, credentials, onAuthenticate, onRegister }: {
+  users: CRMUser[];
+  credentials: Record<string, string>;
+  onAuthenticate: (identity: AuthIdentity) => void;
+  onRegister: (name: string, email: string, password: string) => string | null;
 }) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [showPassword, setShowPassword] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [formError, setFormError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const signInTabRef = useRef<HTMLButtonElement>(null);
   const registerTabRef = useRef<HTMLButtonElement>(null);
 
@@ -963,7 +1014,7 @@ function AuthScreen({ onLogin, onRegister, onRecover }: {
     selectMode(nextMode, true);
   }
 
-  async function emailLogin(event: FormEvent<HTMLFormElement>) {
+  function emailLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const email = String(data.get("email") ?? "").trim().toLowerCase();
@@ -990,27 +1041,34 @@ function AuthScreen({ onLogin, onRegister, onRecover }: {
         setFormError("Passwords do not match.");
         return;
       }
-      setSubmitting(true);
-      const registrationError = await onRegister(name, email, password);
-      setSubmitting(false);
+      const registrationError = onRegister(name, email, password);
       if (registrationError) return setFormError(registrationError);
       selectMode("signin");
       setMessage("Registration submitted. An administrator must approve the Read-only account before sign-in.");
       return;
     }
 
-    setSubmitting(true);
-    const loginError = await onLogin(email, password);
-    setSubmitting(false);
-    if (loginError) setFormError(loginError);
+    const liveAccount = users.find((user) => user.email.toLowerCase() === email);
+    if (!liveAccount || credentials[email] !== password) {
+      setFormError("Email or password is incorrect.");
+      return;
+    }
+    if (liveAccount.state === "Pending") {
+      setFormError("This registration is waiting for administrator approval.");
+      return;
+    }
+    if (liveAccount.state === "Inactive") {
+      setFormError("This account is inactive. Contact a CRM administrator.");
+      return;
+    }
+    onAuthenticate({ name: liveAccount.name, email, accountEmail: email, method: "Email", role: liveAccount.role });
   }
 
-  async function recover(event: FormEvent<HTMLFormElement>) {
+  function recover(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const email = String(new FormData(event.currentTarget).get("recoveryEmail") ?? "").trim();
     if (!EMAIL_PATTERN.test(email)) return setFieldError(event.currentTarget, "recoveryEmail", "Enter a valid email address.");
-    const recoveryError = await onRecover(email);
-    setMessage(recoveryError ?? `If ${email} is registered, password recovery instructions have been sent.`);
+    setMessage(`Recovery for ${email} requires the production email service. In this frontend, ask an administrator to set a temporary password.`);
     setRecoveryOpen(false);
   }
 
@@ -1035,189 +1093,56 @@ function AuthScreen({ onLogin, onRegister, onRecover }: {
               <form className="auth-form" onSubmit={emailLogin} key={mode}>
                 {mode === "signup" && <label><span>Full name</span><input name="name" autoComplete="name" required minLength={2} maxLength={120} placeholder="Andrey Zherebetsky" /></label>}
                 <label><span>Work email</span><input name="email" type="email" autoComplete="email" required maxLength={254} autoFocus defaultValue={mode === "signin" ? "admin@cjn.example" : ""} placeholder="name@company.com" /></label>
-                <label><span>Password</span><span className="password-field"><input name="password" type={showPassword ? "text" : "password"} autoComplete={mode === "signin" ? "current-password" : "new-password"} required minLength={8} maxLength={128} placeholder="8+ characters, letters and numbers" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? "Hide" : "Show"}</button></span></label>
+                <label><span>Password</span><span className="password-field"><input name="password" type={showPassword ? "text" : "password"} autoComplete={mode === "signin" ? "current-password" : "new-password"} required minLength={8} maxLength={128} defaultValue={mode === "signin" ? TEST_PASSWORD : ""} placeholder="8+ characters, letters and numbers" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? "Hide" : "Show"}</button></span></label>
                 {mode === "signup" && <label><span>Confirm password</span><input name="confirmPassword" type={showPassword ? "text" : "password"} autoComplete="new-password" required minLength={8} maxLength={128} placeholder="Repeat your password" /></label>}
                 <div className="auth-form-options auth-form-options-end">{mode === "signin" && <button type="button" onClick={() => { setRecoveryOpen(true); setMessage(""); }}>Forgot password?</button>}</div>
-                <button className="primary-button auth-submit" type="submit" disabled={submitting}>{submitting ? "Please wait…" : mode === "signin" ? "Sign in to CRM" : "Submit registration"}<span>→</span></button>
+                <button className="primary-button auth-submit" type="submit">{mode === "signin" ? "Sign in to CRM" : "Submit registration"}<span>→</span></button>
               </form>
             </div>
-            <p className="auth-security-note"><span>⌾</span> Your data is stored securely by the CRM server.</p>
+            <p className="auth-security-note"><span>⌾</span> Test account: admin@cjn.example · {TEST_PASSWORD}. Data is kept in this page session.</p>
             {formError && <div className="auth-message auth-error" role="alert">{formError}</div>}
             {message && <div className="auth-message" role="status">{message}</div>}
           </div>
         </div>
       </section>
       {recoveryOpen && (
-        <div className="auth-recovery-backdrop" role="presentation" onMouseDown={() => setRecoveryOpen(false)}><section className="auth-recovery" role="dialog" aria-modal="true" aria-label="Password recovery" onMouseDown={(event) => event.stopPropagation()}><header><div><p className="eyebrow">Password recovery</p><h2>Reset password</h2></div><button className="icon-button" type="button" onClick={() => setRecoveryOpen(false)} aria-label="Close">×</button></header><p>Enter your work email and the CRM will send the available recovery instructions.</p><form onSubmit={recover}><label><span>Work email</span><input name="recoveryEmail" type="email" required autoFocus placeholder="name@company.com" /></label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setRecoveryOpen(false)}>Cancel</button><button className="primary-button" type="submit">Continue</button></div></form></section></div>
+        <div className="auth-recovery-backdrop" role="presentation" onMouseDown={() => setRecoveryOpen(false)}><section className="auth-recovery" role="dialog" aria-modal="true" aria-label="Password recovery" onMouseDown={(event) => event.stopPropagation()}><header><div><p className="eyebrow">Password recovery</p><h2>Reset password</h2></div><button className="icon-button" type="button" onClick={() => setRecoveryOpen(false)} aria-label="Close">×</button></header><p>Enter your work email to see the recovery path available in this frontend.</p><form onSubmit={recover}><label><span>Work email</span><input name="recoveryEmail" type="email" required autoFocus placeholder="name@company.com" /></label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setRecoveryOpen(false)}>Cancel</button><button className="primary-button" type="submit">Continue</button></div></form></section></div>
       )}
     </main>
   );
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => reject(new Error("The selected file could not be read."));
-    reader.readAsDataURL(file);
-  });
-}
-
-function VoiceInputButton({ onText, disabled = false }: { onText: (text: string) => void; disabled?: boolean }) {
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
-  const [state, setState] = useState<"idle" | "recording" | "transcribing">("idle");
-  const [error, setError] = useState("");
-
-  useEffect(() => () => {
-    recorderRef.current?.stop();
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-  }, []);
-
-  async function start() {
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      setError("Voice input is not supported by this browser.");
-      return;
-    }
-    setError("");
-    chunksRef.current = [];
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const recorder = new MediaRecorder(stream);
-    streamRef.current = stream;
-    recorderRef.current = recorder;
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunksRef.current.push(event.data);
-    };
-    recorder.onstop = () => void transcribe();
-    recorder.start();
-    setState("recording");
-  }
-
-  async function stop() {
-    recorderRef.current?.stop();
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    setState("transcribing");
-  }
-
-  async function transcribe() {
-    try {
-      const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-      const body = new FormData();
-      body.append("file", blob, "voice.webm");
-      const response = await apiRequest<{ data: { text: string } }>("/speech/transcribe", { method: "POST", body });
-      const text = response.data.text.trim();
-      if (text) onText(text);
-    } catch (caught) {
-      setError(apiMessage(caught));
-    } finally {
-      chunksRef.current = [];
-      recorderRef.current = null;
-      setState("idle");
-    }
-  }
-
-  return (
-    <span className="voice-input">
-      <button className={state === "recording" ? "danger-button" : "secondary-button"} type="button" disabled={disabled || state === "transcribing"} onClick={() => state === "recording" ? void stop() : void start()}>
-        {state === "recording" ? "■ Stop" : state === "transcribing" ? "Recognizing…" : "🎙 Voice"}
-      </button>
-      {error && <small role="alert">{error}</small>}
-    </span>
-  );
-}
-
-function appendVoiceText(current: string, text: string) {
-  const clean = text.trim();
-  if (!clean) return current;
-  return current.trim() ? `${current.trim()}\n${clean}` : clean;
-}
-
-function PasswordChangeScreen({ identity, onChange, onSignOut }: {
-  identity: AuthIdentity;
-  onChange: (currentPassword: string, newPassword: string) => Promise<string | null>;
-  onSignOut: () => void;
-}) {
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const currentPassword = String(data.get("currentPassword") ?? "");
-    const newPassword = String(data.get("newPassword") ?? "");
-    const confirmation = String(data.get("confirmation") ?? "");
-    if (!isStrongPassword(newPassword)) return setError("Use at least 8 characters with both letters and numbers.");
-    if (newPassword !== confirmation) return setError("Passwords do not match.");
-    if (newPassword === currentPassword) return setError("Choose a password different from the temporary one.");
-    setSubmitting(true);
-    const nextError = await onChange(currentPassword, newPassword);
-    setSubmitting(false);
-    if (nextError) setError(nextError);
-  }
-
-  return (
-    <main className="auth-page">
-      <section className="auth-shell" aria-label="Required password change">
-        <div className="auth-intro"><div className="auth-brand"><span className="brand-mark">C</span><span><b>Client Data</b><small>CRM workspace</small></span></div><div className="auth-intro-copy"><p className="eyebrow">Account security</p><h1>Create your permanent password.</h1><p>The temporary password must be replaced before CRM data becomes available.</p></div></div>
-        <div className="auth-card-wrap"><div className="auth-card"><header><p className="eyebrow">Signed in as {identity.email}</p><h2>Change password</h2><p>This one-time step protects your new account.</p></header><form className="auth-form" onSubmit={submit}><label><span>Temporary password</span><input name="currentPassword" type="password" autoComplete="current-password" required /></label><label><span>New password</span><input name="newPassword" type="password" autoComplete="new-password" minLength={8} required /></label><label><span>Confirm new password</span><input name="confirmation" type="password" autoComplete="new-password" minLength={8} required /></label><button className="primary-button auth-submit" type="submit" disabled={submitting}>{submitting ? "Saving…" : "Save password and continue"}<span>→</span></button><button className="text-button" type="button" onClick={onSignOut}>Sign out</button></form>{error && <div className="auth-message auth-error" role="alert">{error}</div>}</div></div>
-      </section>
-    </main>
-  );
-}
-
-function PasswordResetScreen({ token }: { token: string }) {
-  const [error, setError] = useState("");
-  const [done, setDone] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    const password = String(data.get("password") ?? "");
-    const confirmation = String(data.get("confirmation") ?? "");
-    if (!isStrongPassword(password)) return void setFieldError(form, "password", "Use at least 8 characters with letters and numbers.");
-    if (password !== confirmation) return void setFieldError(form, "confirmation", "Passwords do not match.");
-    setSubmitting(true);
-    setError("");
-    try {
-      await apiRequest("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password, password_confirmation: confirmation }) });
-      setDone(true);
-    } catch (requestError) {
-      setError(apiMessage(requestError));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return <main className="auth-page"><section className="auth-shell" aria-label="Set account password"><div className="auth-intro"><div className="auth-brand"><span className="brand-mark">C</span><span><b>Client Data</b><small>CRM workspace</small></span></div><div className="auth-intro-copy"><p className="eyebrow">Account access</p><h1>Set your CRM password.</h1><p>The invitation or recovery link can be used only once.</p></div></div><div className="auth-card-wrap"><div className="auth-card"><header><p className="eyebrow">Secure link</p><h2>{done ? "Password saved" : "Create a new password"}</h2></header>{done ? <><div className="auth-message" role="status">Your password is ready. You can now sign in.</div><button className="primary-button auth-submit" type="button" onClick={() => { window.location.href = "/"; }}>Continue to sign in →</button></> : <form className="auth-form" onSubmit={submit}><label><span>New password</span><input name="password" type="password" autoComplete="new-password" required minLength={8} autoFocus /></label><label><span>Confirm password</span><input name="confirmation" type="password" autoComplete="new-password" required minLength={8} /></label><button className="primary-button auth-submit" type="submit" disabled={submitting}>{submitting ? "Saving…" : "Save password"}<span>→</span></button></form>}{error && <div className="auth-message auth-error" role="alert">{error}</div>}</div></div></section></main>;
-}
-
 export function CRMApp() {
-  const [passwordResetToken] = useState(() => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("token") ?? "");
-  const [view, setView] = useUrlStringState<View>("view", "dashboard", ALL_VIEWS);
+  const [view, setView] = useState<View>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [taskComments, setTaskComments] = useState<TaskComment[]>([]);
-  const [taskAttachments, setTaskAttachments] = useState<TaskAttachment[]>([]);
-  const [audit, setAudit] = useState<AuditEvent[]>([]);
-  const [users, setUsers] = useState<CRMUser[]>([]);
-  const [lookups, setLookups] = useState<LookupGroup[]>([]);
+  const [companies, setCompanies] = useState<Company[]>(() => INITIAL_COMPANIES.map((company) => {
+    const ownerUserEmail = INITIAL_USERS.find((user) => user.name === company.owner)?.email.toLowerCase();
+    return { ...company, createdBy: company.createdBy ?? company.owner, ownerUserEmail, createdByUserEmail: company.createdByUserEmail ?? ownerUserEmail };
+  }));
+  const [contacts, setContacts] = useState<Contact[]>(() => INITIAL_CONTACTS.map((contact) => {
+    const ownerUserEmail = INITIAL_USERS.find((user) => user.name === contact.owner)?.email.toLowerCase();
+    const initiatedByUserEmail = contact.initiatedBy ? INITIAL_USERS.find((user) => user.name === contact.initiatedBy)?.email.toLowerCase() : undefined;
+    return { ...contact, status: contact.status ?? "Active", ownerUserEmail, initiatedByUserEmail: contact.initiatedByUserEmail ?? initiatedByUserEmail };
+  }));
+  const [tasks, setTasks] = useState<Task[]>(() => INITIAL_TASKS.map((task) => {
+    const ownerUserEmail = INITIAL_USERS.find((user) => user.name === task.owner)?.email.toLowerCase();
+    return { ...task, createdBy: task.createdBy ?? task.owner, ownerUserEmail, createdByUserEmail: task.createdByUserEmail ?? ownerUserEmail };
+  }));
+  const [taskComments, setTaskComments] = useState(INITIAL_TASK_COMMENTS);
+  const [audit, setAudit] = useState(INITIAL_AUDIT);
+  const [users, setUsers] = useState(INITIAL_USERS);
+  const [lookups, setLookups] = useState(LOOKUP_SEED);
+  const [credentials, setCredentials] = useState<Record<string, string>>(() => Object.fromEntries(INITIAL_USERS.map((user) => [user.email.toLowerCase(), TEST_PASSWORD])));
   const [archivedCompanyIds, setArchivedCompanyIds] = useState<string[]>([]);
   const [archivedContactIds, setArchivedContactIds] = useState<string[]>([]);
   const [archivedTaskIds, setArchivedTaskIds] = useState<string[]>([]);
   const [globalSearch, setGlobalSearch] = useState("");
   const [globalSearchIndex, setGlobalSearchIndex] = useState(-1);
-  const [globalResults, setGlobalResults] = useState<GlobalSearchResult[]>([]);
-  const [companyQuery, setCompanyQuery] = useUrlStringState("company_q", "");
-  const [companyStatus, setCompanyStatus] = useUrlStringState("company_status", "All statuses");
-  const [contactQuery, setContactQuery] = useUrlStringState("contact_q", "");
-  const [taskFilter, setTaskFilter] = useUrlStringState("task_state", "Actual", TASK_FILTER_VALUES);
-  const [taskManagerFilter, setTaskManagerFilter] = useUrlStringState("task_manager", "All managers");
+  const [companyQuery, setCompanyQuery] = useState("");
+  const [companyStatus, setCompanyStatus] = useState("All statuses");
+  const [contactQuery, setContactQuery] = useState("");
+  const [taskFilter, setTaskFilter] = useState("Actual");
+  const [taskManagerFilter, setTaskManagerFilter] = useState("All managers");
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -1230,115 +1155,9 @@ export function CRMApp() {
   const [preferencesByAccount, setPreferencesByAccount] = useState<Record<string, Preferences>>({});
   const [toast, setToast] = useState<ToastState | null>(null);
   const [identity, setIdentity] = useState<AuthIdentity | null>(null);
-  const [sessionLoading, setSessionLoading] = useState(true);
-  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
-  const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
   const notificationAccountKey = identity?.accountEmail.toLowerCase() ?? "";
   const readNotificationIds = readNotificationIdsByAccount[notificationAccountKey] ?? [];
   const preferences = preferencesByAccount[notificationAccountKey] ?? DEFAULT_PREFERENCES;
-
-  async function loadWorkspace() {
-    const response = await apiRequest<{ data: WorkspacePayload }>("/app/bootstrap?include_records=0");
-    const payload = response.data;
-    const includeArchived = apiString(payload.identity, "role") === "admin";
-    const [companiesResponse, contactsResponse, tasksResponse] = await Promise.all([
-      loadAllPages("/companies", "name", "asc", includeArchived),
-      loadAllPages("/contacts", "last_name", "asc", includeArchived),
-      loadAllPages("/tasks?state=all", "contact_date", "desc", includeArchived),
-    ]);
-    setCsrfToken(payload.csrf_token);
-    const mappedContacts = contactsResponse.map(mapContact);
-    const mappedCompanies = companiesResponse.map(mapCompany).map((company) => ({
-      ...company,
-      contacts: mappedContacts.filter((contact) => contact.companyId === company.id && !contact.isArchived).length,
-    }));
-    const lookupGroups = Object.entries(payload.lookups).map(([type, items]) => ({
-      type: lookupTypeToUi(type),
-      label: ({ company_type: "Company Type", client_status: "Relationship Status", task_status: "Task Status", outcome_status: "Outcome Status", contact_source: "Contact Source", reminder_lead_time: "Reminder Advance Notice", cjn_manager: "CJN Manager" } as Record<string, string>)[type] ?? type,
-      items: items.map((item) => ({ id: apiString(item, "id"), value: apiString(item, "value"), active: apiBoolean(item, "is_active"), keyCode: apiString(item, "key"), updatedAt: apiString(item, "updated_at"), userId: apiNumber(item, "user_id"), email: apiString(item, "email") || undefined })),
-    }));
-    const managerEmails = new Map((payload.lookups.cjn_manager ?? []).map((manager) => [apiString(manager, "value"), apiString(manager, "email").toLowerCase()]));
-    const mappedUsers = payload.users.map(mapUser);
-    setCompanies(mappedCompanies);
-    setContacts(mappedContacts.map((contact) => ({ ...contact, initiatedByUserEmail: managerEmails.get(contact.initiatedBy ?? "") || undefined })));
-    setTasks(tasksResponse.map(mapTask));
-    setTaskComments([]);
-    setTaskAttachments([]);
-    setLookups(lookupGroups);
-    setUsers(mappedUsers);
-    if (typeof window !== "undefined" && readUrlFilter(window.location.search, "view", "dashboard", ALL_VIEWS) === "users") {
-      const requestedUserId = Number(new URLSearchParams(window.location.search).get("user") ?? 0);
-      if (requestedUserId) setSelectedUser(mappedUsers.find((user) => user.id === requestedUserId) ?? null);
-    }
-    setAudit(payload.audit.map(mapAuditEvent));
-    setArchivedCompanyIds(mappedCompanies.filter((company) => company.isArchived).map((company) => company.id));
-    setArchivedContactIds(mappedContacts.filter((contact) => contact.isArchived).map((contact) => contact.id));
-    setArchivedTaskIds(tasksResponse.map(mapTask).filter((task) => task.isArchived).map((task) => task.id));
-    setIdentity(mapIdentity(payload.identity));
-    setPasswordChangeRequired(false);
-  }
-
-  async function loadAllPages(path: string, sort: string, dir: "asc" | "desc", includeArchived = false): Promise<ApiRecord[]> {
-    const records: ApiRecord[] = [];
-    let page = 1;
-    let pages = 1;
-    do {
-      const separator = path.includes("?") ? "&" : "?";
-      const response = await apiRequest<PagedRecords>(`${path}${separator}page=${page}&sort=${sort}&dir=${dir}${includeArchived ? "&include_archived=1" : ""}`);
-      records.push(...response.data);
-      pages = response.meta.pages;
-      page += 1;
-    } while (page <= pages);
-    return records;
-  }
-
-  async function openTaskDetail(task: Task) {
-    setSelectedTask(task);
-    try {
-      const response = await apiRequest<{ data: ApiRecord }>(`/tasks/${task.id}`);
-      const detail = response.data;
-      const mapped = mapTask(detail);
-      setTasks((current) => current.map((item) => item.id === mapped.id ? mapped : item));
-      setTaskComments((detail.comments as ApiRecord[] | undefined ?? []).map((comment) => ({
-        id: apiString(comment, "id"), taskId: apiString(comment, "task_id"), author: apiString(comment, "author_name"),
-        createdAt: formatKyivDateTime(apiString(comment, "created_at")), text: apiString(comment, "text"),
-        authorUserId: apiNumber(comment, "author_user_id"), isHidden: apiBoolean(comment, "is_hidden"),
-      })));
-      setTaskAttachments((detail.attachments as ApiRecord[] | undefined ?? []).map((attachment) => ({
-        id: Number(attachment.id), taskId: apiString(attachment, "task_id"), name: apiString(attachment, "original_name"),
-        mimeType: apiString(attachment, "mime_type"), sizeBytes: Number(attachment.size_bytes ?? 0),
-        authorUserId: Number(attachment.author_user_id), author: apiString(attachment, "author_name"),
-        createdAt: formatKyivDateTime(apiString(attachment, "created_at")),
-      })));
-    } catch (error) {
-      notify(apiMessage(error), "warning");
-    }
-  }
-
-  async function restoreSession() {
-    try {
-      const response = await apiRequest<{ data: { user: ApiRecord; csrf_token: string } }>("/auth/me");
-      setCsrfToken(response.data.csrf_token);
-      if (apiBoolean(response.data.user, "must_change_password")) {
-        setIdentity(mapIdentity(response.data.user));
-        setPasswordChangeRequired(true);
-        return;
-      }
-      await loadWorkspace();
-    } catch {
-      setIdentity(null);
-    }
-  }
-
-  useEffect(() => {
-    void Promise.resolve().then(restoreSession).finally(() => setSessionLoading(false));
-  }, []);
-
-  const forbiddenAdminView = Boolean(identity && (
-    (view === "lookups" && !hasPermission(identity.role, "lookup.manage"))
-      || (view === "users" && !hasPermission(identity.role, "user.manage"))
-      || (view === "audit" && !hasPermission(identity.role, "audit.view"))
-  ));
 
   function updateReadNotificationIds(update: string[] | ((current: string[]) => string[])) {
     if (!notificationAccountKey) return;
@@ -1349,6 +1168,7 @@ export function CRMApp() {
     });
   }
   const toastTimer = useRef<number | null>(null);
+  const globalSearchRef = useRef<HTMLDivElement>(null);
   const topbarActionsRef = useRef<HTMLDivElement>(null);
   const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
   const notificationButtonRef = useRef<HTMLButtonElement>(null);
@@ -1376,15 +1196,6 @@ export function CRMApp() {
   const managerOptions = lookupValues("cjn-manager");
   const allManagerOptions = lookupValues("cjn-manager", false);
   const userEmailForName = (name: string) => users.find((user) => user.name === name)?.email.toLowerCase();
-  const lookupId = (type: string, value?: string) => Number(lookups.find((group) => group.type === type)?.items.find((item) => item.value === value)?.id || 0) || null;
-  const companyPayload = (company: Company) => ({ name: company.name, type_id: lookupId("company-type", company.kind), country: company.country, city: company.city || null, status_id: lookupId("client-status", company.status), manager_id: lookupId("cjn-manager", company.owner), website: company.website || null, linkedin: company.linkedin || null, logo_data_url: company.logoDataUrl || null, description: company.description || null, updated_at: company.updatedAt });
-  const contactPayload = (contact: Contact) => {
-    const names = contact.firstName ? [contact.firstName, contact.lastName ?? ""] : contact.name.trim().split(/\s+/, 2);
-    const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
-    return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), photo_data_url: contact.photoDataUrl || null, business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, updated_at: contact.updatedAt };
-  };
-  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null, outcome_notes: task.outcomeNotes || null, deadline: task.deadline, reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
-  const reportServerError = (error: unknown) => { notify(apiMessage(error), "warning"); void loadWorkspace().catch(() => undefined); };
 
   const notifications = useMemo<AppNotification[]>(() => {
     const relatedTasks = liveTasks.filter((task) => task.ownerUserEmail === notificationAccountKey || task.createdByUserEmail === notificationAccountKey);
@@ -1427,11 +1238,18 @@ export function CRMApp() {
       const [entityType = "", targetId] = event.entity.split(" · ");
       const target = entityType === "Task" ? "task" : entityType === "Company" ? "company" : entityType === "Contact" ? "contact" : "audit";
       const title = event.action === "CREATE" ? "New record created" : event.action === "STATUS CHANGE" ? "Status updated" : event.action === "REMINDER SENT" ? "Reminder sent" : "Record updated";
+      const safeEntity = currentRole === "Admin"
+        ? event.entity
+        : entityType === "Company"
+          ? `Company · ${liveCompanies.find((company) => company.id === targetId)?.name ?? "record"}`
+          : entityType === "Contact"
+            ? `Contact · ${liveContacts.find((contact) => contact.id === targetId)?.name ?? "record"}`
+            : event.entity;
       return {
         id: `audit:${event.id}`,
         kind: event.action === "STATUS CHANGE" ? "update" : "audit",
         title,
-        detail: `${event.entity} · ${event.detail}`,
+        detail: `${safeEntity} · ${event.detail}`,
         target,
         targetId,
       };
@@ -1444,7 +1262,7 @@ export function CRMApp() {
       target: "activity",
     }] : [];
     return [...overdueItems, ...deadlineItems, ...auditItems, ...summaryItems].slice(0, 10);
-  }, [audit, liveCompanies, liveContacts, liveTasks, notificationAccountKey, preferences]);
+  }, [audit, currentRole, liveCompanies, liveContacts, liveTasks, notificationAccountKey, preferences]);
 
   const unreadNotifications = notifications.filter((item) => !readNotificationIds.includes(item.id));
 
@@ -1474,10 +1292,14 @@ export function CRMApp() {
   }, [globalSearch, notificationsOpen, profileOpen, sidebarOpen]);
 
   useEffect(() => {
-    if (!notificationsOpen && !profileOpen && !(sidebarOpen && isMobileNavigation)) return;
+    if (!notificationsOpen && !profileOpen && !globalSearch && !(sidebarOpen && isMobileNavigation)) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
+      if (globalSearch && !globalSearchRef.current?.contains(target)) {
+        setGlobalSearch("");
+        setGlobalSearchIndex(-1);
+      }
       if ((notificationsOpen || profileOpen) && !topbarActionsRef.current?.contains(target)) {
         setNotificationsOpen(false);
         setProfileOpen(false);
@@ -1488,7 +1310,7 @@ export function CRMApp() {
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [isMobileNavigation, notificationsOpen, profileOpen, sidebarOpen]);
+  }, [globalSearch, isMobileNavigation, notificationsOpen, profileOpen, sidebarOpen]);
 
   useEffect(() => {
     if (sidebarOpen && isMobileNavigation) sidebarCloseButtonRef.current?.focus();
@@ -1518,30 +1340,50 @@ export function CRMApp() {
   const filteredContacts = useMemo(() => {
     const query = contactQuery.trim().toLowerCase();
     return liveContacts.filter((contact) =>
-      !query || [contact.name, contact.email, contact.phone, contact.position, contact.source, contact.initiatedBy ?? "", contact.linkedin ?? "", companyName(liveCompanies, contact.companyId)].some((value) => value.toLowerCase().includes(query)),
+      !query || [contact.name, contact.email, contact.phone, contact.position, contact.status, contact.source, contact.owner, contact.linkedin ?? "", companyName(liveCompanies, contact.companyId)].some((value) => value.toLowerCase().includes(query)),
     );
   }, [liveContacts, contactQuery, liveCompanies]);
 
-  useEffect(() => {
-    const query = globalSearch.trim();
-    if (query.length < 2) {
-      return;
-    }
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      void apiRequest<{ data: { companies: ApiRecord[]; contacts: ApiRecord[]; tasks: ApiRecord[] } }>(`/search?q=${encodeURIComponent(query)}`, { signal: controller.signal })
-        .then(({ data }) => setGlobalResults([
-          ...data.companies.map((item): GlobalSearchResult => ({ type: "Company", id: apiString(item, "id"), label: apiString(item, "name"), meta: [apiString(item, "city"), apiString(item, "country")].filter(Boolean).join(", ") })),
-          ...data.contacts.map((item): GlobalSearchResult => ({ type: "Contact", id: apiString(item, "id"), label: [apiString(item, "first_name"), apiString(item, "last_name")].filter(Boolean).join(" "), meta: apiString(item, "company") })),
-          ...data.tasks.map((item): GlobalSearchResult => ({ type: "Task", id: apiString(item, "id"), label: apiString(item, "name"), meta: apiString(item, "company") })),
-        ]))
-        .catch((error) => { if (!(error instanceof DOMException && error.name === "AbortError")) setGlobalResults([]); });
-    }, 180);
-    return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [globalSearch]);
-  const globalSearchOpen = globalSearch.trim().length >= 2;
+  const globalResults = useMemo(() => {
+    const query = globalSearch.trim().toLowerCase();
+    if (!query) return [];
+    const candidates: Array<{ type: "Company" | "Contact" | "Task"; label: string; meta: string; id: string; searchValues: string[] }> = [
+      ...liveCompanies.map((company) => ({
+        type: "Company" as const,
+        label: company.name,
+        meta: `${company.city}, ${company.country}`,
+        id: company.id,
+        searchValues: [company.name, company.country, company.city, company.description, company.website, company.linkedin ?? ""],
+      })),
+      ...liveContacts.map((contact) => ({
+        type: "Contact" as const,
+        label: contact.name,
+        meta: companyName(liveCompanies, contact.companyId),
+        id: contact.id,
+        searchValues: [contact.name, contact.email, contact.phone, contact.position, contact.source, contact.linkedin ?? "", companyName(liveCompanies, contact.companyId)],
+      })),
+      ...liveTasks.map((task) => ({
+        type: "Task" as const,
+        label: task.title,
+        meta: companyName(liveCompanies, task.companyId),
+        id: task.id,
+        searchValues: [task.title, task.note, task.outcomeNotes ?? "", companyName(liveCompanies, task.companyId), ...taskComments.filter((comment) => comment.taskId === task.id).map((comment) => comment.text)],
+      })),
+    ];
+    return candidates
+      .filter((result) => autocompleteRank(result.label, result.searchValues, query) < 4)
+      .sort((a, b) => autocompleteRank(a.label, a.searchValues, query) - autocompleteRank(b.label, b.searchValues, query) || a.label.localeCompare(b.label))
+      .slice(0, 6)
+      .map(({ type, label, meta, id }) => ({ type, label, meta, id }));
+  }, [globalSearch, liveCompanies, liveContacts, liveTasks, taskComments]);
+  const globalSearchOpen = Boolean(globalSearch.trim());
 
   const activeGlobalSearchIndex = globalResults.length > 0 ? Math.min(Math.max(globalSearchIndex, 0), globalResults.length - 1) : -1;
+
+  useEffect(() => {
+    if (activeGlobalSearchIndex < 0) return;
+    globalSearchRef.current?.querySelector<HTMLElement>(".search-results [role='option'][aria-selected='true']")?.scrollIntoView({ block: "nearest" });
+  }, [activeGlobalSearchIndex]);
 
   function notify(message: string, tone: ToastState["tone"] = "success") {
     setToast({ message, tone });
@@ -1549,39 +1391,27 @@ export function CRMApp() {
     toastTimer.current = window.setTimeout(() => setToast(null), 2800);
   }
 
-  async function authenticate(email: string, password: string) {
-    try {
-      const response = await apiRequest<{ data: { user: ApiRecord; csrf_token: string } }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
-      setCsrfToken(response.data.csrf_token);
-      if (apiBoolean(response.data.user, "must_change_password")) {
-        setIdentity(mapIdentity(response.data.user));
-        setPasswordChangeRequired(true);
-        return null;
-      }
-      await loadWorkspace();
-      notify("Signed in successfully");
-      return null;
-    } catch (error) {
-      return apiMessage(error);
-    }
+  function authenticate(nextIdentity: AuthIdentity) {
+    const account = users.find((user) => user.email.toLowerCase() === nextIdentity.accountEmail.toLowerCase());
+    setIdentity({ ...nextIdentity, photoDataUrl: account?.photoDataUrl });
+    setView("dashboard");
+    setUsers((current) => current.map((user) => user.email.toLowerCase() === nextIdentity.accountEmail.toLowerCase() ? { ...user, lastLogin: currentKyivStamp() } : user));
+    notify(`Signed in as ${nextIdentity.role}`);
   }
 
-  async function registerAccount(name: string, email: string, password: string) {
-    try {
-      await apiRequest("/auth/register", { method: "POST", body: JSON.stringify({ full_name: name, email, password, password_confirmation: password }) });
-      return null;
-    } catch (error) {
-      return apiMessage(error);
+  function registerAccount(name: string, email: string, password: string) {
+    const normalizedEmail = email.toLowerCase();
+    if (users.some((user) => user.email.toLowerCase() === normalizedEmail)) {
+      return "Registration could not be completed. Contact an administrator if you already requested access.";
     }
-  }
-
-  async function recoverAccount(email: string) {
-    try {
-      await apiRequest("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });
-      return null;
-    } catch (error) {
-      return apiMessage(error);
+    if (users.some((user) => user.name.toLowerCase() === name.toLowerCase())) {
+      return "This display name is already assigned. Use your full work name or contact an administrator.";
     }
+    const user: CRMUser = { name, email: normalizedEmail, role: "Read-only", state: "Pending", lastLogin: "Awaiting approval" };
+    setUsers((current) => [user, ...current]);
+    setCredentials((current) => ({ ...current, [normalizedEmail]: password }));
+    addAudit("USER REGISTERED", `User · ${normalizedEmail}`, "Pending administrator approval · Read-only");
+    return null;
   }
 
   function requirePermission(permission: Permission, action: string) {
@@ -1591,9 +1421,6 @@ export function CRMApp() {
   }
 
   function signOut() {
-    void apiRequest("/auth/logout", { method: "POST" }).catch(() => undefined);
-    setCsrfToken("");
-    setPasswordChangeRequired(false);
     setIdentity(null);
     setProfileOpen(false);
     setNotificationsOpen(false);
@@ -1604,15 +1431,25 @@ export function CRMApp() {
     setModal(null);
   }
 
+  function addAudit(action: string, entity: string, detail: string) {
+    setAudit((current) => [
+      {
+        id: `E-${Math.max(1050, ...current.map((event) => Number(event.id.replace(/\D/g, "")) || 0)) + 1}`,
+        at: currentKyivStamp(),
+        actor: identity?.name ?? "Self-service registration",
+        action,
+        entity,
+        detail,
+      },
+      ...current,
+    ]);
+  }
+
   function navigate(nextView: View) {
     if (nextView === "lookups" && !requirePermission("lookup.manage", "manage Lookups")) return;
     if (nextView === "users" && !requirePermission("user.manage", "manage users and roles")) return;
     if (nextView === "audit" && !requirePermission("audit.view", "open the Audit Log")) return;
-    if (nextView !== view) {
-      const nextUrl = urlWithFilter(window.location.href, "view", nextView, "dashboard");
-      window.history.pushState(window.history.state, "", nextUrl);
-      setView(nextView);
-    }
+    setView(nextView);
     setSidebarOpen(false);
     setNotificationsOpen(false);
     setProfileOpen(false);
@@ -1665,9 +1502,9 @@ export function CRMApp() {
     else if (hasPermission(currentRole, "audit.view")) navigate("audit");
   }
 
-  async function addCompany(event: FormEvent<HTMLFormElement>, logoDataUrl = ""): Promise<boolean> {
+  function addCompany(event: FormEvent<HTMLFormElement>, logoDataUrl = "") {
     event.preventDefault();
-    if (!requirePermission("company.create", "create companies")) return false;
+    if (!requirePermission("company.create", "create companies")) return;
     const form = event.currentTarget;
     const data = new FormData(event.currentTarget);
     const name = String(data.get("name") ?? "").trim();
@@ -1679,15 +1516,18 @@ export function CRMApp() {
     const linkedin = normalizeUrl(linkedinInput);
     const owner = String(data.get("owner") ?? "Andrey Zherebetsky");
     const status = String(data.get("status") ?? RELATIONSHIP_STATUSES[0]);
-    if (name.length < 2) return setFieldError(form, "name", "Enter at least 2 characters.");
-    if (!country) return setFieldError(form, "country", "Country is required.");
-    if (websiteInput && !website) return setFieldError(form, "website", "Enter a valid website address.");
-    if (linkedinInput && !linkedin) return setFieldError(form, "linkedin", "Enter a valid LinkedIn URL.");
-    if (!companyTypeOptions.includes(String(data.get("kind") ?? ""))) return setFieldError(form, "kind", "Select a valid company type.");
-    if (!activeClientStatuses.includes(status)) return setFieldError(form, "status", "Select a valid client status.");
-    if (!managerOptions.includes(owner)) return setFieldError(form, "owner", "Select an active CJN Manager.");
+    if (name.length < 2) return void setFieldError(form, "name", "Enter at least 2 characters.");
+    if (companies.some((company) => company.name.toLowerCase() === name.toLowerCase())) return void setFieldError(form, "name", "A company with this name already exists.");
+    if (!country) return void setFieldError(form, "country", "Country is required.");
+    if (websiteInput && !website) return void setFieldError(form, "website", "Enter a valid website address.");
+    if (linkedinInput && !linkedin) return void setFieldError(form, "linkedin", "Enter a valid LinkedIn URL.");
+    if (!companyTypeOptions.includes(String(data.get("kind") ?? ""))) return void setFieldError(form, "kind", "Select a valid company type.");
+    if (!activeClientStatuses.includes(status)) return void setFieldError(form, "status", "Select a valid client status.");
+    if (!managerOptions.includes(owner)) return void setFieldError(form, "owner", "Select an active CJN Manager.");
+    const nextNumber = Math.max(0, ...companies.map((company) => Number(company.id.replace(/\D/g, "")) || 0)) + 1;
+    const id = `C-${String(nextNumber).padStart(4, "0")}`;
     const company: Company = {
-      id: "",
+      id,
       name,
       kind: String(data.get("kind") ?? "Other"),
       country,
@@ -1704,33 +1544,19 @@ export function CRMApp() {
       logoDataUrl: logoDataUrl || undefined,
       description: String(data.get("description") ?? "").trim(),
     };
-    try {
-      let payload: Record<string, unknown> = companyPayload(company);
-      let response: { data: ApiRecord };
-      try {
-        response = await apiRequest("/companies", { method: "POST", body: JSON.stringify(payload) });
-      } catch (error) {
-        if (!(error instanceof ApiError) || error.code !== "possible_duplicate" || !window.confirm(`${error.message}\n\nSave this company anyway?`)) throw error;
-        payload = { ...payload, allow_duplicate: true };
-        response = await apiRequest("/companies", { method: "POST", body: JSON.stringify(payload) });
-      }
-      const mapped = mapCompany(response.data);
-      setCompanies((current) => [mapped, ...current]);
-      setModal(null);
-      notify("Company saved");
-      return true;
-    } catch (error) {
-      notify(`${apiMessage(error)} Use Try again to resubmit without losing the form.`, "warning");
-      return false;
-    }
+    setCompanies((current) => [company, ...current]);
+    addAudit("CREATE", `Company · ${id}`, name);
+    setModal(null);
+    notify("Company added to this session");
   }
 
-  async function createContact(draft: ContactDraft): Promise<ContactCreationResult> {
+  function createContact(draft: ContactDraft): ContactCreationResult {
     if (!requirePermission("contact.create", "create contacts")) return { error: "Your role cannot create contacts." };
     const firstName = draft.firstName.trim();
     const lastName = draft.lastName?.trim() ?? "";
     const name = [firstName, lastName].filter(Boolean).join(" ");
     const companyId = draft.companyId;
+    const status = draft.status ?? "Active";
     const email = draft.email?.trim().toLowerCase() ?? "";
     const phone = draft.phone?.trim() ?? "";
     const linkedinInput = draft.linkedin?.trim() ?? "";
@@ -1745,18 +1571,23 @@ export function CRMApp() {
     const initiatedBy = initiatorUser?.name ?? (manualInitiator || (usesSignedInInitiator ? identity?.name ?? "" : ""));
     const initiatedByUserEmail = initiatorUser?.email.toLowerCase() ?? (usesSignedInInitiator ? identity?.accountEmail.toLowerCase() : undefined);
     if (firstName.length < 2) return { field: "firstName", error: "Enter at least 2 characters for the first name." };
-    if (!liveCompanies.some((company) => company.id === companyId)) return { field: "companyId", error: "Select an existing company." };
+    if (!liveCompanies.some((company) => company.id === companyId)) return { field: "companyName", error: "Select an existing company." };
+    if (!CONTACT_STATUSES.includes(status)) return { field: "status", error: "Select a valid contact status." };
     if (source && !contactSourceOptions.includes(source)) return { field: "source", error: "Select a valid contact source." };
     if (requestedInitiatorEmail && manualInitiator) return { field: "initiatedBy", error: "Choose a CRM user or enter a manual name, not both." };
     if (requestedInitiatorEmail && !initiatorUser) return { field: "initiatedByUserEmail", error: "Select an active CRM user or enter the initiator manually." };
     if (initiatedBy.length < 2) return { field: "initiatedBy", error: "Enter at least 2 characters for the initiator name." };
     if (initiatedBy.length > 120) return { field: "initiatedBy", error: "Keep the initiator name within 120 characters." };
     if (email && !EMAIL_PATTERN.test(email)) return { field: "email", error: "Enter a valid email address." };
+    if (email && contacts.some((item) => item.email.toLowerCase() === email)) return { field: "email", error: "A contact with this email already exists." };
     if (linkedinInput && !linkedin) return { field: "linkedin", error: "Enter a valid LinkedIn URL." };
     if (phone && phone !== "—" && !/^[+()\d\s.-]{7,24}$/.test(phone)) return { field: "phone", error: "Enter a valid phone number." };
+    const nextNumber = Math.max(0, ...contacts.map((contact) => Number(contact.id.replace(/\D/g, "")) || 0)) + 1;
+    const id = `K${String(nextNumber).padStart(2, "0")}`;
     const contact: Contact = {
-      id: "",
+      id,
       companyId,
+      status,
       name,
       position: draft.position?.trim() ?? "",
       email,
@@ -1770,38 +1601,25 @@ export function CRMApp() {
       ownerUserEmail: identity?.accountEmail.toLowerCase(),
       initiatedByUserEmail,
       photoDataUrl: draft.photoDataUrl?.startsWith("data:image/") ? draft.photoDataUrl : undefined,
-      businessCardDataUrl: draft.businessCardDataUrl?.startsWith("data:image/") ? draft.businessCardDataUrl : undefined,
-      businessCardFileName: draft.businessCardFileName,
     };
     if (!["Exhibition / Conference", "Other"].includes(contact.source)) contact.sourceDetail = "";
     if (contact.source !== "Referral (word of mouth)") contact.referredBy = "";
-    try {
-      let payload: Record<string, unknown> = contactPayload(contact);
-      let response: { data: ApiRecord };
-      try {
-        response = await apiRequest("/contacts", { method: "POST", body: JSON.stringify(payload) });
-      } catch (error) {
-        if (!(error instanceof ApiError) || error.code !== "possible_duplicate" || !window.confirm(`${error.message}\n\nSave this contact anyway?`)) throw error;
-        payload = { ...payload, allow_duplicate: true };
-        response = await apiRequest("/contacts", { method: "POST", body: JSON.stringify(payload) });
-      }
-      const mapped = mapContact(response.data);
-      setContacts((current) => [mapped, ...current]);
-      setCompanies((current) => current.map((company) => company.id === mapped.companyId ? { ...company, contacts: company.contacts + 1 } : company));
-      notify("Contact saved");
-      return { contact: mapped };
-    } catch (error) {
-      return { error: apiMessage(error) };
-    }
+    setContacts((current) => [contact, ...current]);
+    setCompanies((current) => current.map((company) => company.id === contact.companyId ? { ...company, contacts: company.contacts + 1 } : company));
+    addAudit("CREATE", `Contact · ${id}`, `${contact.name} · ${companyName(companies, contact.companyId)} · Initiated by: ${contact.initiatedBy}`);
+    notify("Contact created");
+    return { contact };
   }
 
-  async function addContact(event: FormEvent<HTMLFormElement>, photoDataUrl = ""): Promise<boolean> {
+  function addContact(event: FormEvent<HTMLFormElement>, photoDataUrl = "") {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
     const initiatorChoice = String(data.get("initiatedByUserEmail") ?? "").trim().toLowerCase();
-    const result = await createContact({
-      companyId: String(data.get("companyId") ?? liveCompanies[0]?.id ?? ""),
+    const result = createContact({
+      companyId: String(data.get("companyId") ?? ""),
+      companyName: String(data.get("companyName") ?? ""),
+      status: String(data.get("status") ?? "Active") as ContactStatus,
       firstName: String(data.get("firstName") ?? ""),
       lastName: String(data.get("lastName") ?? ""),
       position: String(data.get("position") ?? ""),
@@ -1814,16 +1632,13 @@ export function CRMApp() {
       initiatedBy: initiatorChoice === "manual" ? String(data.get("initiatedBy") ?? "") : undefined,
       initiatedByUserEmail: initiatorChoice === "manual" ? undefined : initiatorChoice,
       photoDataUrl,
-      businessCardDataUrl: String(data.get("businessCardDataUrl") ?? ""),
-      businessCardFileName: String(data.get("businessCardFileName") ?? ""),
     });
     if (result.error) {
       if (!result.field || !setFieldError(form, result.field, result.error)) notify(result.error, "warning");
-      return false;
+      return;
     }
     setModal(null);
     setModalCompanyId(undefined);
-    return true;
   }
 
   function recalculateLastContact(companyId: string, nextTasks: Task[], nextArchivedTaskIds = archivedTaskIds) {
@@ -1836,13 +1651,15 @@ export function CRMApp() {
     setCompanies((current) => current.map((company) => company.id === companyId ? { ...company, lastContact } : company));
   }
 
-  async function addTask(event: FormEvent<HTMLFormElement>): Promise<boolean> {
+  function addTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!requirePermission("task.create", "create tasks")) return false;
+    if (!requirePermission("task.create", "create tasks")) return;
     const form = event.currentTarget;
     const data = new FormData(event.currentTarget);
+    const nextNumber = Math.max(0, ...tasks.map((task) => Number(task.id.replace(/\D/g, "")) || 0)) + 1;
+    const id = `T-${String(nextNumber).padStart(4, "0")}`;
     const task: Task = {
-      id: "",
+      id,
       companyId: String(data.get("companyId") ?? companies[0]?.id),
       title: String(data.get("title") ?? "").trim(),
       contactDate: String(data.get("contactDate") ?? todayKyiv()),
@@ -1859,33 +1676,27 @@ export function CRMApp() {
       outcomeNotes: String(data.get("outcomeNotes") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
     };
-    if (task.title.length < 3) return setFieldError(form, "title", "Enter at least 3 characters.");
-    if (!companies.some((company) => company.id === task.companyId)) return setFieldError(form, "companyId", "Select an existing company.");
-    if (!managerOptions.includes(task.owner)) return setFieldError(form, "owner", "Select an active CJN Manager.");
-    if (!taskStatusOptions.includes(task.status)) return setFieldError(form, "status", "Select a valid task status.");
-    if (task.outcomeStatus && !outcomeStatusOptions.includes(task.outcomeStatus)) return setFieldError(form, "outcomeStatus", "Select a valid outcome status.");
-    if ((task.reminderLeads ?? []).some((lead) => !reminderLeadOptions.includes(lead))) return setFieldError(form, "reminderLeads", "Select valid reminder notice times.");
-    if (!task.contactDate) return setFieldError(form, "contactDate", "Choose the contact date.");
-    if (task.contactPersonId && !contacts.some((contact) => contact.id === task.contactPersonId && contact.companyId === task.companyId)) return setFieldError(form, "contactPersonId", "Select a contact from this company.");
-    try {
-      const response = await apiRequest<{ data: ApiRecord }>("/tasks", { method: "POST", body: JSON.stringify(taskPayload(task)) });
-      const mapped = mapTask(response.data);
-      const nextTasks = [mapped, ...tasks];
-      setTasks(nextTasks);
-      recalculateLastContact(mapped.companyId, nextTasks);
-      setModal(null);
-      const past = Boolean(mapped.deadline) && mapped.deadline.replace("T", " ") <= currentKyivStamp();
-      notify(past ? "Task saved. Its past deadline will not generate reminders." : "Task saved. Calendar download is available.", past ? "warning" : "success");
-      return true;
-    } catch (error) {
-      notify(`${apiMessage(error)} Use Try again to resubmit without losing the form.`, "warning");
-      return false;
-    }
+    if (task.title.length < 3) return void setFieldError(form, "title", "Enter at least 3 characters.");
+    if (!companies.some((company) => company.id === task.companyId)) return void setFieldError(form, "companyId", "Select an existing company.");
+    if (!managerOptions.includes(task.owner)) return void setFieldError(form, "owner", "Select an active CJN Manager.");
+    if (!["Normal", "Medium", "High"].includes(task.priority)) return void setFieldError(form, "priority", "Select a valid priority.");
+    if (!taskStatusOptions.includes(task.status)) return void setFieldError(form, "status", "Select a valid task status.");
+    if (task.outcomeStatus && !outcomeStatusOptions.includes(task.outcomeStatus)) return void setFieldError(form, "outcomeStatus", "Select a valid outcome status.");
+    if ((task.reminderLeads ?? []).some((lead) => !reminderLeadOptions.includes(lead))) return void setFieldError(form, "reminderLeads", "Select valid reminder notice times.");
+    if (!task.contactDate) return void setFieldError(form, "contactDate", "Choose the contact date.");
+    if (task.contactPersonId && !contacts.some((contact) => contact.id === task.contactPersonId && contact.companyId === task.companyId && contact.status === "Active")) return void setFieldError(form, "contactPersonId", "Select an active contact from this company.");
+    if (!task.deadline) return void setFieldError(form, "deadline", "Choose a deadline.");
+    const nextTasks = [task, ...tasks];
+    setTasks(nextTasks);
+    recalculateLastContact(task.companyId, nextTasks);
+    addAudit("CREATE", `Task · ${id}`, task.title);
+    setModal(null);
+    notify(task.deadline.replace("T", " ") <= currentKyivStamp() ? "Task created. Its past deadline will not generate reminders." : "Task created. Calendar download is available.", task.deadline.replace("T", " ") <= currentKyivStamp() ? "warning" : "success");
   }
 
-  async function inviteUser(event: FormEvent<HTMLFormElement>): Promise<boolean> {
+  function inviteUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!requirePermission("user.manage", "manage users")) return false;
+    if (!requirePermission("user.manage", "manage users")) return;
     const form = event.currentTarget;
     const data = new FormData(event.currentTarget);
     const user: CRMUser = {
@@ -1896,26 +1707,23 @@ export function CRMApp() {
       lastLogin: "Not signed in yet",
     };
     const temporaryPassword = String(data.get("temporaryPassword") ?? "");
-    const delivery = String(data.get("delivery") ?? "temporary_password");
-    if (user.name.length < 2) return setFieldError(form, "name", "Enter at least 2 characters.");
-    if (!EMAIL_PATTERN.test(user.email)) return setFieldError(form, "email", "Enter a valid work email address.");
-    if (users.some((item) => item.email.toLowerCase() === user.email)) return setFieldError(form, "email", "A user with this email already exists.");
-    if (users.some((item) => item.name.toLowerCase() === user.name.toLowerCase())) return setFieldError(form, "name", "A user with this name already exists.");
-    if (!ROLE_ORDER.includes(user.role)) return setFieldError(form, "role", "Select a valid role.");
-    if (delivery === "temporary_password" && !isStrongPassword(temporaryPassword)) return setFieldError(form, "temporaryPassword", "Use at least 8 characters with letters and numbers.");
-    try {
-      const response = await apiRequest<{ data: ApiRecord; warnings?: { mail?: string } }>("/users", { method: "POST", body: JSON.stringify({ full_name: user.name, email: user.email, role: roleToApi(user.role), is_active: true, delivery, temporary_password: delivery === "temporary_password" ? temporaryPassword : undefined }) });
-      setUsers((current) => [mapUser(response.data), ...current]);
-      setModal(null);
-      notify(response.warnings?.mail ?? (delivery === "invite" ? "User created and invitation sent" : "User created with a temporary password"), response.warnings?.mail ? "warning" : "success");
-      return true;
-    } catch (error) {
-      notify(`${apiMessage(error)} Use Try again to resubmit without losing the form.`, "warning");
-      return false;
-    }
+    if (user.name.length < 2) return void setFieldError(form, "name", "Enter at least 2 characters.");
+    if (!EMAIL_PATTERN.test(user.email)) return void setFieldError(form, "email", "Enter a valid work email address.");
+    if (users.some((item) => item.email.toLowerCase() === user.email)) return void setFieldError(form, "email", "A user with this email already exists.");
+    if (users.some((item) => item.name.toLowerCase() === user.name.toLowerCase())) return void setFieldError(form, "name", "A user with this name already exists.");
+    if (!ROLE_ORDER.includes(user.role)) return void setFieldError(form, "role", "Select a valid role.");
+    if (!isStrongPassword(temporaryPassword)) return void setFieldError(form, "temporaryPassword", "Use at least 8 characters with letters and numbers.");
+    setUsers((current) => [user, ...current]);
+    setCompanies((current) => current.map((company) => company.owner === user.name && !company.ownerUserEmail ? { ...company, ownerUserEmail: user.email } : company));
+    setContacts((current) => current.map((contact) => contact.owner === user.name && !contact.ownerUserEmail ? { ...contact, ownerUserEmail: user.email } : contact));
+    setTasks((current) => current.map((task) => task.owner === user.name && !task.ownerUserEmail ? { ...task, ownerUserEmail: user.email } : task));
+    setCredentials((current) => ({ ...current, [user.email]: temporaryPassword }));
+    addAudit("CREATE", `User · ${user.email}`, `${user.name} · ${user.role}`);
+    setModal(null);
+    notify("User created with a temporary password");
   }
 
-  async function updateCompany(updated: Company): Promise<boolean> {
+  function updateCompany(updated: Company) {
     if (!requirePermission("company.edit", "edit companies")) return false;
     const existing = companies.find((company) => company.id === updated.id);
     if (existing && existing.status !== updated.status && !requirePermission("pipeline.move", "change relationship status")) return false;
@@ -1936,23 +1744,34 @@ export function CRMApp() {
       return false;
     }
     const normalized = { ...updated, ownerUserEmail: existing?.owner === updated.owner ? existing.ownerUserEmail : userEmailForName(updated.owner) };
-    try {
-      const payload = companyPayload(normalized);
-      let response: { data: ApiRecord };
-      try { response = await apiRequest(`/companies/${updated.id}`, { method: "PUT", body: JSON.stringify(payload) }); }
-      catch (error) {
-        if (!(error instanceof ApiError) || error.code !== "possible_duplicate" || !window.confirm(`${error.message}\n\nSave these changes anyway?`)) throw error;
-        response = await apiRequest(`/companies/${updated.id}`, { method: "PUT", body: JSON.stringify({ ...payload, allow_duplicate: true }) });
-      }
-      const mapped = mapCompany(response.data); setCompanies((current) => current.map((item) => item.id === mapped.id ? mapped : item)); setSelectedCompany(mapped); notify("Company profile updated"); return true;
-    } catch (error) { notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false; }
+    setCompanies((current) => current.map((company) => company.id === updated.id ? normalized : company));
+    setSelectedCompany(normalized);
+    addAudit("FIELD CHANGE", `Company · ${updated.id}`, "Company profile updated");
+    notify("Company profile updated");
+    return true;
   }
 
-  async function updateContact(updated: Contact): Promise<boolean> {
+  function updateContact(updated: Contact) {
     if (!requirePermission("contact.edit", "edit contacts")) return false;
     const existing = contacts.find((contact) => contact.id === updated.id);
+    if (!existing) {
+      notify("This contact no longer exists.", "warning");
+      return false;
+    }
     if (updated.name.trim().length < 2 || (updated.email && !EMAIL_PATTERN.test(updated.email))) {
       notify("Enter a valid contact name and email.", "warning");
+      return false;
+    }
+    if (!liveCompanies.some((company) => company.id === updated.companyId)) {
+      notify("Select an existing company.", "warning");
+      return false;
+    }
+    if (!CONTACT_STATUSES.includes(updated.status)) {
+      notify("Select a valid contact status.", "warning");
+      return false;
+    }
+    if (updated.email && contacts.some((contact) => contact.id !== updated.id && contact.email.toLowerCase() === updated.email.toLowerCase())) {
+      notify("A contact with this email already exists.", "warning");
       return false;
     }
     if (updated.source && !lookupValues("contact-source", false).includes(updated.source)) {
@@ -1963,25 +1782,36 @@ export function CRMApp() {
       notify("Select an active CJN Manager.", "warning");
       return false;
     }
-    const normalized = { ...updated, ownerUserEmail: existing?.owner === updated.owner ? existing.ownerUserEmail : userEmailForName(updated.owner) };
-    try {
-      const payload = contactPayload(normalized);
-      let response: { data: ApiRecord };
-      try { response = await apiRequest(`/contacts/${updated.id}`, { method: "PUT", body: JSON.stringify(payload) }); }
-      catch (error) {
-        if (!(error instanceof ApiError) || error.code !== "possible_duplicate" || !window.confirm(`${error.message}\n\nSave these changes anyway?`)) throw error;
-        response = await apiRequest(`/contacts/${updated.id}`, { method: "PUT", body: JSON.stringify({ ...payload, allow_duplicate: true }) });
+    const normalized = { ...updated, ownerUserEmail: existing.owner === updated.owner ? existing.ownerUserEmail : userEmailForName(updated.owner) };
+    const companyChanged = existing.companyId !== normalized.companyId;
+    const detachedTaskCount = companyChanged
+      ? tasks.filter((task) => task.contactPersonId === normalized.id && task.companyId !== normalized.companyId).length
+      : 0;
+    setContacts((current) => current.map((contact) => contact.id === updated.id ? normalized : contact));
+    if (companyChanged) {
+      setCompanies((current) => current.map((company) => {
+        if (company.id === existing.companyId) return { ...company, contacts: Math.max(0, company.contacts - 1) };
+        if (company.id === normalized.companyId) return { ...company, contacts: company.contacts + 1 };
+        return company;
+      }));
+      if (detachedTaskCount > 0) {
+        setTasks((current) => current.map((task) => task.contactPersonId === normalized.id && task.companyId !== normalized.companyId ? { ...task, contactPersonId: undefined } : task));
       }
-      const mapped = mapContact(response.data); setContacts((current) => current.map((item) => item.id === mapped.id ? mapped : item)); setSelectedContact(mapped); notify("Contact updated"); return true;
-    } catch (error) { notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false; }
+    }
+    setSelectedContact(normalized);
+    const companyChange = companyChanged ? `Company: ${companyName(companies, existing.companyId)} → ${companyName(companies, normalized.companyId)}` : "Contact profile updated";
+    const taskChange = detachedTaskCount > 0 ? ` · ${detachedTaskCount} task contact link${detachedTaskCount === 1 ? "" : "s"} cleared` : "";
+    addAudit("FIELD CHANGE", `Contact · ${updated.id}`, `${companyChange}${taskChange}`);
+    notify(companyChanged ? "Contact moved to the selected company" : "Contact updated");
+    return true;
   }
 
-  async function updateTask(updated: Task): Promise<boolean> {
+  function updateTask(updated: Task) {
     if (!requirePermission("task.edit", "edit tasks")) return false;
     const existing = tasks.find((task) => task.id === updated.id);
     if (!existing) return false;
-    if (updated.title.trim().length < 3 || !updated.contactDate) {
-      notify("Complete the task title and contact date.", "warning");
+    if (updated.title.trim().length < 3 || !updated.contactDate || !updated.deadline) {
+      notify("Complete the task title, contact date, and deadline.", "warning");
       return false;
     }
     if (!taskStatusOptions.includes(updated.status)) {
@@ -2000,86 +1830,51 @@ export function CRMApp() {
       notify("Select valid reminder notice times.", "warning");
       return false;
     }
-    if (updated.contactPersonId && !contacts.some((contact) => contact.id === updated.contactPersonId && contact.companyId === updated.companyId)) {
-      notify("The contact person must belong to the selected company.", "warning");
+    if (updated.contactPersonId && !contacts.some((contact) => contact.id === updated.contactPersonId && contact.companyId === updated.companyId && (contact.status === "Active" || contact.id === existing.contactPersonId))) {
+      notify("Select an active contact from the selected company.", "warning");
       return false;
     }
     const normalized = { ...updated, ownerUserEmail: existing.owner === updated.owner ? existing.ownerUserEmail : userEmailForName(updated.owner) };
-    try {
-      const { data: saved } = await apiRequest<{ data: ApiRecord }>(`/tasks/${updated.id}`, { method: "PUT", body: JSON.stringify(taskPayload(normalized)) });
-      const mapped = mapTask(saved); const nextTasks = tasks.map((item) => item.id === mapped.id ? mapped : item); setTasks(nextTasks); setSelectedTask(mapped); recalculateLastContact(existing.companyId, nextTasks); if (mapped.companyId !== existing.companyId) recalculateLastContact(mapped.companyId, nextTasks); notify("Task updated"); return true;
-    } catch (error) { notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false; }
+    const nextTasks = tasks.map((task) => task.id === updated.id ? normalized : task);
+    setTasks(nextTasks);
+    setSelectedTask(normalized);
+    recalculateLastContact(existing.companyId, nextTasks);
+    if (updated.companyId !== existing.companyId) recalculateLastContact(updated.companyId, nextTasks);
+    const fields: Array<[string, string, string]> = [
+      ["Task title", existing.title, updated.title],
+      ["Status", existing.status, updated.status],
+      ["Contact Date", existing.contactDate ?? "—", updated.contactDate ?? "—"],
+      ["Deadline", existing.deadline, updated.deadline],
+      ["CJN Manager", existing.owner, updated.owner],
+      ["Contact Person", existing.contactPersonId ?? "—", updated.contactPersonId ?? "—"],
+      ["Description", existing.note, updated.note],
+      ["Outcome status", existing.outcomeStatus ?? "—", updated.outcomeStatus ?? "—"],
+      ["Outcome notes", existing.outcomeNotes ?? "—", updated.outcomeNotes ?? "—"],
+    ];
+    const changes = fields.filter(([, from, to]) => from !== to);
+    changes.forEach(([field, from, to]) => addAudit("FIELD CHANGE", `Task · ${updated.id}`, `${field}: ${from || "—"} → ${to || "—"}`));
+    notify(changes.length ? "Task updated" : "No task changes to save");
+    return true;
   }
 
-  async function addTaskComment(taskId: string, text: string): Promise<boolean> {
+  function addTaskComment(taskId: string, text: string) {
     if (!requirePermission("task.comment", "comment on tasks")) return false;
     const body = text.trim();
     if (!body || body.length > 2000) {
       notify("Write a comment between 1 and 2,000 characters.", "warning");
       return false;
     }
-    try {
-      const { data: saved } = await apiRequest<{ data: ApiRecord }>(`/tasks/${taskId}/comments`, { method: "POST", body: JSON.stringify({ text: body }) });
-      const mapped: TaskComment = { id: apiString(saved, "id"), taskId: apiString(saved, "task_id"), author: apiString(saved, "author_name"), authorUserId: apiNumber(saved, "author_user_id"), createdAt: formatKyivDateTime(apiString(saved, "created_at")), text: apiString(saved, "text"), isHidden: apiBoolean(saved, "is_hidden") };
-      setTaskComments((current) => [...current, mapped]);
-      setTasks((current) => current.map((task) => task.id === taskId ? { ...task, commentCount: (task.commentCount ?? current.filter((item) => item.id === taskId).length) + 1 } : task));
-      notify("Comment posted");
-      return true;
-    } catch (error) {
-      notify(`${apiMessage(error)} The comment text is preserved; try again.`, "warning");
-      return false;
-    }
-  }
-
-  async function setCommentHidden(taskId: string, commentId: string, hidden: boolean) {
-    try {
-      await apiRequest(`/tasks/${taskId}/comments/${commentId}`, { method: "PATCH", body: JSON.stringify({ hidden }) });
-      setTaskComments((current) => current.map((comment) => comment.id === commentId ? { ...comment, isHidden: hidden } : comment));
-      notify(hidden ? "Comment hidden" : "Comment restored");
-    } catch (error) { notify(apiMessage(error), "warning"); }
-  }
-
-  async function uploadTaskAttachment(taskId: string, file: File): Promise<boolean> {
-    const body = new FormData();
-    body.set("file", file);
-    try {
-      const { data } = await apiRequest<{ data: ApiRecord }>(`/tasks/${taskId}/attachments`, { method: "POST", body });
-      setTaskAttachments((current) => [...current, { id: Number(data.id), taskId: apiString(data, "task_id"), name: apiString(data, "original_name"), mimeType: apiString(data, "mime_type"), sizeBytes: Number(data.size_bytes ?? 0), authorUserId: Number(data.author_user_id), author: apiString(data, "author_name"), createdAt: formatKyivDateTime(apiString(data, "created_at")) }]);
-      notify("Attachment uploaded");
-      return true;
-    } catch (error) { notify(apiMessage(error), "warning"); return false; }
-  }
-
-  async function downloadTaskAttachment(attachment: TaskAttachment) {
-    try {
-      const { blob } = await apiDownload(`/tasks/${attachment.taskId}/attachments/${attachment.id}`);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a"); link.href = url; link.download = attachment.name; link.click(); URL.revokeObjectURL(url);
-    } catch (error) { notify(apiMessage(error), "warning"); }
-  }
-
-  async function downloadTaskIcs(task: Task) {
-    if (task.id.startsWith("tmp-")) return;
-    try {
-      const { blob } = await apiDownload(`/tasks/${task.id}/reminder.ics`);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `task-${task.id}.ics`;
-      link.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      notify(apiMessage(error), "warning");
-    }
-  }
-
-  async function deleteTaskAttachment(attachment: TaskAttachment) {
-    if (!window.confirm(`Delete ${attachment.name}?`)) return;
-    try {
-      await apiRequest(`/tasks/${attachment.taskId}/attachments/${attachment.id}`, { method: "DELETE" });
-      setTaskAttachments((current) => current.filter((item) => item.id !== attachment.id));
-      notify("Attachment deleted");
-    } catch (error) { notify(apiMessage(error), "warning"); }
+    const comment: TaskComment = {
+      id: `CM-${String(taskComments.length + 1).padStart(3, "0")}`,
+      taskId,
+      author: identity?.name ?? "CRM user",
+      createdAt: currentKyivStamp(),
+      text: body,
+    };
+    setTaskComments((current) => [...current, comment]);
+    addAudit("COMMENT", `Task · ${taskId}`, body);
+    notify("Comment posted");
+    return true;
   }
 
   function archiveCompany(company: Company) {
@@ -2090,16 +1885,16 @@ export function CRMApp() {
     }
     setArchivedCompanyIds((current) => [...current, company.id]);
     setSelectedCompany(null);
+    addAudit("ARCHIVE", `Company · ${company.id}`, company.name);
     notify("Company archived");
-    void apiRequest(`/companies/${company.id}/archive`, { method: "POST", body: JSON.stringify({ archived: true, updated_at: company.updatedAt }) }).then(() => loadWorkspace()).catch(reportServerError);
   }
 
   function archiveContact(contact: Contact) {
     if (!requirePermission("record.archive", "archive records")) return;
     setArchivedContactIds((current) => [...current, contact.id]);
     setSelectedContact(null);
+    addAudit("ARCHIVE", `Contact · ${contact.id}`, contact.name);
     notify("Contact archived");
-    void apiRequest(`/contacts/${contact.id}/archive`, { method: "POST", body: JSON.stringify({ archived: true, updated_at: contact.updatedAt }) }).then(() => loadWorkspace()).catch(reportServerError);
   }
 
   function archiveTask(task: Task) {
@@ -2108,8 +1903,8 @@ export function CRMApp() {
     setArchivedTaskIds(nextArchived);
     setSelectedTask(null);
     recalculateLastContact(task.companyId, tasks, nextArchived);
+    addAudit("ARCHIVE", `Task · ${task.id}`, task.title);
     notify("Task archived");
-    void apiRequest(`/tasks/${task.id}/archive`, { method: "POST", body: JSON.stringify({ archived: true, updated_at: task.updatedAt }) }).then(() => loadWorkspace()).catch(reportServerError);
   }
 
   function restoreRecord(entity: "Company" | "Contact" | "Task", id: string) {
@@ -2122,14 +1917,16 @@ export function CRMApp() {
       const task = tasks.find((item) => item.id === id);
       if (task) recalculateLastContact(task.companyId, tasks, nextArchived);
     }
+    addAudit("RESTORE", `${entity} · ${id}`, "Record restored from archive");
     notify(`${entity} restored`);
-    const record = entity === "Company" ? companies.find((item) => item.id === id) : entity === "Contact" ? contacts.find((item) => item.id === id) : tasks.find((item) => item.id === id);
-    const resource = entity === "Company" ? "companies" : entity === "Contact" ? "contacts" : "tasks";
-    void apiRequest(`/${resource}/${id}/archive`, { method: "POST", body: JSON.stringify({ archived: false, updated_at: record?.updatedAt }) }).then(() => loadWorkspace()).catch(reportServerError);
   }
 
   function addLookupValue(type: string, value: string) {
     if (!requirePermission("lookup.manage", "manage Lookups")) return false;
+    if (type === "client-status") {
+      notify("Relationship Status is fixed at five options. Rename or reorder the existing stages.", "warning");
+      return false;
+    }
     const clean = value.trim();
     const group = lookups.find((item) => item.type === type);
     if (!group || !clean || group.items.some((item) => item.value.toLowerCase() === clean.toLowerCase())) {
@@ -2137,8 +1934,8 @@ export function CRMApp() {
       return false;
     }
     setLookups((current) => current.map((item) => item.type === type ? { ...item, items: [...item.items, { id: `${type}-${Date.now()}`, value: clean, active: true }] } : item));
-    notify("Lookup option is being saved");
-    void apiRequest(`/lookups/${lookupTypeToApi(type)}`, { method: "POST", body: JSON.stringify({ value: clean }) }).then(() => loadWorkspace()).then(() => notify("Lookup option added")).catch(reportServerError);
+    addAudit("LOOKUP CHANGE", `Lookup · ${type}`, `Added: ${clean}`);
+    notify("Lookup option added");
     return true;
   }
 
@@ -2165,20 +1962,21 @@ export function CRMApp() {
       setContacts((current) => current.map((contact) => contact.owner === existing.value ? { ...contact, owner: clean } : contact));
       setTasks((current) => current.map((task) => task.owner === existing.value ? { ...task, owner: clean } : task));
     }
-    notify("Lookup option is being saved");
-    void apiRequest(`/lookups/${lookupTypeToApi(type)}/${id}`, { method: "PUT", body: JSON.stringify({ value: clean, updated_at: existing.updatedAt }) }).then(() => loadWorkspace()).then(() => notify("Lookup option renamed")).catch(reportServerError);
+    addAudit("LOOKUP CHANGE", `Lookup · ${type}`, `${existing.value} → ${clean}`);
+    notify("Lookup option renamed");
     return true;
   }
 
   function toggleLookupValue(type: string, id: string) {
     if (!requirePermission("lookup.manage", "manage Lookups")) return;
+    if (type === "client-status") return notify("Keep all five Relationship Status options active. You can rename or reorder them.", "warning");
     const group = lookups.find((item) => item.type === type);
     const item = group?.items.find((lookup) => lookup.id === id);
     if (!group || !item) return;
     if (item.active && group.items.filter((lookup) => lookup.active).length <= 1) return notify("Keep at least one active option in each lookup.", "warning");
     setLookups((current) => current.map((lookupGroup) => lookupGroup.type === type ? { ...lookupGroup, items: lookupGroup.items.map((lookup) => lookup.id === id ? { ...lookup, active: !lookup.active } : lookup) } : lookupGroup));
+    addAudit("LOOKUP CHANGE", `Lookup · ${type}`, `${item.value}: ${item.active ? "deactivated" : "activated"}`);
     notify(item.active ? "Lookup option deactivated" : "Lookup option activated");
-    void apiRequest(`/lookups/${lookupTypeToApi(type)}/${id}`, { method: "PUT", body: JSON.stringify({ is_active: !item.active, updated_at: item.updatedAt }) }).then(() => loadWorkspace()).catch(reportServerError);
   }
 
   function moveLookupValue(type: string, id: string, direction: -1 | 1) {
@@ -2192,16 +1990,10 @@ export function CRMApp() {
       [items[index], items[target]] = [items[target], items[index]];
       return { ...group, items };
     }));
-    const group = lookups.find((item) => item.type === type);
-    const index = group?.items.findIndex((item) => item.id === id) ?? -1;
-    const target = index + direction;
-    if (!group || index < 0 || target < 0 || target >= group.items.length) return;
-    const reordered = [...group.items];
-    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
-    void Promise.all(reordered.map((item, sortOrder) => apiRequest(`/lookups/${lookupTypeToApi(type)}/${item.id}`, { method: "PUT", body: JSON.stringify({ sort_order: sortOrder + 1, updated_at: item.updatedAt }) }))).then(() => loadWorkspace()).catch(reportServerError);
+    addAudit("LOOKUP CHANGE", `Lookup · ${type}`, "Order changed");
   }
 
-  async function updateUser(updated: CRMUser, temporaryPassword = "", resetDelivery: "temporary_password" | "invite" = "temporary_password"): Promise<boolean> {
+  function updateUser(updated: CRMUser, temporaryPassword = "") {
     if (!requirePermission("user.manage", "change user access")) return false;
     if (!ROLE_ORDER.includes(updated.role) || !["Active", "Inactive", "Pending"].includes(updated.state)) {
       notify("Invalid role or account status.", "warning");
@@ -2221,35 +2013,20 @@ export function CRMApp() {
       notify("You cannot deactivate your own account.", "warning");
       return false;
     }
-    try {
-      if (!updated.id) throw new Error("User id is missing.");
-      if (currentUser?.state === "Pending" && updated.state === "Active") {
-        await apiRequest(`/users/${updated.id}/approve`, { method: "POST", body: JSON.stringify({ role: roleToApi(updated.role) }) });
-      } else {
-        await apiRequest(`/users/${updated.id}`, { method: "PUT", body: JSON.stringify({ full_name: updated.name, role: roleToApi(updated.role), is_active: updated.state === "Active", updated_at: updated.updatedAt }) });
-      }
-      if (temporaryPassword || resetDelivery === "invite") await apiRequest(`/users/${updated.id}/reset-password`, { method: "POST", body: JSON.stringify({ delivery: resetDelivery, temporary_password: resetDelivery === "temporary_password" ? temporaryPassword : undefined }) });
-      await loadWorkspace();
-      notify("User permissions updated");
-      return true;
-    } catch (error) {
-      notify(`${apiMessage(error)} Use Try again to resubmit without losing the form.`, "warning");
-      return false;
+    setUsers((current) => current.map((user) => user.email === updated.email ? updated : user));
+    if (updated.email.toLowerCase() === identity?.accountEmail.toLowerCase() && updated.role !== identity.role) {
+      setIdentity((current) => current ? { ...current, role: updated.role } : current);
+      if (updated.role !== "Admin" && ["lookups", "users", "audit"].includes(view)) setView("dashboard");
     }
-  }
-
-  async function rejectUser(user: CRMUser): Promise<boolean> {
-    if (!user.id || user.state !== "Pending" || !window.confirm(`Reject the registration for ${user.email}?`)) return false;
-    try {
-      await apiRequest(`/users/${user.id}`, { method: "DELETE" });
-      setUsers((current) => current.filter((item) => item.id !== user.id));
-      setSelectedUser(null);
-      notify("Pending registration rejected");
-      return true;
-    } catch (error) {
-      notify(apiMessage(error), "warning");
-      return false;
+    setSelectedUser(updated);
+    if (temporaryPassword) {
+      setCredentials((current) => ({ ...current, [updated.email.toLowerCase()]: temporaryPassword }));
+      addAudit("FIELD CHANGE", `User · ${updated.email}`, "Password reset by administrator");
     }
+    if (currentUser?.role !== updated.role) addAudit("ROLE CHANGE", `User · ${updated.email}`, `${currentUser?.role} → ${updated.role}`);
+    if (currentUser?.state !== updated.state) addAudit("FIELD CHANGE", `User · ${updated.email}`, `Status: ${currentUser?.state} → ${updated.state}`);
+    notify("User permissions updated");
+    return true;
   }
 
   function openContactForm(companyId?: string) {
@@ -2270,9 +2047,8 @@ export function CRMApp() {
     const current = companies.find((company) => company.id === companyId);
     if (!current || current.status === nextStatus) return;
     setCompanies((items) => items.map((company) => company.id === companyId ? { ...company, status: nextStatus } : company));
+    addAudit("STATUS CHANGE", `Company · ${companyId}`, `${current.status} → ${nextStatus}`);
     notify(`${current.name}: ${nextStatus}`);
-    const updated = { ...current, status: nextStatus };
-    void apiRequest(`/companies/${companyId}`, { method: "PUT", body: JSON.stringify(companyPayload(updated)) }).then(() => loadWorkspace()).catch(reportServerError);
   }
 
   function updateTaskStatus(task: Task, nextStatus: Task["status"]) {
@@ -2281,71 +2057,87 @@ export function CRMApp() {
     if (task.status === nextStatus) return;
     const updated = { ...task, status: nextStatus };
     setTasks((items) => items.map((item) => item.id === task.id ? updated : item));
+    addAudit("STATUS CHANGE", `Task · ${task.id}`, `${task.status} → ${nextStatus}`);
     setSelectedTask(updated);
     notify(`Task status changed to ${nextStatus}`);
-    void apiRequest(`/tasks/${task.id}`, { method: "PUT", body: JSON.stringify(taskPayload(updated)) }).then(() => loadWorkspace()).catch(reportServerError);
   }
 
   function updateProfile(nextIdentity: AuthIdentity, currentPassword: string, newPassword: string) {
     if (!identity) return "Sign in again before changing the profile.";
-    const emailChanged = identity.accountEmail.toLowerCase() !== nextIdentity.email.toLowerCase();
-    if ((emailChanged || newPassword) && !currentPassword) return "Enter your current password to change email or password.";
-    setIdentity({ ...nextIdentity, email: nextIdentity.email.toLowerCase(), accountEmail: nextIdentity.email.toLowerCase(), role: identity.role, method: "Email" });
+    const previousEmail = identity.accountEmail.toLowerCase();
+    const nextEmail = nextIdentity.email.toLowerCase();
+    const emailChanged = previousEmail !== nextEmail;
+    const nameChanged = identity.name !== nextIdentity.name;
+    const photoChanged = identity.photoDataUrl !== nextIdentity.photoDataUrl;
+    if (users.some((user) => user.email.toLowerCase() === nextEmail && user.email.toLowerCase() !== previousEmail)) {
+      return "This email is already assigned to another CRM user.";
+    }
+    if (users.some((user) => user.email.toLowerCase() !== previousEmail && user.name.toLowerCase() === nextIdentity.name.toLowerCase())) {
+      return "This display name is already assigned to another CRM user.";
+    }
+    const managerNameCollision = nameChanged && lookups
+      .find((group) => group.type === "cjn-manager")
+      ?.items.some((item) => item.value.toLowerCase() === nextIdentity.name.toLowerCase() && item.value.toLowerCase() !== identity.name.toLowerCase());
+    if (managerNameCollision) {
+      return "This display name is already assigned to another CJN Manager.";
+    }
+    if ((emailChanged || newPassword) && credentials[previousEmail] !== currentPassword) {
+      return "Current password is incorrect.";
+    }
+    const nextCredentials = { ...credentials };
+    if (emailChanged) delete nextCredentials[previousEmail];
+    nextCredentials[nextEmail] = newPassword || credentials[previousEmail];
+    setCredentials(nextCredentials);
+    setUsers((current) => current.map((user) => user.email.toLowerCase() === previousEmail ? { ...user, name: nextIdentity.name, email: nextEmail, photoDataUrl: nextIdentity.photoDataUrl } : user));
+    if (nameChanged || emailChanged) {
+      setCompanies((current) => current.map((company) => {
+        const owns = company.ownerUserEmail === previousEmail;
+        const created = company.createdByUserEmail === previousEmail;
+        return { ...company, owner: nameChanged && owns ? nextIdentity.name : company.owner, createdBy: nameChanged && created ? nextIdentity.name : company.createdBy, ownerUserEmail: owns ? nextEmail : company.ownerUserEmail, createdByUserEmail: created ? nextEmail : company.createdByUserEmail };
+      }));
+      setContacts((current) => current.map((contact) => {
+        const owns = contact.ownerUserEmail === previousEmail;
+        const initiated = contact.initiatedByUserEmail === previousEmail;
+        return { ...contact, owner: nameChanged && owns ? nextIdentity.name : contact.owner, initiatedBy: nameChanged && initiated ? nextIdentity.name : contact.initiatedBy, ownerUserEmail: owns ? nextEmail : contact.ownerUserEmail, initiatedByUserEmail: initiated ? nextEmail : contact.initiatedByUserEmail };
+      }));
+      setTasks((current) => current.map((task) => {
+        const owns = task.ownerUserEmail === previousEmail;
+        const created = task.createdByUserEmail === previousEmail;
+        return { ...task, owner: nameChanged && owns ? nextIdentity.name : task.owner, createdBy: nameChanged && created ? nextIdentity.name : task.createdBy, ownerUserEmail: owns ? nextEmail : task.ownerUserEmail, createdByUserEmail: created ? nextEmail : task.createdByUserEmail };
+      }));
+    }
+    if (nameChanged) {
+      setLookups((current) => current.map((group) => group.type === "cjn-manager" ? { ...group, items: group.items.map((item) => item.value === identity.name ? { ...item, value: nextIdentity.name } : item) } : group));
+    }
+    if (emailChanged) {
+      setReadNotificationIdsByAccount((current) => {
+        const next = { ...current, [nextEmail]: current[previousEmail] ?? [] };
+        delete next[previousEmail];
+        return next;
+      });
+      setPreferencesByAccount((current) => {
+        const next = { ...current, [nextEmail]: current[previousEmail] ?? DEFAULT_PREFERENCES };
+        delete next[previousEmail];
+        return next;
+      });
+    }
+    setIdentity({ ...nextIdentity, email: nextEmail, accountEmail: nextEmail, role: identity.role, method: "Email" });
+    if (nameChanged) addAudit("FIELD CHANGE", `User · ${nextEmail}`, `Full name: ${identity.name} → ${nextIdentity.name}`);
+    if (emailChanged) addAudit("FIELD CHANGE", `User · ${nextEmail}`, `Email: ${previousEmail} → ${nextEmail}`);
+    if (photoChanged) addAudit("FIELD CHANGE", `User · ${nextEmail}`, nextIdentity.photoDataUrl ? "Profile photo updated" : "Profile photo removed");
+    if (newPassword) addAudit("FIELD CHANGE", `User · ${nextEmail}`, "Password changed");
     setModal(null);
-    notify("Profile is being saved");
-    void (async () => {
-      await apiRequest("/profile", { method: "PUT", body: JSON.stringify({ full_name: nextIdentity.name, email: nextIdentity.email, phone: nextIdentity.phone || null, photo_data_url: nextIdentity.photoDataUrl || null, current_password: currentPassword || undefined }) });
-      if (newPassword) await apiRequest("/profile/password", { method: "PUT", body: JSON.stringify({ current_password: currentPassword, password: newPassword, password_confirmation: newPassword }) });
-      await loadWorkspace();
-      notify(newPassword ? "Profile and password updated" : "Profile updated");
-    })().catch(reportServerError);
+    notify(newPassword ? "Profile and password updated" : "Profile updated");
     return null;
   }
 
-  async function updatePreferences(nextPreferences: Preferences, nextSystemSettings?: SystemSettings): Promise<boolean> {
+  function updatePreferences(nextPreferences: Preferences) {
     if (notificationAccountKey) setPreferencesByAccount((current) => ({ ...current, [notificationAccountKey]: nextPreferences }));
-    try {
-      if (currentRole === "Admin" && nextSystemSettings) {
-        const response = await apiRequest<{ data: ApiRecord }>("/settings", { method: "PUT", body: JSON.stringify({ system_notification_email: nextSystemSettings.systemNotificationEmail || null, notify_new_registrations: nextSystemSettings.notifyNewRegistrations, registration_allowed_domains: nextSystemSettings.registrationAllowedDomains }) });
-        setSystemSettings({ systemNotificationEmail: apiString(response.data, "system_notification_email"), notifyNewRegistrations: apiBoolean(response.data, "notify_new_registrations"), registrationAllowedDomains: Array.isArray(response.data.registration_allowed_domains) ? response.data.registration_allowed_domains.map(String) : [] });
-      }
-      setModal(null);
-      notify("Settings saved");
-      return true;
-    } catch (error) {
-      notify(`${apiMessage(error)} Your entries are preserved; try again.`, "warning");
-      return false;
-    }
+    setModal(null);
+    notify("Notification preferences saved");
   }
 
-  async function openSettings() {
-    if (currentRole === "Admin") {
-      try {
-        const response = await apiRequest<{ data: ApiRecord }>("/settings");
-        setSystemSettings({ systemNotificationEmail: apiString(response.data, "system_notification_email"), notifyNewRegistrations: apiBoolean(response.data, "notify_new_registrations"), registrationAllowedDomains: Array.isArray(response.data.registration_allowed_domains) ? response.data.registration_allowed_domains.map(String) : [] });
-      } catch (error) {
-        notify(apiMessage(error), "warning");
-        return;
-      }
-    }
-    setModal("settings");
-  }
-
-  async function changeRequiredPassword(currentPassword: string, newPassword: string) {
-    try {
-      await apiRequest("/profile/password", { method: "PUT", body: JSON.stringify({ current_password: currentPassword, password: newPassword, password_confirmation: newPassword }) });
-      await loadWorkspace();
-      notify("Password changed successfully");
-      return null;
-    } catch (error) {
-      return apiMessage(error);
-    }
-  }
-
-  if (passwordResetToken && typeof window !== "undefined" && window.location.pathname === "/reset-password") return <PasswordResetScreen token={passwordResetToken} />;
-  if (sessionLoading) return <main className="auth-page"><div className="auth-message" role="status">Connecting to CRM…</div></main>;
-  if (identity && passwordChangeRequired) return <PasswordChangeScreen identity={identity} onChange={changeRequiredPassword} onSignOut={signOut} />;
-  if (!identity) return <AuthScreen onLogin={authenticate} onRegister={registerAccount} onRecover={recoverAccount} />;
+  if (!identity) return <AuthScreen users={users} credentials={credentials} onAuthenticate={authenticate} onRegister={registerAccount} />;
 
   const navPrimary: View[] = ["dashboard", "pipeline", "companies", "contacts", "activity"];
   const navAdmin: View[] = [
@@ -2362,11 +2154,12 @@ export function CRMApp() {
           <span className="brand-mark">C</span>
           <span className="brand-copy"><b>Client Data</b><small>CRM workspace</small></span>
         </button>
-        <div className="global-search">
+        <div className="global-search" ref={globalSearchRef}>
           <span aria-hidden="true">⌕</span>
           <input
+            type="search"
             value={globalSearch}
-            onChange={(event) => { const value = event.target.value; setGlobalSearch(value); if (value.trim().length < 2) setGlobalResults([]); setGlobalSearchIndex(0); }}
+            onChange={(event) => { setGlobalSearch(event.target.value); setGlobalSearchIndex(0); }}
             onKeyDown={handleGlobalSearchKeyDown}
             placeholder="Search companies, contacts, tasks…"
             aria-label="Global search"
@@ -2375,26 +2168,25 @@ export function CRMApp() {
             aria-expanded={globalSearchOpen}
             aria-controls="global-search-results"
             aria-activedescendant={activeGlobalSearchIndex >= 0 ? `global-search-option-${activeGlobalSearchIndex}` : undefined}
+            autoComplete="off"
+            spellCheck={false}
+            enterKeyHint="search"
           />
           {globalSearchOpen && (
             <div className="search-results">
-              <p id="global-search-label">Search results · {globalResults.length}</p>
+              <p id="global-search-label">Suggestions</p>
               <div id="global-search-results" role="listbox" aria-labelledby="global-search-label">
-              {(["Company", "Contact", "Task"] as const).map((type) => {
-                const matches = globalResults.filter((result) => result.type === type);
-                if (matches.length === 0) return null;
-                return <section className="search-result-group" key={type} aria-label={`${type} results`}><h3>{type === "Company" ? "Companies" : `${type}s`} <span>{matches.length}</span></h3>{matches.map((result) => {
-                  const index = globalResults.indexOf(result);
-                  return <button id={`global-search-option-${index}`} key={`${result.type}-${result.id}`} type="button" role="option" tabIndex={-1} aria-selected={activeGlobalSearchIndex === index} onMouseEnter={() => setGlobalSearchIndex(index)} onClick={() => openGlobalResult(result)}>
-                    <span className="result-type">{result.type.slice(0, 1)}</span>
-                    <span><b>{result.label}</b><small>{result.meta}</small></span>
-                  </button>;
-                })}</section>;
-              })}
-              {globalResults.length === 0 && <button type="button" role="option" aria-selected="false" disabled>No matches found</button>}
+              {globalResults.map((result, index) => (
+                <button id={`global-search-option-${index}`} key={`${result.type}-${result.id}`} type="button" role="option" tabIndex={-1} aria-selected={activeGlobalSearchIndex === index} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setGlobalSearchIndex(index)} onClick={() => openGlobalResult(result)}>
+                  <span className="result-type">{result.type.slice(0, 1)}</span>
+                  <span><b>{result.label}</b><small>{result.meta}</small></span>
+                </button>
+              ))}
+              {globalResults.length === 0 && <div className="search-results-empty" role="status">No matches found</div>}
               </div>
             </div>
           )}
+          <span className="sr-only" aria-live="polite">{globalSearchOpen ? `${globalResults.length} search suggestions` : ""}</span>
         </div>
         <div className="topbar-actions" ref={topbarActionsRef}>
           <button
@@ -2437,7 +2229,7 @@ export function CRMApp() {
             <div className="topbar-popover profile-popover" id="profile-popover" role="dialog" aria-label="Profile menu">
               <div className="profile-popover-user"><Avatar name={identity.name} src={identity.photoDataUrl} /><span><b>{identity.name}</b><a href={`mailto:${identity.email}`}>{identity.email}</a><small>{identity.role} · signed in by email</small></span></div>
               <button type="button" onClick={() => { setProfileOpen(false); setModal("profile"); }}><span>◎</span><span><b>My profile</b><small>Contact details and role</small></span></button>
-              <button type="button" onClick={() => { setProfileOpen(false); void openSettings(); }}><span>⚙</span><span><b>Settings</b><small>Notifications{currentRole === "Admin" ? ", registration, and email" : ""}</small></span></button>
+              <button type="button" onClick={() => { setProfileOpen(false); setModal("settings"); }}><span>⚙</span><span><b>Settings</b><small>Language, timezone, notifications</small></span></button>
               {canViewAudit && <button type="button" onClick={() => { setProfileOpen(false); navigate("audit"); }}><span>↻</span><span><b>My activity</b><small>Recent changes in the Audit Log</small></span></button>}
               <button className="profile-signout" type="button" onClick={signOut}><span>↪</span><span><b>Sign out</b><small>Return to the sign-in screen</small></span></button>
             </div>
@@ -2484,7 +2276,6 @@ export function CRMApp() {
             <div className="date-chip"><span>●</span> {todayKyiv()} · Kyiv</div>
           </div>
 
-          {forbiddenAdminView ? <section className="empty-state forbidden-state" role="alert"><b>403 · Access forbidden</b><span>This administration section is available only to Admin users.</span><button className="primary-button" type="button" onClick={() => navigate("dashboard")}>Return to Dashboard</button></section> : <>
           {view === "dashboard" && (
             <Dashboard
               companies={liveCompanies}
@@ -2502,10 +2293,11 @@ export function CRMApp() {
               openTasksForManager={(manager) => { setTaskManagerFilter(manager); setTaskFilter("All"); navigate("activity"); }}
             />
           )}
-          {view === "pipeline" && <Pipeline companies={liveCompanies} contacts={liveContacts} tasks={liveTasks} statusOrder={clientStatusOrder} canMove={hasPermission(currentRole, "pipeline.move")} moveCompany={moveCompany} openCompany={setSelectedCompany} />}
+          {view === "pipeline" && <Pipeline companies={liveCompanies} contacts={liveContacts} tasks={liveTasks} statusOrder={clientStatusOrder} canMove={hasPermission(currentRole, "pipeline.move")} showInternalIds={currentRole === "Admin"} moveCompany={moveCompany} openCompany={setSelectedCompany} />}
           {view === "companies" && (
             <Companies
               companies={filteredCompanies}
+              allCompanies={liveCompanies}
               query={companyQuery}
               setQuery={setCompanyQuery}
               status={companyStatus}
@@ -2513,6 +2305,7 @@ export function CRMApp() {
               contacts={liveContacts}
               statusOptions={clientStatusOrder}
               canCreate={hasPermission(currentRole, "company.create")}
+              showInternalIds={currentRole === "Admin"}
               openCompany={setSelectedCompany}
               add={() => { if (requirePermission("company.create", "create companies")) setModal("company"); }}
             />
@@ -2542,7 +2335,7 @@ export function CRMApp() {
               canCreateContact={hasPermission(currentRole, "contact.create")}
               add={() => openTaskForm()}
               addContact={() => openContactForm()}
-              openTask={openTaskDetail}
+              openTask={setSelectedTask}
             />
           )}
           {view === "lookups" && hasPermission(currentRole, "lookup.manage") && <Lookups groups={lookups} archivedRecords={[
@@ -2551,8 +2344,7 @@ export function CRMApp() {
             ...tasks.filter((task) => archivedTaskIds.includes(task.id)).map((task) => ({ entity: "Task" as const, id: task.id, label: task.title })),
           ]} restoreRecord={restoreRecord} addValue={addLookupValue} renameValue={renameLookupValue} toggleValue={toggleLookupValue} moveValue={moveLookupValue} />}
           {view === "users" && hasPermission(currentRole, "user.manage") && <Users users={users} invite={() => { if (requirePermission("user.manage", "manage users")) setModal("user"); }} openUser={setSelectedUser} />}
-          {view === "audit" && hasPermission(currentRole, "audit.view") && <Audit events={audit} users={users} canExport={hasPermission(currentRole, "audit.export")} />}
-          </>}
+          {view === "audit" && hasPermission(currentRole, "audit.view") && <Audit events={audit} canExport={hasPermission(currentRole, "audit.export")} />}
         </main>
       </div>
 
@@ -2563,7 +2355,7 @@ export function CRMApp() {
           contacts={liveContacts.filter((contact) => contact.companyId === selectedCompany.id)}
           tasks={liveTasks.filter((task) => task.companyId === selectedCompany.id)}
           onClose={() => setSelectedCompany(null)}
-          openTask={(task) => { setSelectedCompany(null); void openTaskDetail(task); }}
+          openTask={(task) => { setSelectedCompany(null); setSelectedTask(task); }}
           openContact={(contact) => { setSelectedCompany(null); setSelectedContact(contact); }}
           updateCompany={updateCompany}
           canEdit={hasPermission(currentRole, "company.edit")}
@@ -2571,9 +2363,11 @@ export function CRMApp() {
           canAddContact={hasPermission(currentRole, "contact.create")}
           canAddTask={hasPermission(currentRole, "task.create")}
           canArchive={hasPermission(currentRole, "record.archive")}
+          showInternalIds={currentRole === "Admin"}
           archive={() => archiveCompany(selectedCompany)}
           statusOptions={activeClientStatuses}
           companyTypeOptions={companyTypeOptions}
+          managerOptions={managerOptions}
           addContact={() => { const id = selectedCompany.id; setSelectedCompany(null); openContactForm(id); }}
           addTask={() => { const id = selectedCompany.id; setSelectedCompany(null); openTaskForm(id); }}
         />
@@ -2583,13 +2377,12 @@ export function CRMApp() {
         <ContactDetail
           key={`${selectedContact.id}-${currentRole}`}
           contact={contacts.find((contact) => contact.id === selectedContact.id) ?? selectedContact}
-          company={companyName(companies, selectedContact.companyId)}
           companies={liveCompanies}
-          canTransfer={currentRole === "Admin"}
           onClose={() => setSelectedContact(null)}
           updateContact={updateContact}
           canEdit={hasPermission(currentRole, "contact.edit")}
           canArchive={hasPermission(currentRole, "record.archive")}
+          showInternalIds={currentRole === "Admin"}
           archive={() => archiveContact(selectedContact)}
           sourceOptions={contactSourceOptions}
           managerOptions={managerOptions}
@@ -2603,19 +2396,11 @@ export function CRMApp() {
           company={companyName(companies, selectedTask.companyId)}
           contacts={contacts.filter((contact) => contact.companyId === selectedTask.companyId && !archivedContactIds.includes(contact.id))}
           comments={taskComments.filter((comment) => comment.taskId === selectedTask.id)}
-          attachments={taskAttachments.filter((attachment) => attachment.taskId === selectedTask.id)}
           events={audit.filter((event) => event.entity === `Task · ${selectedTask.id}`)}
           onClose={() => setSelectedTask(null)}
           updateStatus={updateTaskStatus}
           updateTask={updateTask}
           addComment={addTaskComment}
-          setCommentHidden={setCommentHidden}
-          uploadAttachment={uploadTaskAttachment}
-          downloadAttachment={downloadTaskAttachment}
-          downloadIcs={downloadTaskIcs}
-          deleteAttachment={deleteTaskAttachment}
-          currentUserId={identity.id}
-          isAdmin={currentRole === "Admin"}
           canEdit={hasPermission(currentRole, "task.edit")}
           canComment={hasPermission(currentRole, "task.comment")}
           canArchive={hasPermission(currentRole, "record.archive")}
@@ -2632,17 +2417,15 @@ export function CRMApp() {
           user={users.find((user) => user.email === selectedUser.email) ?? selectedUser}
           onClose={() => setSelectedUser(null)}
           updateUser={updateUser}
-          rejectUser={rejectUser}
-          lastActiveAdmin={selectedUser.role === "Admin" && selectedUser.state === "Active" && users.filter((user) => user.role === "Admin" && user.state === "Active").length <= 1}
         />
       )}
 
-      {modal === "company" && <CompanyForm statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={managerOptions.includes(identity.name) ? identity.name : managerOptions[0] ?? ""} onClose={() => setModal(null)} onSubmit={addCompany} />}
+      {modal === "company" && <CompanyForm statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} managerOptions={managerOptions} onClose={() => setModal(null)} onSubmit={addCompany} />}
       {modal === "contact" && <ContactForm companies={liveCompanies} sourceOptions={contactSourceOptions} initiatorOptions={users.filter((user) => user.state === "Active")} initialCompanyId={modalCompanyId} currentUserEmail={identity.accountEmail} onClose={() => setModal(null)} onSubmit={addContact} />}
       {modal === "task" && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} outcomeStatusOptions={outcomeStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
       {modal === "user" && <UserForm onClose={() => setModal(null)} onSubmit={inviteUser} />}
       {modal === "profile" && <ProfileModal identity={identity} onClose={() => setModal(null)} onSave={updateProfile} />}
-      {modal === "settings" && <SettingsModal preferences={preferences} systemSettings={currentRole === "Admin" ? systemSettings : null} onClose={() => setModal(null)} onSave={updatePreferences} />}
+      {modal === "settings" && <SettingsModal preferences={preferences} onClose={() => setModal(null)} onSave={updatePreferences} />}
 
       <PageScrollControls hidden={overlayOpen} />
 
@@ -2666,7 +2449,7 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
   openCompaniesForStatus: (status: string) => void;
   openTasksForManager: (manager: string) => void;
 }) {
-  const stageCounts = statusOrder.map((status) => ({ status, count: companies.filter((company) => company.status === status).length })).filter((item) => item.count > 0);
+  const stageCounts = statusOrder.map((status) => ({ status, count: companies.filter((company) => company.status === status).length }));
   const max = Math.max(...stageCounts.map((item) => item.count), 1);
   const managerActivity = Array.from(new Set(tasks.map((task) => task.owner)))
     .map((manager) => ({ manager, count: tasks.filter((task) => task.owner === manager).length, open: openTasks.filter((task) => task.owner === manager).length }))
@@ -2740,11 +2523,11 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
   );
 }
 
-function Pipeline({ companies, contacts, tasks, statusOrder, canMove, moveCompany, openCompany }: { companies: Company[]; contacts: Contact[]; tasks: Task[]; statusOrder: string[]; canMove: boolean; moveCompany: (id: string, status: string) => void; openCompany: (company: Company) => void }) {
+function Pipeline({ companies, contacts, tasks, statusOrder, canMove, showInternalIds, moveCompany, openCompany }: { companies: Company[]; contacts: Contact[]; tasks: Task[]; statusOrder: string[]; canMove: boolean; showInternalIds: boolean; moveCompany: (id: string, status: string) => void; openCompany: (company: Company) => void }) {
   return (
     <>
       <div className="page-actions-row">
-        <p className="page-description">{canMove ? "Use the status selector to move a company between relationship stages. On mobile, the board scrolls horizontally." : "Browse every stage of the relationship workflow. Your role has view-only access."}</p>
+        <p className="page-description">{canMove ? "Use the status selector on a card to update the relationship workflow. On mobile, the board scrolls horizontally." : "Browse every stage of the relationship workflow. Your role has view-only access."}</p>
         <div className="legend"><span><i className="legend-dot hot" /> Active</span><span><i className="legend-dot quiet" /> No open activity</span></div>
       </div>
       <section className="kanban" aria-label="Relationship workflow board">
@@ -2758,10 +2541,9 @@ function Pipeline({ companies, contacts, tasks, statusOrder, canMove, moveCompan
               <div className="kanban-stack">
                 {items.map((company) => (
                   <article key={company.id} className="pipeline-card" tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
-                    <div className="pipeline-card-top"><span>{company.id}</span><button type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></div>
+                    <div className="pipeline-card-top"><span>{showInternalIds ? company.id : company.kind}</span><button type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></div>
                     <h3>{company.name}</h3>
                     <p>{company.city}, {company.country}</p>
-                    <div className="pipeline-card-facts"><span>{company.kind}</span><span>Last contact: {company.lastContact || "—"}</span></div>
                     <div className="pipeline-card-meta"><span>{openTaskLabel(tasks.filter((task) => task.companyId === company.id && isOpenTask(task)).length)}</span><CountBadge count={contactCount(contacts, company.id)} label="contacts" detail={`Contact people at ${company.name}. Open the card to view the full list.`} /></div>
                     {canMove && <select className="pipeline-stage-select" value={company.status} aria-label={`Relationship status for ${company.name}`} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); moveCompany(company.id, event.target.value); }}>{statusOrder.map((stage) => <option key={stage}>{stage}</option>)}</select>}
                     <footer><span className="mini-avatar">{company.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><span>Next activity: {nextActivityLabel(tasks, company.id)}</span></footer>
@@ -2777,8 +2559,9 @@ function Pipeline({ companies, contacts, tasks, statusOrder, canMove, moveCompan
   );
 }
 
-function Companies({ companies, contacts, statusOptions, query, setQuery, status, setStatus, canCreate, openCompany, add }: {
+function Companies({ companies, allCompanies, contacts, statusOptions, query, setQuery, status, setStatus, canCreate, showInternalIds, openCompany, add }: {
   companies: Company[];
+  allCompanies: Company[];
   contacts: Contact[];
   statusOptions: string[];
   query: string;
@@ -2786,13 +2569,17 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
   status: string;
   setStatus: (value: string) => void;
   canCreate: boolean;
+  showInternalIds: boolean;
   openCompany: (company: Company) => void;
   add: () => void;
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [ownerFilter, setOwnerFilter] = useUrlStringState("company_owner", "All owners");
-  const [countryFilter, setCountryFilter] = useUrlStringState("company_country", "All countries");
-  const [typeFilter, setTypeFilter] = useUrlStringState("company_type", "All types");
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const searchWrapperRef = useRef<HTMLDivElement>(null);
+  const [ownerFilter, setOwnerFilter] = useState("All owners");
+  const [countryFilter, setCountryFilter] = useState("All countries");
+  const [typeFilter, setTypeFilter] = useState("All types");
   const [page, setPage] = useState(1);
   const [sortField, setSortField] = useState<"name" | "kind" | "country" | "status" | "lastContact">("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
@@ -2805,31 +2592,90 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, pageCount);
   const visibleCompanies = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-  const owners = Array.from(new Set(companies.map((company) => company.owner))).sort();
-  const countries = Array.from(new Set(companies.map((company) => company.country))).sort();
-  const types = Array.from(new Set(companies.map((company) => company.kind))).sort();
+  const owners = Array.from(new Set(allCompanies.map((company) => company.owner))).sort();
+  const countries = Array.from(new Set(allCompanies.map((company) => company.country))).sort();
+  const types = Array.from(new Set(allCompanies.map((company) => company.kind))).sort();
   const sortBy = (field: typeof sortField) => { setPage(1); if (sortField === field) setSortDirection((direction) => direction === "asc" ? "desc" : "asc"); else { setSortField(field); setSortDirection("asc"); } };
-  const hasActiveFilters = Boolean(query) || status !== "All statuses" || ownerFilter !== "All owners" || countryFilter !== "All countries" || typeFilter !== "All types";
+  const advancedFiltersActive = ownerFilter !== "All owners" || countryFilter !== "All countries" || typeFilter !== "All types";
+  const normalizedQuery = query.trim().toLowerCase();
+  const suggestions = normalizedQuery ? allCompanies
+    .filter((company) => (status === "All statuses" || company.status === status)
+      && (ownerFilter === "All owners" || company.owner === ownerFilter)
+      && (countryFilter === "All countries" || company.country === countryFilter)
+      && (typeFilter === "All types" || company.kind === typeFilter)
+      && [company.name, company.city, company.country, company.kind, company.website, company.linkedin ?? "", company.owner, company.description].some((value) => value.toLowerCase().includes(normalizedQuery)))
+    .sort((a, b) => {
+      const rank = (company: Company) => {
+        const name = company.name.toLowerCase();
+        if (name.startsWith(normalizedQuery)) return 0;
+        if (name.split(/\s+/).some((word) => word.startsWith(normalizedQuery))) return 1;
+        if (name.includes(normalizedQuery)) return 2;
+        return 3;
+      };
+      return rank(a) - rank(b) || a.name.localeCompare(b.name);
+    })
+    .slice(0, 5) : [];
+
+  useEffect(() => {
+    if (activeSuggestion < 0) return;
+    searchWrapperRef.current?.querySelector<HTMLElement>(".company-search-suggestions > button.active")?.scrollIntoView({ block: "nearest" });
+  }, [activeSuggestion]);
+
+  function selectSuggestion(company: Company) {
+    setQuery(company.name);
+    setPage(1);
+    setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
+    openCompany(company);
+  }
+
+  function handleSearchKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      setSuggestionsOpen(false);
+      setActiveSuggestion(-1);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSuggestionsOpen(Boolean(normalizedQuery));
+      if (suggestions.length) setActiveSuggestion((current) => (current + 1) % suggestions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSuggestionsOpen(Boolean(normalizedQuery));
+      if (suggestions.length) setActiveSuggestion((current) => current <= 0 ? suggestions.length - 1 : current - 1);
+    } else if (event.key === "Enter" && activeSuggestion >= 0) {
+      event.preventDefault();
+      selectSuggestion(suggestions[activeSuggestion]);
+    }
+  }
 
   return (
     <section className="panel data-panel">
-      <div className="data-toolbar">
-        <div className="toolbar-search"><span>⌕</span><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search companies" aria-label="Search companies" /></div>
-        <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }} aria-label="Filter by status">
-          <option>All statuses</option>
-          {statusOptions.map((item) => <option key={item}>{item}</option>)}
-        </select>
-        <button className={`secondary-button${filtersOpen ? " control-active" : ""}`} type="button" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>≡ Filters</button>
-        {hasActiveFilters && <button className="text-button toolbar-clear" type="button" onClick={() => { setQuery(""); setStatus("All statuses"); setOwnerFilter("All owners"); setCountryFilter("All countries"); setTypeFilter("All types"); setPage(1); }}>Clear</button>}
-        <span className="toolbar-spacer" />
-        {canCreate && <button className="primary-button" type="button" onClick={add}>＋ Add company</button>}
+      <div className="data-toolbar companies-toolbar">
+        <div className="company-search-combobox" ref={searchWrapperRef} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setSuggestionsOpen(false); setActiveSuggestion(-1); } }}>
+          <div className="toolbar-search"><span aria-hidden="true">⌕</span><input type="search" value={query} onChange={(event) => { const value = event.target.value; setQuery(value); setPage(1); setSuggestionsOpen(Boolean(value.trim())); setActiveSuggestion(-1); }} onFocus={() => setSuggestionsOpen(Boolean(query.trim()))} onKeyDown={handleSearchKeyDown} placeholder="Search companies" aria-label="Search companies" role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen && Boolean(normalizedQuery)} aria-controls="company-search-results" aria-activedescendant={activeSuggestion >= 0 ? `company-search-option-${suggestions[activeSuggestion]?.id}` : undefined} autoComplete="off" spellCheck={false} enterKeyHint="search" />{query && <button className="search-clear-button" type="button" aria-label="Clear company search" onClick={() => { setQuery(""); setPage(1); setSuggestionsOpen(false); setActiveSuggestion(-1); }}>×</button>}</div>
+          {suggestionsOpen && normalizedQuery && <div className="company-search-suggestions" id="company-search-results" role="listbox" aria-label="Company suggestions">
+            {suggestions.map((company, index) => <button id={`company-search-option-${company.id}`} className={activeSuggestion === index ? "active" : ""} type="button" role="option" tabIndex={-1} aria-selected={activeSuggestion === index} key={company.id} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSuggestion(company)}><EntityLogo name={company.name} src={company.logoDataUrl} lazy /><span><b>{company.name}</b><small>{company.city}, {company.country} · {company.kind}</small></span><span aria-hidden="true">›</span></button>)}
+            {suggestions.length === 0 && <div className="company-search-empty">No matching companies</div>}
+          </div>}
+          <span className="sr-only" aria-live="polite">{normalizedQuery ? `${suggestions.length} company suggestions` : ""}</span>
+        </div>
+        <div className="companies-toolbar-controls">
+          <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); setSuggestionsOpen(Boolean(query.trim())); }} aria-label="Filter by status">
+            <option>All statuses</option>
+            {statusOptions.map((item) => <option key={item}>{item}</option>)}
+          </select>
+          <button className={`secondary-button${filtersOpen || advancedFiltersActive ? " control-active" : ""}`} type="button" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>≡ Filters</button>
+          <span className="toolbar-spacer" />
+          {canCreate && <button className="primary-button companies-add-button" type="button" onClick={add}><span className="button-label-full">＋ Add company</span><span className="button-label-short">＋ Add</span></button>}
+        </div>
       </div>
       {filtersOpen && (
         <div className="filter-drawer">
           <label><span>Owner</span><select value={ownerFilter} onChange={(event) => { setOwnerFilter(event.target.value); setPage(1); }}><option>All owners</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           <label><span>Country</span><select value={countryFilter} onChange={(event) => { setCountryFilter(event.target.value); setPage(1); }}><option>All countries</option>{countries.map((country) => <option key={country}>{country}</option>)}</select></label>
           <label><span>Company type</span><select value={typeFilter} onChange={(event) => { setTypeFilter(event.target.value); setPage(1); }}><option>All types</option>{types.map((type) => <option key={type}>{type}</option>)}</select></label>
-          <button className="secondary-button" type="button" onClick={() => { setOwnerFilter("All owners"); setCountryFilter("All countries"); setTypeFilter("All types"); setPage(1); }}>Reset</button>
+          <button className="secondary-button" type="button" onClick={() => { setStatus("All statuses"); setOwnerFilter("All owners"); setCountryFilter("All countries"); setTypeFilter("All types"); setPage(1); }}>Reset</button>
           <button className="primary-button" type="button" onClick={() => setFiltersOpen(false)}>Done</button>
         </div>
       )}
@@ -2839,7 +2685,7 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
           <tbody>
             {visibleCompanies.map((company) => (
               <tr key={company.id} tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
-                <td data-label="Company"><span className="company-cell"><EntityLogo name={company.name} src={company.logoDataUrl} lazy /><span><b>{company.name}</b><small>{company.id}{company.website && <> · <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{company.website}</a></>}</small></span></span></td>
+                <td data-label="Company"><span className="company-cell"><EntityLogo name={company.name} src={company.logoDataUrl} lazy /><span><b>{company.name}</b>{(showInternalIds || company.website) && <small>{showInternalIds && <>{company.id}{company.website ? " · " : ""}</>}{company.website && <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{company.website}</a>}</small>}</span></span></td>
                 <td data-label="Type"><span className="company-card-value">{company.kind}</span></td>
                 <td data-label="Location"><span className="company-card-value"><b className="normal-weight">{company.city}</b><small className="cell-sub">{company.country}</small></span></td>
                 <td data-label="Client status"><span className="company-card-value"><StatusBadge value={company.status} /></span></td>
@@ -2869,15 +2715,20 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
   openContact: (contact: Contact) => void;
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [sourceFilter, setSourceFilter] = useUrlStringState("contact_source", "All sources");
-  const [initiatorFilter, setInitiatorFilter] = useUrlStringState("contact_initiator", "All initiators");
-  const [companyFilter, setCompanyFilter] = useUrlStringState("contact_company", "All companies");
-  const [linkedinFilter, setLinkedinFilter] = useUrlStringState("contact_linkedin", "Any LinkedIn", CONTACT_LINKEDIN_VALUES);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const searchWrapperRef = useRef<HTMLDivElement>(null);
+  const [sourceFilter, setSourceFilter] = useState("All sources");
+  const [ownerFilter, setOwnerFilter] = useState("All owners");
+  const [companyFilter, setCompanyFilter] = useState("All companies");
+  const [linkedinFilter, setLinkedinFilter] = useState("Any LinkedIn");
+  const [statusFilter, setStatusFilter] = useState("All contact statuses");
   const [page, setPage] = useState(1);
   const filtered = contacts.filter((contact) =>
     (sourceFilter === "All sources" || contact.source === sourceFilter) &&
-    (initiatorFilter === "All initiators" || contact.initiatedBy === initiatorFilter) &&
+    (ownerFilter === "All owners" || contact.owner === ownerFilter) &&
     (companyFilter === "All companies" || contact.companyId === companyFilter) &&
+    (statusFilter === "All contact statuses" || contact.status === statusFilter) &&
     (linkedinFilter === "Any LinkedIn" || (linkedinFilter === "Has LinkedIn" ? Boolean(contact.linkedin) : !contact.linkedin)),
   );
   const pageSize = 50;
@@ -2885,31 +2736,85 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
   const currentPage = Math.min(page, pageCount);
   const visibleContacts = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const sources = Array.from(new Set(contacts.map((contact) => contact.source))).sort();
-  const initiators = Array.from(new Set(contacts.map((contact) => contact.initiatedBy).filter(Boolean) as string[])).sort();
-  const hasActiveFilters = Boolean(query) || sourceFilter !== "All sources" || initiatorFilter !== "All initiators" || companyFilter !== "All companies" || linkedinFilter !== "Any LinkedIn";
+  const owners = Array.from(new Set(contacts.map((contact) => contact.owner))).sort();
+  const hasActiveFilters = Boolean(query) || sourceFilter !== "All sources" || ownerFilter !== "All owners" || companyFilter !== "All companies" || linkedinFilter !== "Any LinkedIn" || statusFilter !== "All contact statuses";
+  const normalizedQuery = query.trim().toLowerCase();
+  const suggestions = normalizedQuery ? [...filtered]
+    .sort((a, b) => {
+      const aValues = [a.name, a.email, a.phone, a.position, a.source, a.linkedin ?? "", companyName(companies, a.companyId)];
+      const bValues = [b.name, b.email, b.phone, b.position, b.source, b.linkedin ?? "", companyName(companies, b.companyId)];
+      return autocompleteRank(a.name, aValues, normalizedQuery) - autocompleteRank(b.name, bValues, normalizedQuery) || a.name.localeCompare(b.name);
+    })
+    .slice(0, 6) : [];
+
+  useEffect(() => {
+    if (activeSuggestion < 0) return;
+    searchWrapperRef.current?.querySelector<HTMLElement>(".contact-search-suggestions > button.active")?.scrollIntoView({ block: "nearest" });
+  }, [activeSuggestion]);
+
+  function selectSuggestion(contact: Contact) {
+    setQuery(contact.name);
+    setPage(1);
+    setSuggestionsOpen(false);
+    setActiveSuggestion(-1);
+    openContact(contact);
+  }
+
+  function handleSearchKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      if (!suggestionsOpen) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSuggestionsOpen(false);
+      setActiveSuggestion(-1);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSuggestionsOpen(Boolean(normalizedQuery));
+      if (suggestions.length) setActiveSuggestion((current) => (current + 1) % suggestions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSuggestionsOpen(Boolean(normalizedQuery));
+      if (suggestions.length) setActiveSuggestion((current) => current <= 0 ? suggestions.length - 1 : current - 1);
+    } else if (event.key === "Enter" && suggestionsOpen && activeSuggestion >= 0) {
+      event.preventDefault();
+      selectSuggestion(suggestions[activeSuggestion]);
+    }
+  }
 
   return (
     <section className="panel data-panel">
-      <div className="data-toolbar">
-        <div className="toolbar-search"><span>⌕</span><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Name, email, position, or initiator" aria-label="Search contacts" /></div>
-        <button className={`secondary-button${filtersOpen ? " control-active" : ""}`} type="button" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>≡ Filters</button>
-        {hasActiveFilters && <button className="text-button toolbar-clear" type="button" onClick={() => { setQuery(""); setSourceFilter("All sources"); setInitiatorFilter("All initiators"); setCompanyFilter("All companies"); setLinkedinFilter("Any LinkedIn"); setPage(1); }}>Clear</button>}
-        <span className="toolbar-spacer" />
-        {canCreate && <button className="primary-button" type="button" onClick={add}>＋ Add contact manually</button>}
+      <div className="data-toolbar contacts-toolbar">
+        <div className="contact-search-combobox" ref={searchWrapperRef} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setSuggestionsOpen(false); setActiveSuggestion(-1); } }}>
+          <div className="toolbar-search"><span aria-hidden="true">⌕</span><input type="search" value={query} onChange={(event) => { const value = event.target.value; setQuery(value); setPage(1); setSuggestionsOpen(Boolean(value.trim())); setActiveSuggestion(-1); }} onFocus={() => setSuggestionsOpen(Boolean(query.trim()))} onKeyDown={handleSearchKeyDown} placeholder="Name, email, or company" aria-label="Search contacts" role="combobox" aria-autocomplete="list" aria-expanded={suggestionsOpen && Boolean(normalizedQuery)} aria-controls="contact-search-results" aria-activedescendant={activeSuggestion >= 0 ? `contact-search-option-${suggestions[activeSuggestion]?.id}` : undefined} autoComplete="off" spellCheck={false} enterKeyHint="search" />{query && <button className="search-clear-button" type="button" aria-label="Clear contact search" onClick={() => { setQuery(""); setPage(1); setSuggestionsOpen(false); setActiveSuggestion(-1); }}>×</button>}</div>
+          {suggestionsOpen && normalizedQuery && <div className="contact-search-suggestions" id="contact-search-results" role="listbox" aria-label="Contact suggestions">
+            {suggestions.map((contact, index) => <button id={`contact-search-option-${contact.id}`} className={activeSuggestion === index ? "active" : ""} type="button" role="option" tabIndex={-1} aria-selected={activeSuggestion === index} key={contact.id} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSuggestion(contact)}><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b><small>{companyName(companies, contact.companyId)} · {contact.email || "No email"}</small></span><span aria-hidden="true">›</span></button>)}
+            {suggestions.length === 0 && <div className="contact-search-empty" role="status">No matching contacts</div>}
+          </div>}
+          <span className="sr-only" aria-live="polite">{normalizedQuery ? `${suggestions.length} contact suggestions` : ""}</span>
+        </div>
+        <div className="contacts-toolbar-controls">
+          <button className={`secondary-button${filtersOpen ? " control-active" : ""}`} type="button" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>≡ Filters</button>
+          {hasActiveFilters && <button className="text-button toolbar-clear" type="button" onClick={() => { setQuery(""); setSourceFilter("All sources"); setOwnerFilter("All owners"); setCompanyFilter("All companies"); setLinkedinFilter("Any LinkedIn"); setStatusFilter("All contact statuses"); setSuggestionsOpen(false); setActiveSuggestion(-1); setPage(1); }}>Clear</button>}
+          <span className="toolbar-spacer" />
+          {canCreate && <button className="primary-button contacts-add-button" type="button" onClick={add}><span className="button-label-full">＋ Add contact manually</span><span className="button-label-short">＋ Add</span></button>}
+        </div>
       </div>
       {filtersOpen && (
         <div className="filter-drawer">
           <label><span>Source</span><select value={sourceFilter} onChange={(event) => { setSourceFilter(event.target.value); setPage(1); }}><option>All sources</option>{sources.map((source) => <option key={source}>{source}</option>)}</select></label>
           <label><span>Company</span><select value={companyFilter} onChange={(event) => { setCompanyFilter(event.target.value); setPage(1); }}><option>All companies</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
           <label><span>LinkedIn</span><select value={linkedinFilter} onChange={(event) => { setLinkedinFilter(event.target.value); setPage(1); }}><option>Any LinkedIn</option><option>Has LinkedIn</option><option>No LinkedIn</option></select></label>
-          <label><span>Initiated by</span><select value={initiatorFilter} onChange={(event) => { setInitiatorFilter(event.target.value); setPage(1); }}><option>All initiators</option>{initiators.map((initiator) => <option key={initiator}>{initiator}</option>)}</select></label>
-          <button className="secondary-button" type="button" onClick={() => { setSourceFilter("All sources"); setInitiatorFilter("All initiators"); setCompanyFilter("All companies"); setLinkedinFilter("Any LinkedIn"); setPage(1); }}>Reset</button>
+          <label><span>Contact status</span><select value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }}><option>All contact statuses</option>{CONTACT_STATUSES.map((item) => <option key={item}>{item}</option>)}</select></label>
+          <label><span>Owner</span><select value={ownerFilter} onChange={(event) => { setOwnerFilter(event.target.value); setPage(1); }}><option>All owners</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
+          <button className="secondary-button" type="button" onClick={() => { setSourceFilter("All sources"); setOwnerFilter("All owners"); setCompanyFilter("All companies"); setLinkedinFilter("Any LinkedIn"); setStatusFilter("All contact statuses"); setPage(1); }}>Reset</button>
           <button className="primary-button" type="button" onClick={() => setFiltersOpen(false)}>Done</button>
         </div>
       )}
       <div className="table-scroll responsive-card-scroll" role="region" aria-label="Contacts table" tabIndex={0}>
         <table className="data-table contacts-table responsive-card-table">
-          <thead><tr><th>Contact</th><th>Company</th><th>Position</th><th>Phone</th><th>Source</th><th>Initiated by</th><th aria-label="Actions" /></tr></thead>
+          <thead><tr><th>Contact</th><th>Company</th><th>Status</th><th>Position</th><th>Phone</th><th>Source</th><th>Owner</th><th aria-label="Actions" /></tr></thead>
           <tbody>
             {visibleContacts.map((contact) => {
               const company = companies.find((item) => item.id === contact.companyId);
@@ -2917,13 +2822,14 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
                 <tr key={contact.id} tabIndex={0} onClick={() => openContact(contact)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openContact(contact); }}>
                   <td data-label="Contact"><span className="contact-person"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b>{contact.email ? <a className="inline-data-link compact" href={`mailto:${contact.email}`} onClick={(event) => event.stopPropagation()}>{contact.email}</a> : <small>No email</small>}</span></span></td>
                   <td data-label="Company"><button className="table-link" type="button" onClick={(event) => { event.stopPropagation(); if (company) openCompany(company); }}>{company?.name}</button></td>
+                  <td data-label="Status"><StatusBadge value={contact.status} /></td>
                   <td data-label="Position">{contact.position || "—"}</td><td data-label="Phone">{contact.phone && contact.phone !== "—" ? <a className="inline-data-link" href={`tel:${contact.phone}`} onClick={(event) => event.stopPropagation()}>{contact.phone}</a> : "—"}</td><td data-label="Source"><StatusBadge value={contact.source} /></td>
-                  <td data-label="Initiated by"><span className="owner-cell"><span className="mini-avatar">{(contact.initiatedBy || "?").split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>{contact.initiatedBy || "—"}</span></td>
+                  <td data-label="Owner"><span className="owner-cell"><span className="mini-avatar">{contact.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>{contact.owner}</span></td>
                   <td data-label="Actions"><button className="row-menu" type="button" aria-label={`Open details for ${contact.name}`} onClick={(event) => { event.stopPropagation(); openContact(contact); }}>•••</button></td>
                 </tr>
               );
             })}
-            {visibleContacts.length === 0 && <tr className="table-empty-row"><td colSpan={7}>No contacts match the current filters.</td></tr>}
+            {visibleContacts.length === 0 && <tr className="table-empty-row"><td colSpan={8}>No contacts match the current filters.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -2977,11 +2883,8 @@ function Activity({ tasks, companies, comments, filter, setFilter, managerFilter
             <span className="task-card-main">
               <span className="task-title-row"><b>{task.title}</b><StaticStatusBadge value={task.status} /></span>
               <span className="task-company">{companyName(companies, task.companyId)} · {task.id}</span>
-              <span className="task-facts"><span>Contact: {task.contactDate || "—"}</span><span>Person: {task.contactPerson || "—"}</span></span>
               <span className="task-note">{task.note}</span>
-              {(task.outcomeStatus || task.outcomeNotes) && <span className="task-outcome"><b>{task.outcomeStatus || "Outcome"}</b>{task.outcomeNotes && <small>{task.outcomeNotes}</small>}</span>}
-              <span className={`task-reminder-row${task.reminderPossible === false ? " reminder-impossible" : ""}`}>{task.reminderPossible === false ? "⚠ Reminder impossible: manager has no active User or email" : (task.reminderLeads?.length ? `Reminder: ${task.reminderLeads.join(", ")}` : "No reminder scheduled")}</span>
-              <span className="task-counters">💬 {task.commentCount ?? comments.filter((comment) => comment.taskId === task.id).length} comments · ↻ {task.changeCount ?? 0} changes</span>
+              <span className="task-counters">💬 {comments.filter((comment) => comment.taskId === task.id).length} comments</span>
             </span>
             <span className="task-card-side"><StaticStatusBadge value={`${task.priority} priority`} /><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b><small>{task.owner}</small></span>
             <span className="row-arrow">›</span>
@@ -3006,6 +2909,7 @@ function Lookups({ groups, archivedRecords, restoreRecord, addValue, renameValue
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
   const group = groups.find((item) => item.type === activeType) ?? groups[0];
+  const fixedRelationshipWorkflow = group.type === "client-status";
 
   function add(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3029,7 +2933,7 @@ function Lookups({ groups, archivedRecords, restoreRecord, addValue, renameValue
           {groups.map((item) => <button type="button" role="tab" aria-selected={group.type === item.type} className={group.type === item.type ? "active" : ""} key={item.type} onClick={() => { setActiveType(item.type); setEditingId(null); }}><span>{item.label}</span><b>{item.items.filter((value) => value.active).length}</b></button>)}
         </div>
         <div className="lookup-editor">
-          <header><div><p className="eyebrow">Selected list</p><h3>{group.label}</h3></div><small>Rename, reorder, add, or deactivate options. Existing records keep their history.</small></header>
+          <header><div><p className="eyebrow">Selected list</p><h3>{group.label}</h3></div><small>{fixedRelationshipWorkflow ? "This workflow always contains exactly five active statuses. You can rename or reorder them." : "Rename, reorder, or deactivate options. Existing records keep their history."}</small></header>
           <ol className="lookup-values">
             {group.items.map((item, index) => <li key={item.id} className={item.active ? "" : "inactive"}>
               <span className="lookup-order">{index + 1}</span>
@@ -3038,12 +2942,12 @@ function Lookups({ groups, archivedRecords, restoreRecord, addValue, renameValue
                 <button type="button" disabled={index === 0} onClick={() => moveValue(group.type, item.id, -1)} aria-label={`Move ${item.value} up`}>↑</button>
                 <button type="button" disabled={index === group.items.length - 1} onClick={() => moveValue(group.type, item.id, 1)} aria-label={`Move ${item.value} down`}>↓</button>
                 {editingId === item.id ? <><button type="button" onClick={() => saveRename(item.id)}>Save</button><button type="button" onClick={() => setEditingId(null)}>Cancel</button></> : <button type="button" onClick={() => { setEditingId(item.id); setEditingValue(item.value); }}>Rename</button>}
-                <button type="button" className={item.active ? "danger-text" : ""} onClick={() => toggleValue(group.type, item.id)}>{item.active ? "Deactivate" : "Activate"}</button>
+                {!fixedRelationshipWorkflow && <button type="button" className={item.active ? "danger-text" : ""} onClick={() => toggleValue(group.type, item.id)}>{item.active ? "Deactivate" : "Activate"}</button>}
               </span>
             </li>)}
           </ol>
         </div>
-        <form className="lookup-add-form" onSubmit={add}><label><span>New option</span><input name="lookupValue" required maxLength={120} placeholder={`Add to ${group.label}`} /></label><button className="primary-button" type="submit">＋ Add option</button></form>
+        {fixedRelationshipWorkflow ? <div className="lookup-fixed-note"><b>Five-status workflow</b><span>{group.items.map((item) => item.value).join(" → ")}</span></div> : <form className="lookup-add-form" onSubmit={add}><label><span>New option</span><input name="lookupValue" required maxLength={120} placeholder={`Add to ${group.label}`} /></label><button className="primary-button" type="submit">＋ Add option</button></form>}
       </div>
       <div className="archived-records">
         <div className="panel-heading archived-records-heading"><div><p className="eyebrow">Recovery</p><span className="archived-records-title"><h3>Archived records</h3><StaticStatusBadge value={`${archivedRecords.length} ${archivedRecords.length === 1 ? "record" : "records"}`} /></span></div></div>
@@ -3069,99 +2973,57 @@ function Users({ users, invite, openUser }: { users: CRMUser[]; invite: () => vo
   );
 }
 
-function Audit({ events, users, canExport }: { events: AuditEvent[]; users: CRMUser[]; canExport: boolean }) {
+function Audit({ events, canExport }: { events: AuditEvent[]; canExport: boolean }) {
   const [query, setQuery] = useState("");
-  const [action, setAction] = useUrlStringState("audit_action", "All actions");
-  const [actor, setActor] = useUrlStringState("audit_user", "All users");
-  const [entityType, setEntityType] = useUrlStringState("audit_entity", "All entities");
-  const [from, setFrom] = useUrlStringState("audit_from", "");
-  const [to, setTo] = useUrlStringState("audit_to", "");
-  const [page, setPage] = useState(1);
-  const [pageEvents, setPageEvents] = useState(events);
-  const [meta, setMeta] = useState<ApiMeta>({ page: 1, per_page: 50, total: events.length, pages: Math.max(1, Math.ceil(events.length / 50)) });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const actionOptions = Array.from(new Set([...(action === "All actions" ? [] : [action]), ...events, ...pageEvents].map((event) => typeof event === "string" ? event : event.action).filter(Boolean))).sort();
-  const entityOptions = Array.from(new Set([...(entityType === "All entities" ? [] : [entityType]), ...events, ...pageEvents].map((event) => typeof event === "string" ? event : event.entityType).filter(Boolean) as string[])).sort();
-
-  const loadAuditPage = useCallback(async (active: () => boolean) => {
-    const params = new URLSearchParams({ page: String(page), per_page: "50" });
-    if (actor !== "All users") params.set("user", actor);
-    if (action !== "All actions") params.set("action", action);
-    if (entityType !== "All entities") params.set("entity_type", entityType);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
-    setLoading(true);
-    setError("");
-    try {
-      const response = await apiRequest<{ data: ApiRecord[]; meta: ApiMeta }>(`/audit?${params}`);
-      if (!active()) return;
-      setPageEvents(response.data.map(mapAuditEvent));
-      setMeta(response.meta);
-      if (response.meta.page > response.meta.pages) setPage(response.meta.pages);
-    } catch (requestError) {
-      if (!active()) return;
-      setError(apiMessage(requestError));
-    } finally {
-      if (active()) setLoading(false);
-    }
-  }, [action, actor, entityType, from, page, to]);
-
-  useEffect(() => {
-    let active = true;
-    const timer = window.setTimeout(() => { void loadAuditPage(() => active); }, 0);
-    return () => { active = false; window.clearTimeout(timer); };
-  }, [loadAuditPage]);
-
-  const visibleEvents = pageEvents.filter((event) => {
+  const [action, setAction] = useState("All actions");
+  const filtered = events.filter((event) => {
     const needle = query.trim().toLowerCase();
-    return !needle || [event.actor, event.action, event.entity, event.detail, event.id].some((value) => value.toLowerCase().includes(needle));
+    const matchesQuery = !needle || [event.actor, event.action, event.entity, event.detail, event.id].some((value) => value.toLowerCase().includes(needle));
+    return matchesQuery && (action === "All actions" || event.action === action);
   });
 
   function exportCsv() {
+    const cells = [
+      ["Time · Kyiv", "Actor", "Action", "Entity", "Change detail", "Event ID"],
+      ...filtered.map((event) => [event.at, event.actor, event.action, event.entity, event.detail, event.id]),
+    ];
+    const csv = cells.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a");
-    const params = new URLSearchParams({ format: "csv" });
-    if (actor !== "All users") params.set("user", actor);
-    if (action !== "All actions") params.set("action", action);
-    if (entityType !== "All entities") params.set("entity_type", entityType);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
-    link.href = `/api/backend/audit?${params}`;
-    link.download = "";
+    link.href = url;
+    link.download = `client-data-audit-${todayKyiv()}.csv`;
     link.click();
-  }
-
-  function updateAuditFilter(setter: (value: string) => void, value: string) {
-    setter(value);
-    setPage(1);
+    URL.revokeObjectURL(url);
   }
 
   return (
     <section className="panel data-panel">
       <div className="audit-banner"><span>↻</span><p><b>Read-only event view</b><small>This frontend exposes no edit or delete action for activity events.</small></p></div>
-      <div className="data-toolbar audit-toolbar"><div className="toolbar-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the current page" aria-label="Search the current audit page" /></div><label><span>From</span><input type="date" value={from} onChange={(event) => updateAuditFilter(setFrom, event.target.value)} /></label><label><span>To</span><input type="date" value={to} onChange={(event) => updateAuditFilter(setTo, event.target.value)} /></label><select value={actor} onChange={(event) => updateAuditFilter(setActor, event.target.value)} aria-label="User"><option>All users</option>{users.filter((user) => user.id).map((user) => <option key={user.id} value={String(user.id)}>{user.name}</option>)}</select><select value={action} onChange={(event) => updateAuditFilter(setAction, event.target.value)} aria-label="Event type"><option>All actions</option>{actionOptions.map((value) => <option key={value}>{value}</option>)}</select><select value={entityType} onChange={(event) => updateAuditFilter(setEntityType, event.target.value)} aria-label="Entity"><option>All entities</option>{entityOptions.map((value) => <option key={value}>{value}</option>)}</select><button className="text-button" type="button" onClick={() => { setQuery(""); setActor("All users"); setAction("All actions"); setEntityType("All entities"); setFrom(""); setTo(""); setPage(1); }}>Clear</button><span className="toolbar-spacer" />{canExport && <button className="secondary-button" type="button" onClick={exportCsv}>Export CSV</button>}</div>
-      <div className="table-scroll responsive-card-scroll" role="region" aria-label="Audit Log table" tabIndex={0}><table className="data-table audit-table responsive-card-table"><thead><tr><th>Time · Kyiv</th><th>Actor</th><th>Action</th><th>Entity</th><th>Change detail</th><th>Event ID</th></tr></thead><tbody>{visibleEvents.map((event) => <tr key={event.id}><td data-label="Time · Kyiv">{event.at}</td><td data-label="Actor"><b className="normal-weight">{event.actor}</b></td><td data-label="Action"><StatusBadge value={event.action} /></td><td data-label="Entity">{event.entity}</td><td className="audit-detail" data-label="Change detail">{event.detail}</td><td data-label="Event ID"><code>{event.id}</code></td></tr>)}{loading && <tr className="table-empty-row"><td colSpan={6}>Loading audit events…</td></tr>}{error && !loading && <tr className="table-empty-row"><td colSpan={6}>{error}</td></tr>}{visibleEvents.length === 0 && !loading && !error && <tr className="table-empty-row"><td colSpan={6}>No audit events match the current filters.</td></tr>}</tbody></table></div>
-      <footer className="table-footer"><span>Showing {visibleEvents.length} of {meta.total} events</span><div><button type="button" aria-label="Previous audit page" disabled={loading || meta.page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>‹</button><b>{meta.page}/{meta.pages}</b><button type="button" aria-label="Next audit page" disabled={loading || meta.page >= meta.pages} onClick={() => setPage((value) => Math.min(meta.pages, value + 1))}>›</button></div></footer>
+      <div className="data-toolbar"><div className="toolbar-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the log" aria-label="Search the log" /></div><select value={action} onChange={(event) => setAction(event.target.value)} aria-label="Event type"><option>All actions</option><option>FIELD CHANGE</option><option>STATUS CHANGE</option><option>CREATE</option><option>COMMENT</option><option>REMINDER SENT</option></select><span className="toolbar-spacer" />{canExport && <button className="secondary-button" type="button" onClick={exportCsv}>Export CSV</button>}</div>
+      <div className="table-scroll responsive-card-scroll" role="region" aria-label="Audit Log table" tabIndex={0}><table className="data-table audit-table responsive-card-table"><thead><tr><th>Time · Kyiv</th><th>Actor</th><th>Action</th><th>Entity</th><th>Change detail</th><th>Event ID</th></tr></thead><tbody>{filtered.map((event) => <tr key={event.id}><td data-label="Time · Kyiv">{event.at}</td><td data-label="Actor"><b className="normal-weight">{event.actor}</b></td><td data-label="Action"><StatusBadge value={event.action} /></td><td data-label="Entity">{event.entity}</td><td className="audit-detail" data-label="Change detail">{event.detail}</td><td data-label="Event ID"><code>{event.id}</code></td></tr>)}{filtered.length === 0 && <tr className="table-empty-row"><td colSpan={6}>No audit events match the current filters.</td></tr>}</tbody></table></div>
+      <footer className="table-footer"><span>Showing {filtered.length} events</span></footer>
     </section>
   );
 }
 
-function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContact, updateCompany, canEdit, canMovePipeline, canAddContact, canAddTask, canArchive, archive, statusOptions, companyTypeOptions, addContact, addTask }: {
+function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContact, updateCompany, canEdit, canMovePipeline, canAddContact, canAddTask, canArchive, showInternalIds, archive, statusOptions, companyTypeOptions, managerOptions, addContact, addTask }: {
   company: Company;
   contacts: Contact[];
   tasks: Task[];
   onClose: () => void;
   openTask: (task: Task) => void;
   openContact: (contact: Contact) => void;
-  updateCompany: (company: Company) => Promise<boolean>;
+  updateCompany: (company: Company) => boolean;
   canEdit: boolean;
   canMovePipeline: boolean;
   canAddContact: boolean;
   canAddTask: boolean;
   canArchive: boolean;
+  showInternalIds: boolean;
   archive: () => void;
   statusOptions: string[];
   companyTypeOptions: string[];
+  managerOptions: string[];
   addContact: () => void;
   addTask: () => void;
 }) {
@@ -3169,7 +3031,7 @@ function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContac
   const [logoDataUrl, setLogoDataUrl] = useState(company.logoDataUrl ?? "");
   const [imageProcessing, setImageProcessing] = useState(false);
 
-  async function save(event: FormEvent<HTMLFormElement>) {
+  function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (imageProcessing) return;
     const form = event.currentTarget;
@@ -3186,7 +3048,7 @@ function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContac
     if (!country) return void setFieldError(form, "country", "Country is required.");
     if (websiteInput && !website) return void setFieldError(form, "website", "Enter a valid website address.");
     if (linkedinInput && !linkedin) return void setFieldError(form, "linkedin", "Enter a valid LinkedIn URL.");
-    if (!await updateCompany({
+    if (!updateCompany({
       ...company,
       name,
       kind: String(data.get("kind") ?? company.kind),
@@ -3203,7 +3065,7 @@ function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContac
   }
 
   return (
-    <Modal title={company.name} eyebrow={`${company.id} · ${company.kind}`} onClose={onClose} wide>
+    <Modal title={company.name} eyebrow={showInternalIds ? `${company.id} · ${company.kind}` : company.kind} onClose={onClose} wide>
       {editing ? (
         <form className="entity-form detail-edit-form" onSubmit={save}>
           <ImageField label="Company logo" name="companyLogo" value={logoDataUrl} onChange={setLogoDataUrl} onProcessingChange={setImageProcessing} kind="company" />
@@ -3214,6 +3076,7 @@ function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContac
           <label className="field"><span>City</span><input name="city" defaultValue={company.city} maxLength={80} /></label>
           <label className="field"><span>Website</span><input name="website" inputMode="url" defaultValue={company.website} maxLength={300} /></label>
           <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" defaultValue={company.linkedin ?? ""} maxLength={300} /></label>
+          <label className="field"><span>CJN Manager</span><select name="owner" defaultValue={company.owner}>{Array.from(new Set([...managerOptions, company.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           <label className="field field-full"><span>Description</span><textarea name="description" defaultValue={company.description} rows={4} maxLength={2000} /></label>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { setLogoDataUrl(company.logoDataUrl ?? ""); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save changes"}</button></div>
         </form>
@@ -3223,8 +3086,8 @@ function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContac
           <div className="detail-grid"><div><small>Owner</small><b>{company.owner}</b></div><div><small>Open tasks</small><b>{tasks.filter(isOpenTask).length}</b></div><div><small>Last contact</small><b>{company.lastContact}</b></div><div><small>Next activity</small><b>{nextActivityLabel(tasks)}</b></div></div>
           <div className="detail-description"><small>About company</small><p>{company.description}</p></div>
           <div className="detail-columns">
-            <section><div className="detail-section-head"><h3>Contacts <CountBadge count={contacts.length} label="contacts" detail={`Contact people at ${company.name}.`} /></h3>{canAddContact && <button type="button" aria-label="Add contact" onClick={addContact}>＋</button>}</div>{contacts.map((contact) => <button className="detail-contact" type="button" key={contact.id} onClick={() => openContact(contact)}><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b><small>{contact.position} · {contact.email}</small></span><span className="row-arrow">›</span></button>)}{contacts.length === 0 && <p className="muted-copy">No contacts yet.</p>}</section>
-            <section><div className="detail-section-head"><h3>Activity <CountBadge count={tasks.length} label="tasks" detail={`All tasks linked to ${company.name}.`} /></h3>{canAddTask && <button type="button" aria-label="Add task" onClick={addTask}>＋</button>}</div>{tasks.slice().sort((a, b) => (b.contactDate ?? "").localeCompare(a.contactDate ?? "")).map((task) => <button className="detail-task" type="button" key={task.id} onClick={() => openTask(task)}><span className={`priority-mark ${isOverdue(task) ? "overdue" : ""}`}>{task.status === "Completed" ? "✓" : "!"}</span><span><b>{task.title}</b><small>{task.contactDate || "—"} · {formatDateTime(task.deadline)}</small></span><span>›</span></button>)}{tasks.length === 0 && <p className="muted-copy">No tasks yet.</p>}</section>
+            <section><div className="detail-section-head"><h3>Contacts <CountBadge count={contacts.length} label="contacts" detail={`Contact people at ${company.name}.`} /></h3>{canAddContact && <button type="button" aria-label="Add contact" onClick={addContact}>＋</button>}</div>{contacts.map((contact) => <button className={`detail-contact${contact.status === "Inactive" ? " inactive-contact" : ""}`} type="button" key={contact.id} onClick={() => openContact(contact)}><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b><small>{contact.position || "Position not specified"} · {contact.status}{contact.email ? ` · ${contact.email}` : ""}</small></span><span className="row-arrow">›</span></button>)}{contacts.length === 0 && <p className="muted-copy">No contacts yet.</p>}</section>
+            <section><div className="detail-section-head"><h3>Activity <CountBadge count={tasks.length} label="tasks" detail={`All tasks linked to ${company.name}.`} /></h3>{canAddTask && <button type="button" aria-label="Add task" onClick={addTask}>＋</button>}</div>{tasks.slice(0, 4).map((task) => <button className="detail-task" type="button" key={task.id} onClick={() => openTask(task)}><span className={`priority-mark ${isOverdue(task) ? "overdue" : ""}`}>{task.status === "Completed" ? "✓" : "!"}</span><span><b>{task.title}</b><small>{formatDateTime(task.deadline)}</small></span><span>›</span></button>)}{tasks.length === 0 && <p className="muted-copy">No tasks yet.</p>}</section>
           </div>
           <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive company</button>}</div>
         </>
@@ -3233,15 +3096,14 @@ function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContac
   );
 }
 
-function ContactDetail({ contact, company, companies, canTransfer, onClose, updateContact, canEdit, canArchive, archive, sourceOptions, managerOptions }: {
+function ContactDetail({ contact, companies, onClose, updateContact, canEdit, canArchive, showInternalIds, archive, sourceOptions, managerOptions }: {
   contact: Contact;
-  company: string;
   companies: Company[];
-  canTransfer: boolean;
   onClose: () => void;
-  updateContact: (contact: Contact) => Promise<boolean>;
+  updateContact: (contact: Contact) => boolean;
   canEdit: boolean;
   canArchive: boolean;
+  showInternalIds: boolean;
   archive: () => void;
   sourceOptions: string[];
   managerOptions: string[];
@@ -3250,12 +3112,14 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
   const [sourceValue, setSourceValue] = useState(contact.source);
   const [photoDataUrl, setPhotoDataUrl] = useState(contact.photoDataUrl ?? "");
   const [imageProcessing, setImageProcessing] = useState(false);
+  const company = companyName(companies, contact.companyId);
 
-  async function save(event: FormEvent<HTMLFormElement>) {
+  function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (imageProcessing) return;
     const form = event.currentTarget;
     const data = new FormData(event.currentTarget);
+    const companyId = String(data.get("companyId") ?? "");
     const name = String(data.get("name") ?? contact.name).trim();
     const email = String(data.get("email") ?? contact.email).trim().toLowerCase();
     const phone = String(data.get("phone") ?? contact.phone).trim();
@@ -3265,9 +3129,11 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
     if (email && !EMAIL_PATTERN.test(email)) return void setFieldError(form, "email", "Enter a valid email address.");
     if (phone && phone !== "—" && !/^[+()\d\s.-]{7,24}$/.test(phone)) return void setFieldError(form, "phone", "Enter a valid phone number.");
     if (linkedinInput && !linkedin) return void setFieldError(form, "linkedin", "Enter a valid LinkedIn URL.");
-    if (!await updateContact({
+    if (!companies.some((item) => item.id === companyId)) return void setFieldError(form, "companyName", "Select an existing company.");
+    if (!updateContact({
       ...contact,
-      companyId: String(data.get("companyId") ?? contact.companyId),
+      companyId,
+      status: String(data.get("status") ?? contact.status) as ContactStatus,
       name,
       position: String(data.get("position") ?? contact.position).trim(),
       email,
@@ -3283,12 +3149,13 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
   }
 
   return (
-    <Modal title={contact.name} eyebrow={`${contact.id} · ${company}`} onClose={onClose}>
+    <Modal title={contact.name} eyebrow={showInternalIds ? `${contact.id} · ${company}` : company} onClose={onClose}>
       {editing ? (
-        <form className="entity-form detail-edit-form" onSubmit={save}>
+        <form className="entity-form detail-edit-form contact-entry-form" onSubmit={save}>
           <ImageField label="Contact photo" name="contactPhoto" value={photoDataUrl} onChange={setPhotoDataUrl} onProcessingChange={setImageProcessing} />
-          {canTransfer ? <label className="field field-full"><span>Transfer to company (Admin only)</span><select name="companyId" defaultValue={contact.companyId}>{companies.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label> : <label className="field field-full"><span>Company</span><input value={company} readOnly /></label>}
           <label className="field field-full"><span>Full name</span><input name="name" defaultValue={contact.name} required minLength={2} maxLength={120} autoFocus /></label>
+          <CompanyPicker companies={companies} defaultCompanyId={contact.companyId} />
+          <label className="field"><span>Contact status *</span><select name="status" defaultValue={contact.status} required>{CONTACT_STATUSES.map((item) => <option key={item}>{item}</option>)}</select></label>
           <label className="field"><span>Position</span><input name="position" defaultValue={contact.position} maxLength={120} /></label>
           <label className="field"><span>Phone</span><input name="phone" type="tel" defaultValue={contact.phone} maxLength={24} /></label>
           <label className="field"><span>Email</span><input name="email" type="email" defaultValue={contact.email} maxLength={254} /></label>
@@ -3297,75 +3164,58 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
           <label className="field"><span>CJN Manager</span><select name="owner" defaultValue={contact.owner}>{Array.from(new Set([...managerOptions, contact.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           {["Exhibition / Conference", "Other"].includes(sourceValue) && <label className="field field-full"><span>{sourceValue === "Other" ? "Source detail" : "Exhibition / event name"}</span><input name="sourceDetail" defaultValue={contact.sourceDetail ?? ""} maxLength={255} /></label>}
           {sourceValue === "Referral (word of mouth)" && <label className="field field-full"><span>Referred by</span><input name="referredBy" defaultValue={contact.referredBy ?? ""} maxLength={255} /></label>}
+          <div className="reminder-note field-full"><span>i</span><p><b>Company and contact status</b><small>Change the company here only to correct an assignment mistake. If the person changed jobs, mark this contact Inactive and create a new contact at the new company.</small></p></div>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { setPhotoDataUrl(contact.photoDataUrl ?? ""); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save changes"}</button></div>
         </form>
       ) : (
         <>
-          <div className="person-detail-head"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-detail-avatar" /><div><h3>{contact.position || "Position not specified"}</h3><p>{company}</p></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
-          <div className="detail-grid contact-info-grid"><div><small>Email</small>{contact.email ? <a href={`mailto:${contact.email}`}>{contact.email}</a> : <b>—</b>}</div><div><small>Phone</small>{contact.phone && contact.phone !== "—" ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : <b>—</b>}</div><div><small>LinkedIn</small>{contact.linkedin ? <a href={websiteHref(contact.linkedin)} target="_blank" rel="noreferrer">Open profile</a> : <b>—</b>}</div><div><small>Source</small><b>{contact.source || "—"}</b></div><div><small>Source detail</small><b>{contact.sourceDetail || contact.referredBy || "—"}</b></div><div><small>CJN Manager</small><b>{contact.owner}</b></div><div><small>Initiated by</small><b>{contact.initiatedBy || "Not recorded"}</b></div></div>
-          <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive contact</button>}{contact.email && <a className="primary-button action-link" href={`mailto:${contact.email}`}>Send email</a>}</div>
+          <div className="person-detail-head"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-detail-avatar" /><div><StatusBadge value={contact.status} /><h3>{contact.position || "Position not specified"}</h3><p>{company}</p></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
+          <div className="detail-grid contact-info-grid"><div><small>Status</small><b>{contact.status}</b></div><div><small>Email</small>{contact.email ? <a href={`mailto:${contact.email}`}>{contact.email}</a> : <b>—</b>}</div><div><small>Phone</small>{contact.phone && contact.phone !== "—" ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : <b>—</b>}</div><div><small>LinkedIn</small>{contact.linkedin ? <a href={websiteHref(contact.linkedin)} target="_blank" rel="noreferrer">Open profile</a> : <b>—</b>}</div><div><small>Source</small><b>{contact.source || "—"}</b></div><div><small>Source detail</small><b>{contact.sourceDetail || contact.referredBy || "—"}</b></div><div><small>CJN Manager</small><b>{contact.owner}</b></div><div><small>Initiated by</small><b>{contact.initiatedBy || "Not recorded"}</b></div></div>
+          <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive contact</button>}{contact.email && contact.status === "Active" && <a className="primary-button action-link" href={`mailto:${contact.email}`}>Send email</a>}{contact.email && contact.status === "Inactive" && <button className="secondary-button" type="button" disabled title="This contact is inactive at the selected company">Contact inactive</button>}</div>
         </>
       )}
     </Modal>
   );
 }
 
-function UserDetail({ user, onClose, updateUser, rejectUser, lastActiveAdmin }: { user: CRMUser; onClose: () => void; updateUser: (user: CRMUser, temporaryPassword?: string, resetDelivery?: "temporary_password" | "invite") => Promise<boolean>; rejectUser: (user: CRMUser) => Promise<boolean>; lastActiveAdmin: boolean }) {
+function UserDetail({ user, onClose, updateUser }: { user: CRMUser; onClose: () => void; updateUser: (user: CRMUser, temporaryPassword?: string) => boolean }) {
   const [role, setRole] = useState<Role>(user.role);
   const [state, setState] = useState<CRMUser["state"]>(user.state);
-  const [resetDelivery, setResetDelivery] = useState<"none" | "temporary_password" | "invite">("none");
-  const [submitting, setSubmitting] = useState(false);
-  const [retry, setRetry] = useState(false);
 
-  async function save(event: FormEvent<HTMLFormElement>) {
+  function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    setSubmitting(true);
-    setRetry(false);
-    const saved = await updateUser({ ...user, role, state }, String(data.get("temporaryPassword") ?? ""), resetDelivery === "invite" ? "invite" : "temporary_password");
-    setSubmitting(false);
-    if (saved) onClose(); else setRetry(true);
+    if (updateUser({ ...user, role, state }, String(data.get("temporaryPassword") ?? ""))) onClose();
   }
 
   return (
     <Modal title={user.name} eyebrow="Team member" onClose={onClose}>
       <div className="person-detail-head"><Avatar name={user.name} src={user.photoDataUrl} className="person-detail-avatar" /><div><h3><a className="inline-data-link" href={`mailto:${user.email}`}>{user.email}</a></h3><p>Last sign-in: {user.lastLogin}</p></div></div>
       <form className="entity-form compact-form" onSubmit={save}>
-        <label className="field"><span>Role</span><select name="role" value={role} disabled={lastActiveAdmin} title={lastActiveAdmin ? "Cannot change role: this is the last active Admin" : undefined} onChange={(event) => setRole(event.target.value as Role)}><option>Admin</option><option>Manager</option><option>Editor</option><option>Read-only</option></select></label>
-        <label className="field"><span>Status</span><select name="state" value={state} disabled={lastActiveAdmin} title={lastActiveAdmin ? "Cannot deactivate: this is the last active Admin" : undefined} onChange={(event) => setState(event.target.value as CRMUser["state"])}><option>Active</option><option>Inactive</option><option>Pending</option></select></label>
-        {lastActiveAdmin && <div className="reminder-note field-full"><span>!</span><p><b>Last active Admin</b><small>Role change and deactivation are disabled until another active Admin exists.</small></p></div>}
-        <label className="field field-full"><span>Password action</span><select value={resetDelivery} onChange={(event) => setResetDelivery(event.target.value as typeof resetDelivery)}><option value="none">No password reset</option><option value="invite">Send password setup link by email</option><option value="temporary_password">Set a temporary password</option></select></label>
-        {resetDelivery === "temporary_password" && <label className="field field-full"><span>Temporary password</span><input name="temporaryPassword" type="password" required minLength={8} maxLength={128} placeholder="New temporary password" autoComplete="new-password" /></label>}
+        <label className="field"><span>Role</span><select name="role" value={role} onChange={(event) => setRole(event.target.value as Role)}><option>Admin</option><option>Manager</option><option>Editor</option><option>Read-only</option></select></label>
+        <label className="field"><span>Status</span><select name="state" value={state} onChange={(event) => setState(event.target.value as CRMUser["state"])}><option>Active</option><option>Inactive</option><option>Pending</option></select></label>
+        <label className="field field-full"><span>Reset password</span><input name="temporaryPassword" type="password" minLength={8} maxLength={128} placeholder="Optional new temporary password" autoComplete="new-password" /></label>
         <div className="reminder-note field-full"><span>i</span><p><b>{ROLE_DETAILS[role].summary}</b><small>{ROLE_DETAILS[role].permissions.join(" · ")}</small></p></div>
-        {retry && <div className="form-error field-full" role="alert">Changes were not saved. Your selections are preserved; try again.</div>}
-        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button>{user.state === "Pending" && <button className="danger-button" type="button" onClick={() => void rejectUser(user)}>Reject registration</button>}<button className="primary-button" type="submit" disabled={submitting}>{submitting ? "Saving…" : retry ? "Try again" : user.state === "Pending" ? "Approve and save" : "Save access"}</button></div>
+        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Save access</button></div>
       </form>
     </Modal>
   );
 }
 
-function TaskDetail({ task, company, contacts, comments, attachments, events, onClose, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, outcomeStatusOptions, reminderLeadOptions, managerOptions }: {
+function TaskDetail({ task, company, contacts, comments, events, onClose, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, taskStatusOptions, outcomeStatusOptions, reminderLeadOptions, managerOptions }: {
   task: Task;
   company: string;
   contacts: Contact[];
   comments: TaskComment[];
-  attachments: TaskAttachment[];
   events: AuditEvent[];
   onClose: () => void;
   canEdit: boolean;
   canComment: boolean;
   canArchive: boolean;
   archive: () => void;
-  updateTask: (task: Task) => Promise<boolean>;
+  updateTask: (task: Task) => boolean;
   updateStatus: (task: Task, status: Task["status"]) => void;
-  addComment: (taskId: string, text: string) => Promise<boolean>;
-  setCommentHidden: (taskId: string, commentId: string, hidden: boolean) => Promise<void>;
-  uploadAttachment: (taskId: string, file: File) => Promise<boolean>;
-  downloadAttachment: (attachment: TaskAttachment) => Promise<void>;
-  downloadIcs: (task: Task) => Promise<void>;
-  deleteAttachment: (attachment: TaskAttachment) => Promise<void>;
-  currentUserId?: number;
-  isAdmin: boolean;
+  addComment: (taskId: string, text: string) => boolean;
   taskStatusOptions: string[];
   outcomeStatusOptions: string[];
   reminderLeadOptions: string[];
@@ -3373,13 +3223,8 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
 }) {
   const [editing, setEditing] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
-  const [editNote, setEditNote] = useState(task.note);
-  const [editOutcomeNotes, setEditOutcomeNotes] = useState(task.outcomeNotes ?? "");
-  const [commentSubmitting, setCommentSubmitting] = useState(false);
-  const [commentRetry, setCommentRetry] = useState(false);
-  const [attachmentUploading, setAttachmentUploading] = useState(false);
 
-  async function save(event: FormEvent<HTMLFormElement>) {
+  function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -3388,6 +3233,7 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
     const deadline = String(data.get("deadline") ?? "");
     if (title.length < 3) return void setFieldError(form, "title", "Enter at least 3 characters.");
     if (!contactDate) return void setFieldError(form, "contactDate", "Choose the contact date.");
+    if (!deadline) return void setFieldError(form, "deadline", "Choose a deadline.");
     const updated: Task = {
       ...task,
       title,
@@ -3401,30 +3247,12 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
       outcomeNotes: String(data.get("outcomeNotes") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
     };
-    if (await updateTask(updated)) setEditing(false);
+    if (updateTask(updated)) setEditing(false);
   }
 
-  async function postComment(event: FormEvent<HTMLFormElement>) {
+  function postComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setCommentSubmitting(true); setCommentRetry(false);
-    const posted = await addComment(task.id, commentDraft);
-    setCommentSubmitting(false);
-    if (posted) setCommentDraft(""); else setCommentRetry(true);
-  }
-
-  async function attach(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setAttachmentUploading(true);
-    const uploaded = await uploadAttachment(task.id, file);
-    setAttachmentUploading(false);
-    if (uploaded) event.target.value = "";
-  }
-
-  function openEditor() {
-    setEditNote(task.note);
-    setEditOutcomeNotes(task.outcomeNotes ?? "");
-    setEditing(true);
+    if (addComment(task.id, commentDraft)) setCommentDraft("");
   }
 
   return (
@@ -3433,39 +3261,36 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
         <form className="entity-form detail-edit-form" onSubmit={save}>
           <label className="field field-full"><span>Task title *</span><input name="title" defaultValue={task.title} required minLength={3} maxLength={255} autoFocus /></label>
           <label className="field"><span>Contact date *</span><input name="contactDate" type="date" defaultValue={task.contactDate ?? task.deadline.slice(0, 10)} required /></label>
-          <label className="field"><span>Deadline · Europe/Kyiv</span><input name="deadline" type="datetime-local" defaultValue={task.deadline} /></label>
+          <label className="field"><span>Deadline · Europe/Kyiv *</span><input name="deadline" type="datetime-local" defaultValue={task.deadline} required /></label>
           <label className="field"><span>Responsible manager</span><select name="owner" defaultValue={task.owner}>{Array.from(new Set([...managerOptions, task.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
-          <label className="field"><span>Contact person</span><select name="contactPersonId" defaultValue={task.contactPersonId ?? ""}><option value="">Not specified</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
+          <label className="field"><span>Contact person</span><select name="contactPersonId" defaultValue={task.contactPersonId ?? ""}><option value="">Not specified</option>{contacts.filter((contact) => contact.status === "Active" || contact.id === task.contactPersonId).map((contact) => <option key={contact.id} value={contact.id}>{contact.name}{contact.status === "Inactive" ? " (Inactive)" : ""}</option>)}</select></label>
           <label className="field"><span>Status</span><select name="status" defaultValue={task.status}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>
           <label className="field"><span>Outcome status</span><select name="outcomeStatus" defaultValue={task.outcomeStatus ?? ""}><option value="">Not specified</option>{outcomeStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-          <label className="field field-full"><span>Description</span><textarea name="note" value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={4} maxLength={4000} />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setEditNote((current) => appendVoiceText(current, text))} />}</label>
-          <label className="field field-full"><span>Outcome notes</span><textarea name="outcomeNotes" value={editOutcomeNotes} onChange={(event) => setEditOutcomeNotes(event.target.value)} rows={3} maxLength={4000} />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setEditOutcomeNotes((current) => appendVoiceText(current, text))} />}</label>
+          <label className="field field-full"><span>Description</span><textarea name="note" defaultValue={task.note} rows={4} maxLength={4000} /></label>
+          <label className="field field-full"><span>Outcome notes</span><textarea name="outcomeNotes" defaultValue={task.outcomeNotes ?? ""} rows={3} maxLength={4000} /></label>
           <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} defaultChecked={(task.reminderLeads ?? []).includes(lead)} /><span>{lead}</span></label>)}</fieldset>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => setEditing(false)}>Cancel</button><button className="primary-button" type="submit">Save task</button></div>
         </form>
       ) : (
         <>
-          <div className="task-detail-status"><StatusBadge value={task.status} /><StatusBadge value={`${task.priority} priority`} />{isOverdue(task) && <StaticStatusBadge value="Overdue" />}{canEdit && <button className="secondary-button task-edit-button" type="button" onClick={openEditor}>Edit task</button>}</div>
-          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · Europe/Kyiv</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}</b></div><div><small>Outcome</small><b>{task.outcomeStatus || "—"}</b></div><div><small>Calendar</small>{task.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(task)}>Download .ics</button> : <b>Set a deadline first</b>}</div></div>
+          <div className="task-detail-status"><StatusBadge value={task.status} /><StatusBadge value={`${task.priority} priority`} />{isOverdue(task) && <StaticStatusBadge value="Overdue" />}{canEdit && <button className="secondary-button task-edit-button" type="button" onClick={() => setEditing(true)}>Edit task</button>}</div>
+          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · Europe/Kyiv</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}{contacts.find((contact) => contact.id === task.contactPersonId)?.status === "Inactive" ? " (Inactive)" : ""}</b></div><div><small>Outcome</small><b>{task.outcomeStatus || "—"}</b></div><div><small>Calendar</small><button className="detail-action-button" type="button" onClick={() => downloadTaskIcs(task, company)}>Download .ics</button></div></div>
           <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p>{task.outcomeNotes && <><small>Outcome notes</small><p>{task.outcomeNotes}</p></>}</div>
-          <section className="attachment-section"><div className="detail-section-head"><h3>Attachments <StaticStatusBadge value={String(attachments.length)} /></h3>{canEdit && <label className="secondary-button attachment-upload">{attachmentUploading ? "Uploading…" : "＋ Upload file"}<input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,image/*" disabled={attachmentUploading} onChange={(event) => void attach(event)} /></label>}</div><div className="attachment-list">{attachments.map((attachment) => <article key={attachment.id}><span><b>{attachment.name}</b><small>{(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB · {attachment.author}</small></span><button className="secondary-button" type="button" onClick={() => void downloadAttachment(attachment)}>Download</button>{(isAdmin || attachment.authorUserId === currentUserId) && <button className="danger-button" type="button" onClick={() => void deleteAttachment(attachment)}>Delete</button>}</article>)}{attachments.length === 0 && <p className="muted-copy">No attachments yet. PDF, Word, Excel, and images up to 20 MB are supported.</p>}</div></section>
-          <section className="comment-stream"><div className="detail-section-head"><h3>Comments <StaticStatusBadge value={String(comments.filter((comment) => !comment.isHidden).length)} /></h3></div>{comments.map((comment) => <article key={comment.id} className={comment.isHidden ? "comment-hidden" : ""}><span className="timeline-avatar blue">{comment.author.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><p><b>{comment.author}</b><small>{comment.createdAt} · Kyiv</small><span>{comment.isHidden ? "Comment hidden by Admin" : comment.text}</span></p>{isAdmin && <button className="text-button" type="button" onClick={() => void setCommentHidden(task.id, comment.id, !comment.isHidden)}>{comment.isHidden ? "Restore" : "Hide"}</button>}</article>)}{comments.length === 0 && <div className="empty-state compact"><b>No comments yet</b><span>The task discussion will appear here.</span></div>}{canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write a clear update for the team" />{AI_INPUTS_ENABLED && <VoiceInputButton disabled={commentSubmitting} onText={(text) => { setCommentDraft((current) => appendVoiceText(current, text)); setCommentRetry(false); }} />}</label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}</section>
-          <section className="change-log"><div className="detail-section-head"><h3>Change log</h3><small>{events.length} events</small></div>{events.slice(0, 8).map((event) => <article key={event.id}><span>{event.action}</span><p><b>{event.detail}</b><small>{event.actor} · {event.at} · Kyiv</small></p></article>)}{events.length === 0 && <p className="muted-copy">No changes recorded for this task.</p>}</section>
-          <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{task.deadline && <button className="secondary-button" type="button" onClick={() => void downloadIcs(task)}>↓ Add to calendar</button>}{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive task</button>}{canEdit && task.status !== "Completed" && task.status !== "Started" && taskStatusOptions.includes("Started") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Started")}>Start task</button>}{canEdit && task.status === "Started" && taskStatusOptions.includes("Deferred") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Deferred")}>Defer</button>}{canEdit && task.status !== "Completed" && taskStatusOptions.includes("Completed") && <button className="primary-button" type="button" onClick={() => updateStatus(task, "Completed")}>✓ Mark as completed</button>}</div>
+          <section className="comment-stream"><div className="detail-section-head"><h3>Comments <StaticStatusBadge value={String(comments.length)} /></h3></div>{comments.map((comment) => <article key={comment.id}><span className="timeline-avatar blue">{comment.author.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><p><b>{comment.author}</b><small>{comment.createdAt} · Kyiv</small><span>{comment.text}</span></p></article>)}{comments.length === 0 && <div className="empty-state compact"><b>No comments yet</b><span>The task discussion will appear here.</span></div>}{canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} required maxLength={2000} rows={3} placeholder="Write a clear update for the team" /></label><button className="primary-button" type="submit">Post comment</button></form>}</section>
+          <section className="change-log"><div className="detail-section-head"><h3>Change log</h3><small>{events.length} events</small></div>{events.slice(0, 8).map((event) => <article key={event.id}><span>{event.action}</span><p><b>{event.detail}</b><small>{event.actor} · {event.at} · Kyiv</small></p></article>)}{events.length === 0 && <p className="muted-copy">No changes recorded in this page session.</p>}</section>
+          <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button><button className="secondary-button" type="button" onClick={() => downloadTaskIcs(task, company)}>↓ Add to calendar</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive task</button>}{canEdit && task.status !== "Completed" && task.status !== "Started" && taskStatusOptions.includes("Started") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Started")}>Start task</button>}{canEdit && task.status === "Started" && taskStatusOptions.includes("Deferred") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Deferred")}>Defer</button>}{canEdit && task.status !== "Completed" && taskStatusOptions.includes("Completed") && <button className="primary-button" type="button" onClick={() => updateStatus(task, "Completed")}>✓ Mark as completed</button>}</div>
         </>
       )}
     </Modal>
   );
 }
 
-function CompanyForm({ statusOptions, companyTypeOptions, defaultOwner, onClose, onSubmit }: { statusOptions: string[]; companyTypeOptions: string[]; defaultOwner: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, logoDataUrl: string) => Promise<boolean> }) {
+function CompanyForm({ statusOptions, companyTypeOptions, managerOptions, onClose, onSubmit }: { statusOptions: string[]; companyTypeOptions: string[]; managerOptions: string[]; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, logoDataUrl: string) => void }) {
   const [logoDataUrl, setLogoDataUrl] = useState("");
   const [imageProcessing, setImageProcessing] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [retry, setRetry] = useState(false);
   return (
     <Modal title="New company" eyebrow="Companies" onClose={onClose}>
-      <form onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, logoDataUrl).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); } }} className="entity-form">
+      <form onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else onSubmit(event, logoDataUrl); }} className="entity-form">
         <ImageField label="Company logo" name="companyLogo" value={logoDataUrl} onChange={setLogoDataUrl} onProcessingChange={setImageProcessing} kind="company" />
         <label className="field field-full"><span>Company name *</span><input name="name" required minLength={2} maxLength={255} autoFocus placeholder="For example, Baltic Engineering" /></label>
         <label className="field"><span>Company type *</span><select name="kind" required>{companyTypeOptions.map((kind) => <option key={kind}>{kind}</option>)}</select></label>
@@ -3474,96 +3299,28 @@ function CompanyForm({ statusOptions, companyTypeOptions, defaultOwner, onClose,
         <label className="field"><span>City</span><input name="city" maxLength={100} placeholder="Kyiv" /></label>
         <label className="field"><span>Website</span><input name="website" inputMode="url" maxLength={255} placeholder="example.com" /></label>
         <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/company/..." /></label>
-        <input name="owner" type="hidden" value={defaultOwner} />
+        <label className="field"><span>CJN Manager</span><select name="owner" required>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
         <label className="field field-full"><span>Description</span><textarea name="description" rows={4} maxLength={4000} placeholder="Directions, projects, and cooperation context" /></label>
-        {retry && <div className="form-error field-full" role="alert">The company was not saved. Your entries are preserved; try again when the connection is available.</div>}
-        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing || submitting}>{imageProcessing ? "Processing image…" : submitting ? "Saving…" : retry ? "Try again" : "Create company"}</button></div>
+        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Create company"}</button></div>
       </form>
     </Modal>
   );
 }
 
-function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompanyId, currentUserEmail, onClose, onSubmit }: { companies: Company[]; sourceOptions: string[]; initiatorOptions: CRMUser[]; initialCompanyId?: string; currentUserEmail: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, photoDataUrl: string) => Promise<boolean> }) {
-  const formRef = useRef<HTMLFormElement>(null);
-  const cardInputRef = useRef<HTMLInputElement>(null);
+function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompanyId, currentUserEmail, onClose, onSubmit }: { companies: Company[]; sourceOptions: string[]; initiatorOptions: CRMUser[]; initialCompanyId?: string; currentUserEmail: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, photoDataUrl: string) => void }) {
   const [source, setSource] = useState("");
   const [photoDataUrl, setPhotoDataUrl] = useState("");
   const [imageProcessing, setImageProcessing] = useState(false);
-  const [cardScanning, setCardScanning] = useState(false);
-  const [cardResult, setCardResult] = useState<OcrResult | null>(null);
-  const [cardError, setCardError] = useState("");
-  const [businessCardFile, setBusinessCardFile] = useState({ dataUrl: "", name: "" });
   const normalizedCurrentUserEmail = currentUserEmail.toLowerCase();
   const defaultInitiator = initiatorOptions.some((user) => user.email.toLowerCase() === normalizedCurrentUserEmail) ? normalizedCurrentUserEmail : "manual";
   const [initiatorChoice, setInitiatorChoice] = useState(defaultInitiator);
-  const [submitting, setSubmitting] = useState(false);
-  const [retry, setRetry] = useState(false);
-
-  function fillField(name: string, value?: string) {
-    if (!value || !formRef.current) return;
-    const element = formRef.current.elements.namedItem(name);
-    if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
-      element.value = value;
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-      element.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  }
-
-  function applyOcrDraft(draft: OcrDraft) {
-    fillField("firstName", draft.first_name);
-    fillField("lastName", draft.last_name);
-    fillField("position", draft.position);
-    fillField("phone", draft.phone);
-    fillField("email", draft.email);
-    fillField("linkedin", draft.linkedin);
-    if (draft.company) {
-      const match = companies.find((company) => company.name.trim().toLowerCase() === draft.company?.trim().toLowerCase());
-      if (match) fillField("companyId", match.id);
-    }
-  }
-
-  async function scanCard(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = "";
-    if (!file) return;
-    setCardScanning(true);
-    setCardError("");
-    setCardResult(null);
-    try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const body = new FormData();
-      body.append("file", file);
-      const response = await apiRequest<{ data: OcrResult }>("/ocr/business-card", { method: "POST", body });
-      setBusinessCardFile({ dataUrl, name: file.name || "business-card" });
-      setCardResult(response.data);
-      applyOcrDraft(response.data.draft);
-    } catch (caught) {
-      setCardError(apiMessage(caught));
-    } finally {
-      setCardScanning(false);
-    }
-  }
-
   return (
     <Modal title="Add contact manually" eyebrow="Contacts" onClose={onClose}>
-      <form ref={formRef} onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { if (cardScanning) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, photoDataUrl).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); } } }} className="entity-form">
-        {AI_INPUTS_ENABLED && <section className="ai-capture-panel field-full">
-          <div>
-            <b>Scan business card</b>
-            <small>Photo or scan → Tesseract OCR → draft fields. Review everything before saving.</small>
-          </div>
-          <div className="ai-capture-actions">
-            <button className="secondary-button" type="button" disabled={cardScanning} onClick={() => cardInputRef.current?.click()}>{cardScanning ? "Scanning…" : "📷 Scan / upload card"}</button>
-            <input ref={cardInputRef} className="image-input" type="file" accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff" capture="environment" onChange={(event) => void scanCard(event)} />
-          </div>
-          {cardError && <div className="form-error" role="alert">{cardError}</div>}
-          {cardResult && <div className="ocr-preview" aria-live="polite"><b>Recognized text · {cardResult.confidence} confidence</b><pre>{cardResult.raw_text}</pre>{cardResult.draft.company && !companies.some((company) => company.name.trim().toLowerCase() === cardResult.draft.company?.trim().toLowerCase()) && <small>Company “{cardResult.draft.company}” was recognized, but it is not in the CRM list yet. Select an existing company or create it first.</small>}</div>}
-        </section>}
-        {AI_INPUTS_ENABLED && <input name="businessCardDataUrl" type="hidden" value={businessCardFile.dataUrl} />}
-        {AI_INPUTS_ENABLED && <input name="businessCardFileName" type="hidden" value={businessCardFile.name} />}
+      <form onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else onSubmit(event, photoDataUrl); }} className="entity-form contact-entry-form">
         <ImageField label="Contact photo" name="contactPhoto" value={photoDataUrl} onChange={setPhotoDataUrl} onProcessingChange={setImageProcessing} />
-        <label className="field field-full"><span>Company *</span><select name="companyId" required defaultValue={initialCompanyId ?? companies[0]?.id}>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
-        <label className="field"><span>First name *</span><input name="firstName" required minLength={2} maxLength={100} autoFocus /></label>
+        <CompanyPicker companies={companies} defaultCompanyId={initialCompanyId} autoFocus={!initialCompanyId} />
+        <label className="field"><span>Contact status *</span><select name="status" required defaultValue="Active">{CONTACT_STATUSES.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label className="field"><span>First name *</span><input name="firstName" required minLength={2} maxLength={100} autoFocus={Boolean(initialCompanyId)} /></label>
         <label className="field"><span>Last name</span><input name="lastName" maxLength={100} /></label>
         <label className="field"><span>Position</span><input name="position" maxLength={150} placeholder="External Relations Director" /></label>
         <label className="field"><span>Phone</span><input name="phone" type="tel" maxLength={50} placeholder="+380…" /></label>
@@ -3575,14 +3332,13 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
         {["Exhibition / Conference", "Other"].includes(source) && <label className="field field-full"><span>{source === "Other" ? "Source detail" : "Exhibition / event name"}</span><input name="sourceDetail" maxLength={255} /></label>}
         {source === "Referral (word of mouth)" && <label className="field field-full"><span>Referred by</span><input name="referredBy" maxLength={255} /></label>}
         <div className="reminder-note field-full" id="contact-initiator-help"><span>i</span><p><b>Record attribution</b><small>Select an active CRM user or enter a name manually. Manual names are stored as text and do not receive in-app notifications.</small></p></div>
-        {retry && <div className="form-error field-full" role="alert">The contact was not saved. Your entries are preserved; try again when the connection is available.</div>}
-        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing || cardScanning || submitting}>{cardScanning ? "Scanning card…" : imageProcessing ? "Processing image…" : submitting ? "Saving…" : retry ? "Try again" : "Create contact"}</button></div>
+        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Create contact"}</button></div>
       </form>
     </Modal>
   );
 }
 
-function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions, reminderLeadOptions, managerOptions, initiatorOptions, currentUserEmail, initialCompanyId, canAddContact, onAddContact, onClose, onSubmit }: { companies: Company[]; contacts: Contact[]; taskStatusOptions: string[]; outcomeStatusOptions: string[]; reminderLeadOptions: string[]; managerOptions: string[]; initiatorOptions: CRMUser[]; currentUserEmail: string; initialCompanyId?: string; canAddContact: boolean; onAddContact: (draft: ContactDraft) => Promise<ContactCreationResult>; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean> }) {
+function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions, reminderLeadOptions, managerOptions, initiatorOptions, currentUserEmail, initialCompanyId, canAddContact, onAddContact, onClose, onSubmit }: { companies: Company[]; contacts: Contact[]; taskStatusOptions: string[]; outcomeStatusOptions: string[]; reminderLeadOptions: string[]; managerOptions: string[]; initiatorOptions: CRMUser[]; currentUserEmail: string; initialCompanyId?: string; canAddContact: boolean; onAddContact: (draft: ContactDraft) => ContactCreationResult; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
   const [companyId, setCompanyId] = useState(initialCompanyId ?? companies[0]?.id ?? "");
   const [contactPersonId, setContactPersonId] = useState("");
   const [quickContactOpen, setQuickContactOpen] = useState(false);
@@ -3594,11 +3350,7 @@ function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions
   const defaultQuickInitiator = initiatorOptions.some((user) => user.email.toLowerCase() === normalizedCurrentUserEmail) ? normalizedCurrentUserEmail : "manual";
   const [quickInitiatorChoice, setQuickInitiatorChoice] = useState(defaultQuickInitiator);
   const [quickInitiatorName, setQuickInitiatorName] = useState("");
-  const [noteDraft, setNoteDraft] = useState("");
-  const [outcomeNotesDraft, setOutcomeNotesDraft] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [retry, setRetry] = useState(false);
-  const companyContacts = contacts.filter((contact) => contact.companyId === companyId);
+  const companyContacts = contacts.filter((contact) => contact.companyId === companyId && contact.status === "Active");
 
   function resetQuickContact() {
     setQuickContact({ firstName: "", lastName: "", position: "", email: "", phone: "" });
@@ -3610,9 +3362,9 @@ function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions
     setQuickContactOpen(false);
   }
 
-  async function saveQuickContact() {
+  function saveQuickContact() {
     if (quickPhotoProcessing) return void setQuickError("Wait until the photo finishes processing.");
-    const result = await onAddContact({
+    const result = onAddContact({
       companyId,
       ...quickContact,
       initiatedBy: quickInitiatorChoice === "manual" ? quickInitiatorName : undefined,
@@ -3629,7 +3381,7 @@ function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions
 
   return (
     <Modal title="New task" eyebrow="Activity" onClose={onClose}>
-      <form onSubmit={(event) => { if (quickContactOpen) { event.preventDefault(); setQuickError("Save or cancel the quick contact before creating the task."); } else { setSubmitting(true); setRetry(false); void onSubmit(event).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); } }} className="entity-form">
+      <form onSubmit={(event) => { if (quickContactOpen) { event.preventDefault(); setQuickError("Save or cancel the quick contact before creating the task."); } else onSubmit(event); }} className="entity-form">
         <label className="field field-full"><span>Task title *</span><input name="title" required minLength={3} maxLength={255} autoFocus placeholder="What needs to be done?" /></label>
         <label className="field"><span>Company *</span><select name="companyId" required value={companyId} onChange={(event) => { setCompanyId(event.target.value); setContactPersonId(""); resetQuickContact(); }}>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
         <div className="contact-field-with-action">
@@ -3652,37 +3404,32 @@ function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions
           <div className="quick-contact-actions"><button className="secondary-button" type="button" onClick={resetQuickContact}>Cancel</button><button className="primary-button" type="button" disabled={quickPhotoProcessing} onClick={saveQuickContact}>{quickPhotoProcessing ? "Processing image…" : "Save contact"}</button></div>
         </section>}
         <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required defaultValue={todayKyiv()} /></label>
-        <label className="field"><span>Deadline · Europe/Kyiv</span><input name="deadline" type="datetime-local" /></label>
+        <label className="field"><span>Deadline · Europe/Kyiv *</span><input name="deadline" type="datetime-local" required /></label>
         <label className="field"><span>Responsible manager *</span><select name="owner" required>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
         <label className="field"><span>Status *</span><select name="status" defaultValue="Not Started">{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label className="field"><span>Priority</span><select name="priority"><option>Normal</option><option>Medium</option><option>High</option></select></label>
         <label className="field"><span>Outcome status</span><select name="outcomeStatus"><option value="">Not specified</option>{outcomeStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-        <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setNoteDraft((current) => appendVoiceText(current, text))} />}</label>
-        <label className="field field-full"><span>Outcome notes</span><textarea name="outcomeNotes" value={outcomeNotesDraft} onChange={(event) => setOutcomeNotesDraft(event.target.value)} rows={3} maxLength={4000} />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setOutcomeNotesDraft((current) => appendVoiceText(current, text))} />}</label>
+        <label className="field field-full"><span>Description</span><textarea name="note" rows={4} maxLength={4000} placeholder="Context, expected result, and links" /></label>
+        <label className="field field-full"><span>Outcome notes</span><textarea name="outcomeNotes" rows={3} maxLength={4000} /></label>
         <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} /><span>{lead}</span></label>)}</fieldset>
-        <div className="reminder-note field-full"><span>◷</span><p><b>Calendar and email reminders</b><small>The CRM provides an .ics file. Scheduled email delivery requires an active User linked to the selected CJN Manager.</small></p></div>
-        {retry && <div className="form-error field-full" role="alert">The task was not saved. Your entries are preserved; try again when the connection is available.</div>}
-        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={quickContactOpen || submitting}>{submitting ? "Saving…" : retry ? "Try again" : "Create task"}</button></div>
+        <div className="reminder-note field-full"><span>◷</span><p><b>Calendar file available</b><small>The frontend can generate an .ics file. Email delivery requires the production backend, scheduler, and an active User linked to the selected CJN Manager.</small></p></div>
+        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={quickContactOpen}>Create task</button></div>
       </form>
     </Modal>
   );
 }
 
-function UserForm({ onClose, onSubmit }: { onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean> }) {
-  const [delivery, setDelivery] = useState<"invite" | "temporary_password">("invite");
-  const [submitting, setSubmitting] = useState(false);
-  const [retry, setRetry] = useState(false);
+function UserForm({ onClose, onSubmit }: { onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
   return (
     <Modal title="New user" eyebrow="Team access" onClose={onClose}>
-      <form className="entity-form" onSubmit={(event) => { setSubmitting(true); setRetry(false); void onSubmit(event).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); }}>
+      <form className="entity-form" onSubmit={onSubmit}>
         <label className="field field-full"><span>Full name *</span><input name="name" required minLength={2} maxLength={120} autoFocus placeholder="First and last name" /></label>
         <label className="field field-full"><span>Work email *</span><input name="email" type="email" required maxLength={254} placeholder="name@company.com" /></label>
         <label className="field field-full"><span>Role</span><select name="role" defaultValue="Editor"><option>Editor</option><option>Manager</option><option>Read-only</option><option>Admin</option></select></label>
         <div className="role-hint-list field-full">{ROLE_ORDER.map((role) => <div key={role}><StaticStatusBadge value={role} /><span><b>{ROLE_DETAILS[role].summary}</b><small>{ROLE_DETAILS[role].permissions.join(" · ")}</small></span></div>)}</div>
-        <fieldset className="settings-list field-full"><legend>Initial password setup</legend><label><input name="delivery" type="radio" value="invite" checked={delivery === "invite"} onChange={() => setDelivery("invite")} /><span>Email invitation with a one-time password link</span></label><label><input name="delivery" type="radio" value="temporary_password" checked={delivery === "temporary_password"} onChange={() => setDelivery("temporary_password")} /><span>Temporary password set by Admin</span></label></fieldset>
-        {delivery === "temporary_password" && <label className="field field-full"><span>Temporary password *</span><input name="temporaryPassword" type="password" required minLength={8} maxLength={128} autoComplete="new-password" /></label>}
-        <div className="reminder-note field-full"><span>＋</span><p><b>{delivery === "invite" ? "Email invitation" : "Manual account setup"}</b><small>{delivery === "invite" ? "The user receives a 24-hour one-time link to set a password. If SMTP fails, the account remains created and Admin can set a temporary password later." : "The active user can sign in immediately and must replace the temporary password after the first sign-in."}</small></p></div>
-        {retry && <div className="form-error field-full" role="alert">The user was not created. Your entries are preserved; try again.</div>}
-        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={submitting}>{submitting ? "Saving…" : retry ? "Try again" : delivery === "invite" ? "Send invitation" : "Add user"}</button></div>
+        <label className="field field-full"><span>Temporary password *</span><input name="temporaryPassword" type="password" required minLength={8} maxLength={128} defaultValue={TEST_PASSWORD} autoComplete="new-password" /></label>
+        <div className="reminder-note field-full"><span>＋</span><p><b>Manual account setup</b><small>The active user can sign in immediately with this temporary password. Production should require a password change on first sign-in.</small></p></div>
+        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Add user</button></div>
       </form>
     </Modal>
   );
@@ -3733,23 +3480,15 @@ function ProfileModal({ identity, onClose, onSave }: { identity: AuthIdentity; o
   );
 }
 
-function SettingsModal({ preferences, systemSettings, onClose, onSave }: { preferences: Preferences; systemSettings: SystemSettings | null; onClose: () => void; onSave: (preferences: Preferences, systemSettings?: SystemSettings) => Promise<boolean> }) {
-  const [submitting, setSubmitting] = useState(false);
-  const [retry, setRetry] = useState(false);
-  async function submit(event: FormEvent<HTMLFormElement>) {
+function SettingsModal({ preferences, onClose, onSave }: { preferences: Preferences; onClose: () => void; onSave: (preferences: Preferences) => void }) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const nextPreferences = {
+    onSave({
       deadlineReminders: data.get("deadlineReminders") === "on",
       overdueNotifications: data.get("overdueNotifications") === "on",
       workspaceSummary: data.get("workspaceSummary") === "on",
-    };
-    const domains = String(data.get("registrationAllowedDomains") ?? "").split(/[\s,;]+/).map((value) => value.trim().toLowerCase()).filter(Boolean);
-    setSubmitting(true);
-    setRetry(false);
-    const saved = await onSave(nextPreferences, systemSettings ? { systemNotificationEmail: String(data.get("systemNotificationEmail") ?? "").trim(), notifyNewRegistrations: data.get("notifyNewRegistrations") === "on", registrationAllowedDomains: domains } : undefined);
-    setSubmitting(false);
-    setRetry(!saved);
+    });
   }
 
   return (
@@ -3758,9 +3497,7 @@ function SettingsModal({ preferences, systemSettings, onClose, onSave }: { prefe
         <label className="field"><span>Interface language</span><input value="English" readOnly /></label>
         <label className="field"><span>Timezone</span><input value="Europe/Kyiv" readOnly /></label>
         <fieldset className="settings-list field-full"><legend>Notifications</legend><label><input name="deadlineReminders" type="checkbox" defaultChecked={preferences.deadlineReminders} /> <span>My upcoming deadlines</span></label><label><input name="overdueNotifications" type="checkbox" defaultChecked={preferences.overdueNotifications} /> <span>My overdue tasks</span></label><label><input name="workspaceSummary" type="checkbox" defaultChecked={preferences.workspaceSummary} /> <span>My activity summary</span></label></fieldset>
-        {systemSettings && <><div className="form-divider field-full"><span>Registration and system email</span></div><label className="field field-full"><span>Allowed registration domains</span><textarea name="registrationAllowedDomains" rows={3} defaultValue={systemSettings.registrationAllowedDomains.join("\n")} placeholder="company.com&#10;subsidiary.com" /></label><label className="field field-full"><span>System notification email</span><input name="systemNotificationEmail" type="email" defaultValue={systemSettings.systemNotificationEmail} placeholder="admin@company.com" /></label><fieldset className="settings-list field-full"><legend>New registrations</legend><label><input name="notifyNewRegistrations" type="checkbox" defaultChecked={systemSettings.notifyNewRegistrations} /><span>Notify the system email when a user registers</span></label></fieldset></>}
-        {retry && <div className="form-error field-full" role="alert">Settings were not saved. Your entries are preserved; try again.</div>}
-        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={submitting}>{submitting ? "Saving…" : retry ? "Try again" : "Save settings"}</button></div>
+        <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Save settings</button></div>
       </form>
     </Modal>
   );
