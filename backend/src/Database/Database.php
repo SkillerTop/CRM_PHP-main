@@ -22,16 +22,20 @@ final class Database
         $database = (string) Config::get('DB_DATABASE', 'crm_client_data');
         $dsn = "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
 
+        $options = [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ];
+        if (defined('PDO::MYSQL_ATTR_INIT_COMMAND')) {
+            $options[PDO::MYSQL_ATTR_INIT_COMMAND] = "SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci";
+        }
+
         self::$connection = new PDO(
             $dsn,
             (string) Config::get('DB_USERNAME', 'root'),
             (string) Config::get('DB_PASSWORD', ''),
-            [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_EMULATE_PREPARES => false,
-                PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci",
-            ]
+            $options
         );
         self::$connection->exec("SET time_zone = '+00:00'");
 

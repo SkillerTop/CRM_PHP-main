@@ -151,6 +151,7 @@ final class App
 
     private function securityHeaders(): void
     {
+        header_remove('X-Powered-By');
         header('X-Frame-Options: DENY');
         header('Referrer-Policy: same-origin');
         header('Permissions-Policy: camera=(self), microphone=(self), geolocation=()');
