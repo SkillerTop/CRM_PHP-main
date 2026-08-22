@@ -9,10 +9,12 @@ final class Pagination
     public readonly int $page;
     public readonly int $perPage;
 
-    public function __construct(array $query, int $default = 50, int $maximum = 100)
+    public function __construct(array $query, int $default = 50, int $maximum = 100, string $prefix = '')
     {
-        $this->page = max(1, (int) ($query['page'] ?? 1));
-        $requested = (int) ($query['per_page'] ?? $default);
+        $pageKey = $prefix === '' ? 'page' : $prefix . '_page';
+        $perPageKey = $prefix === '' ? 'per_page' : $prefix . '_per_page';
+        $this->page = max(1, (int) ($query[$pageKey] ?? 1));
+        $requested = (int) ($query[$perPageKey] ?? $default);
         $this->perPage = max(1, min($maximum, $requested));
     }
 

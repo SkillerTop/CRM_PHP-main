@@ -88,6 +88,15 @@ final class Request
     public function ip(): string
     {
         $remote = trim((string) ($this->server['REMOTE_ADDR'] ?? '0.0.0.0'));
+        $proxySecret = (string) Config::get('PROXY_SHARED_SECRET', '');
+        $providedSecret = (string) $this->header('X-CRM-Proxy-Secret', '');
+        if ($proxySecret !== '' && $providedSecret !== '' && hash_equals($proxySecret, $providedSecret)) {
+            $forwarded = trim((string) $this->header('X-Forwarded-For', ''));
+            if (!str_contains($forwarded, ',')) {
+                return $this->validIp($forwarded) ?? ($this->validIp($remote) ?? '0.0.0.0');
+            }
+            return $this->validIp($remote) ?? '0.0.0.0';
+        }
         $trustedProxies = Config::csv('TRUSTED_PROXIES');
         if (!in_array($remote, $trustedProxies, true)) {
             return $this->validIp($remote) ?? '0.0.0.0';

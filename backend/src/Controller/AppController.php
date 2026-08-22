@@ -25,6 +25,7 @@ final class AppController
     public function bootstrap(Request $request): never
     {
         $admin = $this->auth->user()['role'] === 'admin';
+        $canWrite = in_array($this->auth->user()['role'], ['admin', 'manager', 'editor'], true);
         // Bootstrap is intentionally metadata-only. Records are loaded through paginated endpoints.
         $includeRecords = false;
         $archiveWhere = !$includeRecords ? ' WHERE 1 = 0' : ($admin ? '' : ' WHERE c.is_archived = 0');
@@ -121,7 +122,7 @@ final class AppController
         $lookupSql = 'SELECT * FROM lookups' . ($admin ? '' : ' WHERE is_active = 1') . ' ORDER BY type, sort_order, id';
         $lookupGroups = [];
         foreach ($this->db->query($lookupSql)->fetchAll() as $row) {
-            $lookupGroups[(string) $row['type']][] = $this->lookups->map($row);
+            $lookupGroups[(string) $row['type']][] = $this->lookups->map($row, $admin);
         }
 
         $users = [];
@@ -133,7 +134,7 @@ final class AppController
                 'pending_approval' => (bool) $row['pending_approval'], 'last_login_at' => Clock::api($row['last_login_at'] ?? null),
                 'updated_at' => Clock::api($row['updated_at'] ?? null), 'photo_data_url' => $row['photo_data_url'] ?? null,
             ], $rows);
-        } else {
+        } elseif ($canWrite) {
             foreach ($lookupGroups['cjn_manager'] ?? [] as $manager) {
                 if (!empty($manager['email'])) {
                     $users[] = ['id' => $manager['user_id'], 'full_name' => $manager['value'], 'email' => $manager['email'], 'role' => 'editor', 'is_active' => true, 'pending_approval' => false, 'last_login_at' => null, 'updated_at' => $manager['updated_at']];

@@ -89,9 +89,9 @@ final class LookupService
     }
 
     /** @return array<string, mixed> */
-    public function map(array $row): array
+    public function map(array $row, bool $includeDeliveryFields = true): array
     {
-        return [
+        $mapped = [
             'id' => (int) $row['id'],
             'type' => (string) $row['type'],
             'key' => (string) $row['key_code'],
@@ -102,11 +102,14 @@ final class LookupService
             'minutes_before' => $row['minutes_before'] === null ? null : (int) $row['minutes_before'],
             'requires_detail' => (bool) $row['requires_detail'],
             'requires_referral' => (bool) $row['requires_referral'],
-            'user_id' => $row['user_id'] === null ? null : (int) $row['user_id'],
-            'email' => $row['email'],
             'created_at' => Clock::api($row['created_at'] ?? null),
             'updated_at' => Clock::api($row['updated_at'] ?? null),
         ];
+        if ($includeDeliveryFields) {
+            $mapped['user_id'] = $row['user_id'] === null ? null : (int) $row['user_id'];
+            $mapped['email'] = $row['email'];
+        }
+        return $mapped;
     }
 
     public static function assertType(string $type): void

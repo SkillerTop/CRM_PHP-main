@@ -13,6 +13,7 @@ use CRM\Http\ApiException;
 use CRM\Http\Request;
 use CRM\Http\Response;
 use CRM\Security\AuthContext;
+use CRM\Security\ResourceGuard;
 use CRM\Support\Arr;
 use CRM\Support\Clock;
 use CRM\Support\Pagination;
@@ -27,7 +28,8 @@ final class ContactController
         private readonly PDO $db,
         private readonly AuthContext $auth,
         private readonly AuditLogger $audit,
-        private readonly LookupService $lookups
+        private readonly LookupService $lookups,
+        private readonly ResourceGuard $resources
     ) {
     }
 
@@ -71,9 +73,12 @@ final class ContactController
         Response::json(['data' => array_map([EntityMapper::class, 'contact'], $stmt->fetchAll()), 'meta' => $pagination->meta($total)]);
     }
 
-    public function forCompany(int $companyId): never
+    public function forCompany(Request $request, int $companyId): never
     {
         $this->assertCompany($companyId);
+        $pagination = new Pagination($request->query);
+        $count = $this->db->prepare('SELECT COUNT(*) FROM contacts k JOIN companies c ON c.id = k.company_id WHERE k.company_id = :company_id AND k.is_archived = 0 AND c.is_archived = 0');
+        $count->execute(['company_id' => $companyId]);
         $stmt = $this->db->prepare(
             'SELECT k.id, k.company_id, k.first_name, k.last_name, k.position, k.phone, k.email, k.linkedin,
                     k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id, k.contact_status,
@@ -87,10 +92,13 @@ final class ContactController
              JOIN lookups mgr ON mgr.id = k.manager_lookup_id
              LEFT JOIN users creator ON creator.id = k.created_by
              WHERE k.company_id = :company_id AND k.is_archived = 0 AND c.is_archived = 0
-             ORDER BY k.last_name, k.first_name'
+             ORDER BY k.last_name, k.first_name LIMIT :limit OFFSET :offset'
         );
-        $stmt->execute(['company_id' => $companyId]);
-        Response::json(['data' => array_map([EntityMapper::class, 'contact'], $stmt->fetchAll())]);
+        $stmt->bindValue(':company_id', $companyId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map([EntityMapper::class, 'contact'], $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
     public function show(int $id): never
@@ -102,8 +110,12 @@ final class ContactController
     {
         $this->auth->requireWrite();
         $input = $request->json();
+        if ((string) Arr::nullableString($input, 'business_card_data_url') !== '') {
+            $this->resources->consume('upload', $this->auth->userId(), Config::int('UPLOAD_MAX_REQUESTS_PER_HOUR', 100));
+        }
         $data = $this->validated($input);
         $this->duplicateGuard($data['email'], null, Arr::bool($input, 'allow_duplicate'));
+        $storedBusinessCardPath = null;
         $this->db->beginTransaction();
         try {
             $now = Clock::dbNow();
@@ -122,12 +134,15 @@ final class ContactController
             ]);
             $id = (int) $this->db->lastInsertId();
             $label = trim($data['first_name'] . ' ' . ($data['last_name'] ?? ''));
-            $this->storeBusinessCardAttachment($id, $label, $input);
+            $storedBusinessCardPath = $this->storeBusinessCardAttachment($id, $label, $input);
             $this->audit->log('CREATE', 'Contact', $id, $label, detail: ['company_id' => $data['company_id']]);
             $this->db->commit();
         } catch (Throwable $error) {
             if ($this->db->inTransaction()) {
                 $this->db->rollBack();
+            }
+            if ($storedBusinessCardPath !== null) {
+                @unlink($storedBusinessCardPath);
             }
             throw $error;
         }
@@ -205,12 +220,19 @@ final class ContactController
         Response::json(['data' => EntityMapper::contact($this->find($id, true))]);
     }
 
-    public function log(int $id): never
+    public function log(Request $request, int $id): never
     {
         $this->find($id, $this->canViewArchived());
-        $stmt = $this->db->prepare('SELECT * FROM change_events WHERE entity_type = :type AND entity_id = :id ORDER BY created_at DESC, id DESC');
-        $stmt->execute(['type' => 'Contact', 'id' => $id]);
-        Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll())]);
+        $pagination = new Pagination($request->query);
+        $count = $this->db->prepare('SELECT COUNT(*) FROM change_events WHERE entity_type = :type AND entity_id = :id');
+        $count->execute(['type' => 'Contact', 'id' => $id]);
+        $stmt = $this->db->prepare('SELECT * FROM change_events WHERE entity_type = :type AND entity_id = :id ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset');
+        $stmt->bindValue(':type', 'Contact');
+        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
     /** @return array<string, mixed> */
@@ -351,11 +373,11 @@ final class ContactController
     }
 
     /** @param array<string, mixed> $input */
-    private function storeBusinessCardAttachment(int $contactId, string $label, array $input): void
+    private function storeBusinessCardAttachment(int $contactId, string $label, array $input): ?string
     {
         $dataUrl = Arr::nullableString($input, 'business_card_data_url');
         if ($dataUrl === null || $dataUrl === '') {
-            return;
+            return null;
         }
         $maximum = Config::int('OCR_MAX_FILE_MB', 8) * 1024 * 1024;
         $normalized = ImageDataUrl::validate($dataUrl, $maximum, ['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/tiff'], 'invalid_business_card_file', 'Файл визитки должен быть корректным изображением размером не более 8 МБ.');
@@ -372,34 +394,36 @@ final class ContactController
             default => 'img',
         };
         $original = basename((string) (Arr::nullableString($input, 'business_card_file_name') ?? 'business-card.' . $extension));
-        $relativeDirectory = 'contacts/' . $contactId . '/business-cards/' . gmdate('Y/m');
-        $baseUpload = Config::root((string) Config::get('UPLOAD_DIR', 'storage/uploads'));
-        $directory = $baseUpload . '/' . $relativeDirectory;
-        if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
-            throw new ApiException(500, 'storage_unavailable', 'Не удалось подготовить каталог визиток.');
-        }
-        $storedName = bin2hex(random_bytes(20)) . '.' . $extension;
-        $relativePath = $relativeDirectory . '/' . $storedName;
-        if (file_put_contents($directory . '/' . $storedName, $content, LOCK_EX) === false) {
-            throw new ApiException(500, 'upload_failed', 'Не удалось сохранить файл визитки.');
-        }
-
-        $now = Clock::dbNow();
-        $stmt = $this->db->prepare(
-            'INSERT INTO contact_attachments
-                (contact_id, original_name, stored_path, mime_type, size_bytes, attachment_kind, author_user_id, author_name,
-                 created_by, updated_by, created_at, updated_at)
-             VALUES (:contact_id, :original_name, :stored_path, :mime_type, :size_bytes, :kind, :author_id, :author_name,
-                     :created_by, :updated_by, :created_at, :updated_at)'
-        );
-        $stmt->execute([
-            'contact_id' => $contactId, 'original_name' => $original, 'stored_path' => $relativePath,
-            'mime_type' => $mime, 'size_bytes' => $size, 'kind' => 'business_card',
-            'author_id' => $this->auth->userId(), 'author_name' => $this->auth->actorName(),
-            'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
-            'created_at' => $now, 'updated_at' => $now,
-        ]);
-        $this->audit->log('FIELD CHANGE', 'Contact', $contactId, $label, 'Attachment', '—', $original, ['attachment_kind' => 'business_card']);
+        return $this->resources->storeWithinQuota($size, function () use ($contactId, $label, $mime, $content, $size, $extension, $original): string {
+            $relativeDirectory = 'contacts/' . $contactId . '/business-cards/' . gmdate('Y/m');
+            $baseUpload = Config::root((string) Config::get('UPLOAD_DIR', 'storage/uploads'));
+            $directory = $baseUpload . '/' . $relativeDirectory;
+            if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
+                throw new ApiException(500, 'storage_unavailable', 'Не удалось подготовить каталог визиток.');
+            }
+            $storedName = bin2hex(random_bytes(20)) . '.' . $extension;
+            $relativePath = $relativeDirectory . '/' . $storedName;
+            if (file_put_contents($directory . '/' . $storedName, $content, LOCK_EX) === false) {
+                throw new ApiException(500, 'upload_failed', 'Не удалось сохранить файл визитки.');
+            }
+            $now = Clock::dbNow();
+            $stmt = $this->db->prepare(
+                'INSERT INTO contact_attachments
+                    (contact_id, original_name, stored_path, mime_type, size_bytes, attachment_kind, author_user_id, author_name,
+                     created_by, updated_by, created_at, updated_at)
+                 VALUES (:contact_id, :original_name, :stored_path, :mime_type, :size_bytes, :kind, :author_id, :author_name,
+                         :created_by, :updated_by, :created_at, :updated_at)'
+            );
+            $stmt->execute([
+                'contact_id' => $contactId, 'original_name' => $original, 'stored_path' => $relativePath,
+                'mime_type' => $mime, 'size_bytes' => $size, 'kind' => 'business_card',
+                'author_id' => $this->auth->userId(), 'author_name' => $this->auth->actorName(),
+                'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $this->audit->log('FIELD CHANGE', 'Contact', $contactId, $label, 'Attachment', '—', $original, ['attachment_kind' => 'business_card']);
+            return $directory . '/' . $storedName;
+        });
     }
 
     /** @return array<string, mixed> */
@@ -412,7 +436,7 @@ final class ContactController
              FROM contacts k JOIN companies c ON c.id = k.company_id
              LEFT JOIN lookups src ON src.id = k.source_lookup_id LEFT JOIN lookups ini ON ini.id = k.initiated_by_lookup_id
              JOIN lookups mgr ON mgr.id = k.manager_lookup_id LEFT JOIN users creator ON creator.id = k.created_by
-             WHERE k.id = :id' . ($includeArchived ? '' : ' AND k.is_archived = 0')
+             WHERE k.id = :id' . ($includeArchived ? '' : ' AND k.is_archived = 0 AND c.is_archived = 0')
         );
         $stmt->execute(['id' => $id]);
         $row = $stmt->fetch();

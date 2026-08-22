@@ -58,13 +58,24 @@ final class ProfileController
             throw new ApiException(409, 'email_exists', 'Этот email уже используется.');
         }
 
-        $stmt = $this->db->prepare('UPDATE users SET full_name = :name, email = :email, phone = :phone, photo_data_url = :photo, updated_at = :now, updated_by = :actor_id WHERE id = :id');
-        $stmt->execute(['name' => $name, 'email' => $email, 'phone' => $phone, 'photo' => $photo, 'now' => Clock::dbNow(), 'actor_id' => $current['id'], 'id' => $current['id']]);
-        if ($name !== $current['full_name']) {
-            $this->audit->log('FIELD CHANGE', 'User', (int) $current['id'], $name, 'Full name', (string) $current['full_name'], $name);
+        $this->db->beginTransaction();
+        try {
+            $stmt = $this->db->prepare('UPDATE users SET full_name = :name, email = :email, phone = :phone, photo_data_url = :photo, updated_at = :now, updated_by = :actor_id WHERE id = :id');
+            $stmt->execute(['name' => $name, 'email' => $email, 'phone' => $phone, 'photo' => $photo, 'now' => Clock::dbNow(), 'actor_id' => $current['id'], 'id' => $current['id']]);
+            if ($name !== $current['full_name']) {
+                $this->audit->log('FIELD CHANGE', 'User', (int) $current['id'], $name, 'Full name', (string) $current['full_name'], $name);
+            }
+            if ($email !== $current['email']) {
+                $this->audit->log('FIELD CHANGE', 'User', (int) $current['id'], $name, 'Email', (string) $current['email'], $email);
+            }
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $error;
         }
         if ($email !== $current['email']) {
-            $this->audit->log('FIELD CHANGE', 'User', (int) $current['id'], $name, 'Email', (string) $current['email'], $email);
             try {
                 $this->mailer->send((string) $current['email'], 'Логин CRM изменён', "Ваш логин CRM изменён на {$email}. Если это сделали не вы, обратитесь к администратору.");
             } catch (Throwable) {
@@ -94,10 +105,20 @@ final class ProfileController
                 'fields' => ['password' => 'Укажите новый пароль, отличный от текущего.'],
             ]);
         }
-        $stmt = $this->db->prepare('UPDATE users SET password_hash = :hash, must_change_password = 0, updated_at = :now, updated_by = :actor_id WHERE id = :id');
-        $stmt->execute(['hash' => Password::hash($newPassword), 'now' => Clock::dbNow(), 'actor_id' => $current['id'], 'id' => $current['id']]);
-        $this->auth->revokeOtherSessions((int) $current['id']);
-        $this->audit->log('FIELD CHANGE', 'User', (int) $current['id'], (string) $current['full_name'], 'Password', '—', 'changed');
+        $hash = Password::hash($newPassword);
+        $this->db->beginTransaction();
+        try {
+            $stmt = $this->db->prepare('UPDATE users SET password_hash = :hash, must_change_password = 0, updated_at = :now, updated_by = :actor_id WHERE id = :id');
+            $stmt->execute(['hash' => $hash, 'now' => Clock::dbNow(), 'actor_id' => $current['id'], 'id' => $current['id']]);
+            $this->auth->revokeOtherSessions((int) $current['id']);
+            $this->audit->log('FIELD CHANGE', 'User', (int) $current['id'], (string) $current['full_name'], 'Password', '—', 'changed');
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $error;
+        }
         Response::json(['data' => ['message' => 'Пароль изменён; остальные сессии завершены.']]);
     }
 

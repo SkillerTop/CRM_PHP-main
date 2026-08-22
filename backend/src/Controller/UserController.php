@@ -16,6 +16,7 @@ use CRM\Security\Password;
 use CRM\Support\Arr;
 use CRM\Support\Clock;
 use CRM\Support\Validator;
+use CRM\Support\Pagination;
 use PDO;
 use Throwable;
 
@@ -32,11 +33,16 @@ final class UserController
     ) {
     }
 
-    public function index(): never
+    public function index(Request $request): never
     {
         $this->auth->requireAdmin();
-        $stmt = $this->db->query('SELECT * FROM users ORDER BY pending_approval DESC, is_active DESC, full_name');
-        Response::json(['data' => array_map([$this, 'map'], $stmt->fetchAll())]);
+        $pagination = new Pagination($request->query);
+        $total = (int) $this->db->query('SELECT COUNT(*) FROM users')->fetchColumn();
+        $stmt = $this->db->prepare('SELECT * FROM users ORDER BY pending_approval DESC, is_active DESC, full_name LIMIT :limit OFFSET :offset');
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map([$this, 'map'], $stmt->fetchAll()), 'meta' => $pagination->meta($total)]);
     }
 
     public function store(Request $request): never
@@ -57,6 +63,8 @@ final class UserController
             'temporary_password' => $delivery === 'temporary_password' ? Validator::password($password) : '',
         ]);
         $now = Clock::dbNow();
+        $token = null;
+        $this->db->beginTransaction();
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO users
@@ -72,17 +80,23 @@ final class UserController
                 'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
                 'created_at' => $now, 'updated_at' => $now,
             ]);
-        } catch (\PDOException $error) {
-            if ((string) $error->getCode() === '23000') {
+            $id = (int) $this->db->lastInsertId();
+            $this->audit->log('CREATE', 'User', $id, $name, detail: ['role' => $role, 'delivery' => $delivery]);
+            if ($delivery === 'invite') {
+                $token = $this->authController->createPasswordToken($id, 'invite', 1440);
+            }
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            if ($error instanceof \PDOException && (string) $error->getCode() === '23000') {
                 throw new ApiException(409, 'email_exists', 'Пользователь с таким email уже существует.');
             }
             throw $error;
         }
-        $id = (int) $this->db->lastInsertId();
-        $this->audit->log('CREATE', 'User', $id, $name, detail: ['role' => $role, 'delivery' => $delivery]);
         $warnings = [];
         if ($delivery === 'invite') {
-            $token = $this->authController->createPasswordToken($id, 'invite', 1440);
             $url = rtrim((string) Config::get('APP_URL', ''), '/') . '/reset-password?token=' . rawurlencode($token);
             try {
                 $this->mailer->send($email, 'Приглашение в Client Data CRM', "Здравствуйте, {$name}.\n\nУстановите пароль по ссылке (действует 24 часа):\n{$url}\n");
@@ -212,14 +226,28 @@ final class UserController
         if ($delivery === 'temporary_password' && Validator::password($password) !== '') {
             throw new ApiException(400, 'validation_error', 'Временный пароль должен содержать минимум 8 символов.');
         }
-        $user = $this->find($id);
+        $token = null;
         $warning = null;
-        if ($delivery === 'temporary_password') {
-            $stmt = $this->db->prepare('UPDATE users SET password_hash = :hash, must_change_password = 1, updated_by = :actor_id, updated_at = :now WHERE id = :id');
-            $stmt->execute(['hash' => Password::hash($password), 'actor_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $id]);
-            $this->auth->revokeAllSessions($id);
-        } else {
-            $token = $this->authController->createPasswordToken($id, 'admin_reset', 1440);
+        $hash = $delivery === 'temporary_password' ? Password::hash($password) : null;
+        $this->db->beginTransaction();
+        try {
+            $user = $this->findForUpdate($id);
+            if ($delivery === 'temporary_password') {
+                $stmt = $this->db->prepare('UPDATE users SET password_hash = :hash, must_change_password = 1, updated_by = :actor_id, updated_at = :now WHERE id = :id');
+                $stmt->execute(['hash' => $hash, 'actor_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $id]);
+                $this->auth->revokeAllSessions($id);
+            } else {
+                $token = $this->authController->createPasswordToken($id, 'admin_reset', 1440);
+            }
+            $this->audit->log('FIELD CHANGE', 'User', $id, (string) $user['full_name'], 'Password', '—', 'reset', ['delivery' => $delivery]);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $error;
+        }
+        if ($delivery === 'invite') {
             $url = rtrim((string) Config::get('APP_URL', ''), '/') . '/reset-password?token=' . rawurlencode($token);
             try {
                 $this->mailer->send((string) $user['email'], 'Сброс пароля Client Data CRM', "Установите новый пароль по ссылке (действует 24 часа):\n{$url}\n");
@@ -227,7 +255,6 @@ final class UserController
                 $warning = 'Ссылка создана, но письмо не отправлено. Проверьте настройки почтового сервера.';
             }
         }
-        $this->audit->log('FIELD CHANGE', 'User', $id, (string) $user['full_name'], 'Password', '—', 'reset', ['delivery' => $delivery]);
         $payload = ['data' => ['message' => 'Сброс пароля подготовлен.']];
         if ($warning !== null) {
             $payload['warnings'] = ['mail' => $warning];
@@ -235,17 +262,24 @@ final class UserController
         Response::json($payload);
     }
 
-    public function log(int $id): never
+    public function log(Request $request, int $id): never
     {
         $this->auth->requireAdmin();
         $this->find($id);
+        $pagination = new Pagination($request->query);
+        $count = $this->db->prepare('SELECT COUNT(*) FROM change_events WHERE entity_type = :type AND entity_id = :id');
+        $count->execute(['type' => 'User', 'id' => $id]);
         $stmt = $this->db->prepare(
             'SELECT * FROM change_events
              WHERE entity_type = :type AND entity_id = :id
-             ORDER BY created_at DESC, id DESC'
+             ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset'
         );
-        $stmt->execute(['type' => 'User', 'id' => $id]);
-        Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll())]);
+        $stmt->bindValue(':type', 'User');
+        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
     private function protectLastAdmin(array $before, string $newRole, bool $newActive): void

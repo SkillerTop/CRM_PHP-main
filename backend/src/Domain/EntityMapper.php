@@ -22,7 +22,6 @@ final class EntityMapper
             'status' => $row['status_value'] ?? null,
             'manager_id' => isset($row['manager_lookup_id']) ? (int) $row['manager_lookup_id'] : null,
             'manager' => $row['manager_value'] ?? null,
-            'manager_email' => $row['manager_email'] ?? null,
             'last_contact_date' => $row['last_contact_date'],
             'website' => $row['website'],
             'linkedin' => $row['linkedin'],
@@ -34,7 +33,6 @@ final class EntityMapper
             'created_by' => isset($row['created_by']) ? (int) $row['created_by'] : null,
             'updated_by' => isset($row['updated_by']) ? (int) $row['updated_by'] : null,
             'created_by_name' => $row['created_by_name'] ?? null,
-            'created_by_email' => $row['created_by_email'] ?? null,
         ];
     }
 
@@ -61,13 +59,11 @@ final class EntityMapper
             'initiated_by_text' => $row['initiated_by_text'] ?? null,
             'manager_id' => isset($row['manager_lookup_id']) ? (int) $row['manager_lookup_id'] : null,
             'manager' => $row['manager_value'] ?? null,
-            'manager_email' => $row['manager_email'] ?? null,
             'photo_data_url' => $row['photo_data_url'] ?? null,
             'is_archived' => (bool) $row['is_archived'],
             'created_at' => Clock::api($row['created_at'] ?? null),
             'updated_at' => Clock::api($row['updated_at'] ?? null),
             'created_by_name' => $row['created_by_name'] ?? null,
-            'created_by_email' => $row['created_by_email'] ?? null,
         ];
     }
 
@@ -82,7 +78,6 @@ final class EntityMapper
             'contact_date' => (string) $row['contact_date'],
             'manager_id' => (int) $row['manager_lookup_id'],
             'manager' => $row['manager_value'] ?? null,
-            'manager_email' => $row['manager_email'] ?? null,
             'contact_person_id' => isset($row['contact_person_id']) ? (int) $row['contact_person_id'] : null,
             'contact_person' => $row['contact_person_name'] ?? null,
             'description' => $row['description'],
@@ -102,7 +97,6 @@ final class EntityMapper
             'created_at' => Clock::api($row['created_at'] ?? null),
             'updated_at' => Clock::api($row['updated_at'] ?? null),
             'created_by_name' => $row['created_by_name'] ?? null,
-            'created_by_email' => $row['created_by_email'] ?? null,
         ];
     }
 }

@@ -96,20 +96,29 @@ final class CompanyController
         $this->auth->requireWrite();
         $data = $this->validated($request->json());
         $this->duplicateGuard($data['name'], null, Arr::bool($request->json(), 'allow_duplicate'));
-        $now = Clock::dbNow();
-        $stmt = $this->db->prepare(
-            'INSERT INTO companies
-                (name, type_lookup_id, country, city, status_lookup_id, manager_lookup_id, website, linkedin, logo_data_url, description,
-                 is_archived, created_by, updated_by, created_at, updated_at)
-             VALUES (:name, :type_id, :country, :city, :status_id, :manager_id, :website, :linkedin, :logo_data_url, :description,
-                     0, :created_by, :updated_by, :created_at, :updated_at)'
-        );
-        $stmt->execute($data + [
-            'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
-            'created_at' => $now, 'updated_at' => $now,
-        ]);
-        $id = (int) $this->db->lastInsertId();
-        $this->audit->log('CREATE', 'Company', $id, $data['name'], detail: ['company_id' => $id]);
+        $this->db->beginTransaction();
+        try {
+            $now = Clock::dbNow();
+            $stmt = $this->db->prepare(
+                'INSERT INTO companies
+                    (name, type_lookup_id, country, city, status_lookup_id, manager_lookup_id, website, linkedin, logo_data_url, description,
+                     is_archived, created_by, updated_by, created_at, updated_at)
+                 VALUES (:name, :type_id, :country, :city, :status_id, :manager_id, :website, :linkedin, :logo_data_url, :description,
+                         0, :created_by, :updated_by, :created_at, :updated_at)'
+            );
+            $stmt->execute($data + [
+                'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $id = (int) $this->db->lastInsertId();
+            $this->audit->log('CREATE', 'Company', $id, $data['name'], detail: ['company_id' => $id]);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $error;
+        }
         Response::json(['data' => EntityMapper::company($this->find($id, true))], 201);
     }
 
@@ -178,12 +187,19 @@ final class CompanyController
         Response::json(['data' => EntityMapper::company($this->find($id, true))]);
     }
 
-    public function log(int $id): never
+    public function log(Request $request, int $id): never
     {
         $this->find($id, $this->canViewArchived());
-        $stmt = $this->db->prepare('SELECT * FROM change_events WHERE entity_type = :type AND entity_id = :id ORDER BY created_at DESC, id DESC');
-        $stmt->execute(['type' => 'Company', 'id' => $id]);
-        Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll())]);
+        $pagination = new Pagination($request->query);
+        $count = $this->db->prepare('SELECT COUNT(*) FROM change_events WHERE entity_type = :type AND entity_id = :id');
+        $count->execute(['type' => 'Company', 'id' => $id]);
+        $stmt = $this->db->prepare('SELECT * FROM change_events WHERE entity_type = :type AND entity_id = :id ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset');
+        $stmt->bindValue(':type', 'Company');
+        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
     /** @return array<string, mixed> */

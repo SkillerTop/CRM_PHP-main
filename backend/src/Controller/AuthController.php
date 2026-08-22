@@ -43,16 +43,13 @@ final class AuthController
         ]);
 
         $rateKey = $request->ip();
-        $emailRateKey = $email;
         $this->limiter->ensureAllowed('login_ip', $rateKey);
-        $this->limiter->ensureAllowed('login_email', $emailRateKey);
         $stmt = $this->db->prepare('SELECT * FROM users WHERE email = :email LIMIT 1');
         $stmt->execute(['email' => $email]);
         $user = $stmt->fetch();
         $valid = $user && (bool) $user['is_active'] && !(bool) $user['pending_approval'] && Password::verify($password, $user['password_hash']);
         if (!$valid) {
             $this->limiter->failure('login_ip', $rateKey);
-            $this->limiter->failure('login_email', $emailRateKey);
             $this->audit->log(
                 'LOGIN FAILED',
                 'User',
@@ -65,7 +62,6 @@ final class AuthController
         }
 
         $this->limiter->clear('login_ip', $rateKey);
-        $this->limiter->clear('login_email', $emailRateKey);
         $now = Clock::dbNow();
         $update = $this->db->prepare('UPDATE users SET last_login_at = :now, updated_at = updated_at WHERE id = :id');
         $update->execute(['now' => $now, 'id' => $user['id']]);
@@ -203,8 +199,8 @@ final class AuthController
                 'UPDATE users SET password_hash = :hash, must_change_password = 0, updated_at = :now WHERE id = :id'
             );
             $update->execute(['hash' => Password::hash($password), 'now' => Clock::dbNow(), 'id' => $row['user_id']]);
-            $consume = $this->db->prepare('UPDATE password_tokens SET used_at = :now WHERE id = :id');
-            $consume->execute(['now' => Clock::dbNow(), 'id' => $row['id']]);
+            $consume = $this->db->prepare('UPDATE password_tokens SET used_at = :now WHERE user_id = :user_id AND used_at IS NULL');
+            $consume->execute(['now' => Clock::dbNow(), 'user_id' => $row['user_id']]);
             $this->auth->revokeAllSessions((int) $row['user_id']);
             $user = $this->db->prepare('SELECT full_name FROM users WHERE id = :id');
             $user->execute(['id' => $row['user_id']]);
@@ -223,18 +219,39 @@ final class AuthController
     public function createPasswordToken(int $userId, string $purpose, int $minutes): string
     {
         $token = bin2hex(random_bytes(32));
-        $stmt = $this->db->prepare(
-            'INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at, created_at)
-             VALUES (:user_id, :token_hash, :purpose, :expires_at, :created_at)'
-        );
         $now = Clock::utcNow();
-        $stmt->execute([
-            'user_id' => $userId,
-            'token_hash' => hash('sha256', $token),
-            'purpose' => $purpose,
-            'expires_at' => Clock::db($now->modify("+{$minutes} minutes")),
-            'created_at' => Clock::db($now),
-        ]);
+        $ownsTransaction = !$this->db->inTransaction();
+        if ($ownsTransaction) {
+            $this->db->beginTransaction();
+        }
+        try {
+            $lock = $this->db->prepare('SELECT id FROM users WHERE id = :id FOR UPDATE');
+            $lock->execute(['id' => $userId]);
+            if ($lock->fetchColumn() === false) {
+                throw new ApiException(404, 'user_not_found', 'Пользователь не найден.');
+            }
+            $invalidate = $this->db->prepare('UPDATE password_tokens SET used_at = :now WHERE user_id = :user_id AND used_at IS NULL');
+            $invalidate->execute(['now' => Clock::db($now), 'user_id' => $userId]);
+            $stmt = $this->db->prepare(
+                'INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at, created_at)
+                 VALUES (:user_id, :token_hash, :purpose, :expires_at, :created_at)'
+            );
+            $stmt->execute([
+                'user_id' => $userId,
+                'token_hash' => hash('sha256', $token),
+                'purpose' => $purpose,
+                'expires_at' => Clock::db($now->modify("+{$minutes} minutes")),
+                'created_at' => Clock::db($now),
+            ]);
+            if ($ownsTransaction) {
+                $this->db->commit();
+            }
+        } catch (Throwable $error) {
+            if ($ownsTransaction && $this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $error;
+        }
         return $token;
     }
 

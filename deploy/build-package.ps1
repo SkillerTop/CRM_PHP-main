@@ -24,6 +24,8 @@ try {
         if ($normalized -match '(^|/)\.env(?:\..*)?$' -and $normalized -notmatch '(^|/)\.env\.example$') { $skip = $true }
         if ($normalized -eq 'database/queries/postman-verification.sql') { $skip = $true }
         if ($normalized -eq 'src/Service/README.md') { $skip = $true }
+        if ($normalized.StartsWith('.runtime/') -or $normalized.StartsWith('.tmp/')) { $skip = $true }
+        if ($normalized -match '^storage/\..+\.lock$') { $skip = $true }
         if ($normalized.StartsWith('storage/uploads/') -and $normalized -ne 'storage/uploads/.gitkeep') { $skip = $true }
         if ($normalized.StartsWith('storage/logs/') -and $normalized -ne 'storage/logs/.gitkeep') { $skip = $true }
         if ($skip) { return }

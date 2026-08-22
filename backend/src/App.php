@@ -36,6 +36,7 @@ use CRM\Http\Router;
 use CRM\Http\Routes;
 use CRM\Security\AuthContext;
 use CRM\Security\RateLimiter;
+use CRM\Security\ResourceGuard;
 use PDO;
 use Throwable;
 
@@ -43,6 +44,8 @@ final class App
 {
     private Router $router;
     private AuthContext $auth;
+    /** @var resource|null */
+    private $maintenanceLock = null;
 
     public function __construct()
     {
@@ -54,6 +57,7 @@ final class App
         $lookups = new LookupService($db);
         $settings = new SystemSettings($db);
         $rateLimiter = new RateLimiter($db);
+        $resourceGuard = new ResourceGuard($db);
         $reminders = new ReminderService($db, $audit, $mailer, $ics);
         $processRunner = new ProcessRunner();
         $businessCardOcr = new BusinessCardOcrService($processRunner);
@@ -62,8 +66,8 @@ final class App
         $authController = new AuthController($db, $this->auth, $audit, $rateLimiter, $mailer, $settings);
         $profileController = new ProfileController($db, $this->auth, $audit, $mailer);
         $companyController = new CompanyController($db, $this->auth, $audit, $lookups);
-        $contactController = new ContactController($db, $this->auth, $audit, $lookups);
-        $taskController = new TaskController($db, $this->auth, $audit, $lookups, $reminders, $ics);
+        $contactController = new ContactController($db, $this->auth, $audit, $lookups, $resourceGuard);
+        $taskController = new TaskController($db, $this->auth, $audit, $lookups, $reminders, $ics, $resourceGuard);
         $lookupController = new LookupController($db, $this->auth, $audit, $lookups);
         $userController = new UserController($db, $this->auth, $audit, $mailer, $authController);
         $auditController = new AuditController($db, $this->auth);
@@ -72,7 +76,7 @@ final class App
         $settingsController = new SettingsController($db, $this->auth, $audit, $settings);
         $healthController = new HealthController($db);
         $appController = new AppController($db, $this->auth, $lookups);
-        $aiInputController = new AiInputController($this->auth, $businessCardOcr, $speechTranscription);
+        $aiInputController = new AiInputController($this->auth, $businessCardOcr, $speechTranscription, $resourceGuard);
 
         $this->router = Routes::create(
             $healthController,
@@ -99,6 +103,10 @@ final class App
             $this->securityHeaders();
             if ($request->method === 'OPTIONS') {
                 Response::noContent();
+            }
+
+            if (!in_array($request->method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+                $this->acquireMutationLock();
             }
 
             $public = preg_match('#^/api/(?:health|auth/(?:login|register|forgot-password|reset-password))$#', $request->path) === 1;
@@ -161,6 +169,22 @@ final class App
             date(DATE_ATOM) . ' Internal server error: ' . get_class($error) . "\n",
             FILE_APPEND | LOCK_EX
         );
+    }
+
+    private function acquireMutationLock(): void
+    {
+        $storage = Config::root('storage');
+        if (!is_dir($storage) && !mkdir($storage, 0770, true) && !is_dir($storage)) {
+            throw new ApiException(503, 'maintenance_lock_unavailable', 'Хранилище временно недоступно.');
+        }
+        $lock = fopen($storage . '/.maintenance.lock', 'c+');
+        if ($lock === false || !flock($lock, LOCK_SH)) {
+            if (is_resource($lock)) {
+                fclose($lock);
+            }
+            throw new ApiException(503, 'maintenance_lock_unavailable', 'Не удалось проверить режим обслуживания.');
+        }
+        $this->maintenanceLock = $lock;
     }
 }
 

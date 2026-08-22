@@ -13,22 +13,24 @@
     SSLCertificateKeyFile /etc/letsencrypt/live/crm.example.com/privkey.pem
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
+    <Directory /var/www/client-data-crm>
+        Require all denied
+    </Directory>
+
     <Directory /var/www/client-data-crm/backend/public>
-        AllowOverride All
+        AllowOverride None
         Options -Indexes +FollowSymLinks
+        DirectoryIndex index.php
+        RewriteEngine On
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
+        RewriteRule ^ index.php [QSA,L]
         Require all granted
     </Directory>
 
     <FilesMatch "\.php$">
         SetHandler "proxy:unix:/run/php/php8.3-fpm.sock|fcgi://localhost/"
     </FilesMatch>
-
-    <Directory /var/www/client-data-crm>
-        Require all denied
-    </Directory>
-    <Directory /var/www/client-data-crm/backend/public>
-        Require all granted
-    </Directory>
 
     ErrorLog ${APACHE_LOG_DIR}/client-data-crm-error.log
     CustomLog ${APACHE_LOG_DIR}/client-data-crm-access.log combined

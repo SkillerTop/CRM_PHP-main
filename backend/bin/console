@@ -5,6 +5,7 @@ declare(strict_types=1);
 
 use CRM\Config\Config;
 use CRM\Config\Env;
+use CRM\Config\EnvironmentValidator;
 use CRM\Database\Database;
 use CRM\Database\MigrationRunner;
 use CRM\Domain\AuditLogger;
@@ -14,18 +15,36 @@ use CRM\Domain\ReminderService;
 use CRM\Security\AuthContext;
 use CRM\Security\Password;
 use CRM\Support\Clock;
+use CRM\Support\StoredFile;
 
 require dirname(__DIR__) . '/src/autoload.php';
 Env::load(dirname(__DIR__) . '/.env');
 Config::bootstrap(dirname(__DIR__));
 
 $command = $argv[1] ?? 'help';
-$db = Database::connection();
 
 try {
+    EnvironmentValidator::validate();
+    if ($command === 'config:check') {
+        echo "Backend environment is valid.\n";
+        exit(0);
+    }
+    $db = Database::connection();
     if ($command === 'migrate') {
         $completed = (new MigrationRunner($db))->run();
         echo $completed === [] ? "No pending migrations.\n" : "Applied: " . implode(', ', $completed) . "\n";
+        exit(0);
+    }
+
+    if ($command === 'migrate:resolve') {
+        $migration = (string) ($argv[2] ?? '');
+        $step = (int) ($argv[3] ?? 0);
+        $resolution = (string) ($argv[4] ?? '');
+        if ($migration === '' || $step < 1) {
+            throw new RuntimeException('Usage: bin/console migrate:resolve <migration.sql> <step> applied|retry');
+        }
+        (new MigrationRunner($db))->resolve($migration, $step, $resolution);
+        echo "Migration step resolved; run migrate again.\n";
         exit(0);
     }
 
@@ -71,16 +90,34 @@ try {
         $db->exec("DELETE FROM user_sessions WHERE expires_at < UTC_TIMESTAMP(6) OR revoked_at < UTC_TIMESTAMP(6) - INTERVAL 30 DAY");
         $db->exec("DELETE FROM password_tokens WHERE expires_at < UTC_TIMESTAMP(6) - INTERVAL 7 DAY OR used_at < UTC_TIMESTAMP(6) - INTERVAL 7 DAY");
         $db->exec("DELETE FROM auth_attempts WHERE updated_at < UTC_TIMESTAMP(6) - INTERVAL 30 DAY");
-        echo "Expired transient data removed. ChangeEvent records were not touched.\n";
+        $purgedAttachments = 0;
+        foreach (['task_attachments', 'contact_attachments'] as $table) {
+            $rows = $db->query("SELECT id, stored_path FROM {$table} WHERE deleted_at IS NOT NULL")->fetchAll();
+            foreach ($rows as $row) {
+                StoredFile::purgeRelative((string) $row['stored_path']);
+                $delete = $db->prepare("DELETE FROM {$table} WHERE id = :id AND deleted_at IS NOT NULL");
+                $delete->execute(['id' => $row['id']]);
+                $purgedAttachments += $delete->rowCount();
+            }
+        }
+        $trash = Config::root((string) Config::get('UPLOAD_DIR', 'storage/uploads')) . '/.trash';
+        foreach (glob($trash . '/*.deleted') ?: [] as $orphan) {
+            if (is_file($orphan)) {
+                unlink($orphan);
+            }
+        }
+        echo "Expired transient data removed; purged attachments: {$purgedAttachments}. ChangeEvent records were not touched.\n";
         exit(0);
     }
 
     echo "Client Data CRM console\n\n";
     echo "Commands:\n";
+    echo "  config:check    Validate required and security-sensitive environment values\n";
     echo "  migrate         Apply MySQL migrations and lookup seeds\n";
+    echo "  migrate:resolve Resolve an ambiguous DDL step after manual schema verification\n";
     echo "  create-admin    Create/update the first Admin from ADMIN_* env vars\n";
     echo "  reminders:run   Send due reminders (schedule every 15 minutes)\n";
-    echo "  cleanup         Remove expired sessions/tokens/rate-limit rows\n";
+    echo "  cleanup         Remove expired transient rows and physically purge deleted attachments\n";
     exit(0);
 } catch (Throwable $error) {
     fwrite(STDERR, $error->getMessage() . "\n");

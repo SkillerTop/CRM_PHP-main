@@ -15,11 +15,13 @@ use CRM\Http\ApiException;
 use CRM\Http\Request;
 use CRM\Http\Response;
 use CRM\Security\AuthContext;
+use CRM\Security\ResourceGuard;
 use CRM\Support\Arr;
 use CRM\Support\Clock;
 use CRM\Support\Pagination;
 use CRM\Support\Validator;
 use CRM\Support\UploadedFile;
+use CRM\Support\StoredFile;
 use PDO;
 use Throwable;
 
@@ -31,7 +33,8 @@ final class TaskController
         private readonly AuditLogger $audit,
         private readonly LookupService $lookups,
         private readonly ReminderService $reminders,
-        private readonly IcsGenerator $ics
+        private readonly IcsGenerator $ics,
+        private readonly ResourceGuard $resources
     ) {
     }
 
@@ -82,17 +85,23 @@ final class TaskController
         Response::json(['data' => array_map([EntityMapper::class, 'task'], $stmt->fetchAll()), 'meta' => $pagination->meta($total)]);
     }
 
-    public function forCompany(int $companyId): never
+    public function forCompany(Request $request, int $companyId): never
     {
         $this->assertCompany($companyId);
-        $stmt = $this->db->prepare($this->baseSelect() . ' WHERE t.company_id = :company_id AND t.is_archived = 0 ORDER BY t.contact_date DESC, t.id DESC');
-        $stmt->execute(['company_id' => $companyId]);
-        Response::json(['data' => array_map([EntityMapper::class, 'task'], $stmt->fetchAll())]);
+        $pagination = new Pagination($request->query);
+        $count = $this->db->prepare('SELECT COUNT(*) FROM tasks t JOIN companies c ON c.id = t.company_id WHERE t.company_id = :company_id AND t.is_archived = 0 AND c.is_archived = 0');
+        $count->execute(['company_id' => $companyId]);
+        $stmt = $this->db->prepare($this->baseSelect() . ' WHERE t.company_id = :company_id AND t.is_archived = 0 AND c.is_archived = 0 ORDER BY t.contact_date DESC, t.id DESC LIMIT :limit OFFSET :offset');
+        $stmt->bindValue(':company_id', $companyId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map([EntityMapper::class, 'task'], $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
-    public function show(int $id): never
+    public function show(Request $request, int $id): never
     {
-        Response::json(['data' => $this->detail($id)]);
+        Response::json(['data' => $this->detail($id, $request->query)]);
     }
 
     public function store(Request $request): never
@@ -220,16 +229,22 @@ final class TaskController
         Response::json(['data' => $this->detail($id)]);
     }
 
-    public function comments(int $taskId): never
+    public function comments(Request $request, int $taskId): never
     {
         $this->find($taskId, $this->canViewArchived());
+        $pagination = new Pagination($request->query);
         $visibility = $this->canViewArchived() ? '' : ' AND tc.is_hidden = 0';
+        $count = $this->db->prepare('SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = :task_id' . $visibility);
+        $count->execute(['task_id' => $taskId]);
         $stmt = $this->db->prepare(
             'SELECT tc.*, u.full_name AS author_current_name FROM task_comments tc
-             LEFT JOIN users u ON u.id = tc.author_user_id WHERE tc.task_id = :task_id' . $visibility . ' ORDER BY tc.created_at, tc.id'
+             LEFT JOIN users u ON u.id = tc.author_user_id WHERE tc.task_id = :task_id' . $visibility . ' ORDER BY tc.created_at, tc.id LIMIT :limit OFFSET :offset'
         );
-        $stmt->execute(['task_id' => $taskId]);
-        Response::json(['data' => array_map(fn (array $row): array => $this->mapComment($row), $stmt->fetchAll())]);
+        $stmt->bindValue(':task_id', $taskId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map(fn (array $row): array => $this->mapComment($row), $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
     public function addComment(Request $request, int $taskId): never
@@ -238,18 +253,27 @@ final class TaskController
         $task = $this->find($taskId, false);
         $text = (string) Arr::string($request->json(), 'text', '');
         Validator::ensure(['text' => Validator::required($text) ?: Validator::max($text, 10000)]);
-        $stmt = $this->db->prepare(
-            'INSERT INTO task_comments
-                (task_id, author_user_id, author_name, text, is_hidden, created_by, updated_by, created_at, updated_at)
-             VALUES (:task_id, :author_id, :author_name, :text, 0, :created_by, :updated_by, :created_at, :updated_at)'
-        );
-        $stmt->execute([
-            'task_id' => $taskId, 'author_id' => $this->auth->userId(), 'author_name' => $this->auth->actorName(),
-            'text' => $text, 'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
-            'created_at' => Clock::dbNow(), 'updated_at' => Clock::dbNow(),
-        ]);
-        $id = (int) $this->db->lastInsertId();
-        $this->audit->log('COMMENT', 'Task', $taskId, (string) $task['name'], detail: ['comment_id' => $id]);
+        $this->db->beginTransaction();
+        try {
+            $stmt = $this->db->prepare(
+                'INSERT INTO task_comments
+                    (task_id, author_user_id, author_name, text, is_hidden, created_by, updated_by, created_at, updated_at)
+                 VALUES (:task_id, :author_id, :author_name, :text, 0, :created_by, :updated_by, :created_at, :updated_at)'
+            );
+            $stmt->execute([
+                'task_id' => $taskId, 'author_id' => $this->auth->userId(), 'author_name' => $this->auth->actorName(),
+                'text' => $text, 'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
+                'created_at' => Clock::dbNow(), 'updated_at' => Clock::dbNow(),
+            ]);
+            $id = (int) $this->db->lastInsertId();
+            $this->audit->log('COMMENT', 'Task', $taskId, (string) $task['name'], detail: ['comment_id' => $id]);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $error;
+        }
         $comment = $this->db->prepare('SELECT * FROM task_comments WHERE id = :id');
         $comment->execute(['id' => $id]);
         Response::json(['data' => $this->mapComment($comment->fetch())], 201);
@@ -260,21 +284,37 @@ final class TaskController
         $this->auth->requireAdmin();
         $task = $this->find($taskId, true);
         $hidden = Arr::bool($request->json(), 'hidden', true);
-        $stmt = $this->db->prepare('UPDATE task_comments SET is_hidden = :hidden, updated_by = :user_id, updated_at = :now WHERE id = :id AND task_id = :task_id');
-        $stmt->execute(['hidden' => (int) $hidden, 'user_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $commentId, 'task_id' => $taskId]);
-        if ($stmt->rowCount() === 0) {
-            throw new ApiException(404, 'comment_not_found', 'Комментарий не найден.');
+        $this->db->beginTransaction();
+        try {
+            $stmt = $this->db->prepare('UPDATE task_comments SET is_hidden = :hidden, updated_by = :user_id, updated_at = :now WHERE id = :id AND task_id = :task_id');
+            $stmt->execute(['hidden' => (int) $hidden, 'user_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $commentId, 'task_id' => $taskId]);
+            if ($stmt->rowCount() === 0) {
+                throw new ApiException(404, 'comment_not_found', 'Комментарий не найден.');
+            }
+            $this->audit->log('FIELD CHANGE', 'Task', $taskId, (string) $task['name'], 'Comment visibility', $hidden ? 'visible' : 'hidden', $hidden ? 'hidden' : 'visible', ['comment_id' => $commentId]);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $error;
         }
-        $this->audit->log('FIELD CHANGE', 'Task', $taskId, (string) $task['name'], 'Comment visibility', $hidden ? 'visible' : 'hidden', $hidden ? 'hidden' : 'visible', ['comment_id' => $commentId]);
         Response::json(['data' => ['id' => $commentId, 'hidden' => $hidden]]);
     }
 
-    public function log(int $taskId): never
+    public function log(Request $request, int $taskId): never
     {
         $this->find($taskId, $this->canViewArchived());
-        $stmt = $this->db->prepare('SELECT * FROM change_events WHERE entity_type = :type AND entity_id = :id ORDER BY created_at DESC, id DESC');
-        $stmt->execute(['type' => 'Task', 'id' => $taskId]);
-        Response::json(['data' => array_map([$this, 'mapEvent'], $stmt->fetchAll())]);
+        $pagination = new Pagination($request->query);
+        $count = $this->db->prepare('SELECT COUNT(*) FROM change_events WHERE entity_type = :type AND entity_id = :id');
+        $count->execute(['type' => 'Task', 'id' => $taskId]);
+        $stmt = $this->db->prepare('SELECT * FROM change_events WHERE entity_type = :type AND entity_id = :id ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset');
+        $stmt->bindValue(':type', 'Task');
+        $stmt->bindValue(':id', $taskId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map([$this, 'mapEvent'], $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
     public function calendar(int $taskId): never
@@ -302,35 +342,50 @@ final class TaskController
         $maximum = Config::int('UPLOAD_MAX_BYTES', 20 * 1024 * 1024);
         $validatedFile = UploadedFile::validate($file, $maximum);
         $size = (int) $file['size'];
+        $this->resources->consume('upload', $this->auth->userId(), Config::int('UPLOAD_MAX_REQUESTS_PER_HOUR', 100));
         $original = basename((string) $file['name']);
         $extension = $validatedFile['extension'];
         $mime = $validatedFile['mime'];
-        $relativeDirectory = 'tasks/' . $taskId . '/' . gmdate('Y/m');
-        $baseUpload = Config::root((string) Config::get('UPLOAD_DIR', 'storage/uploads'));
-        $directory = $baseUpload . '/' . $relativeDirectory;
-        if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
-            throw new ApiException(500, 'storage_unavailable', 'Не удалось подготовить каталог вложений.');
-        }
-        $storedName = bin2hex(random_bytes(20)) . '.' . $extension;
-        $relativePath = $relativeDirectory . '/' . $storedName;
-        if (!move_uploaded_file((string) $file['tmp_name'], $directory . '/' . $storedName)) {
-            throw new ApiException(500, 'upload_failed', 'Не удалось сохранить вложение.');
-        }
-        $stmt = $this->db->prepare(
-            'INSERT INTO task_attachments
-                (task_id, original_name, stored_path, mime_type, size_bytes, author_user_id, author_name,
-                 created_by, updated_by, created_at, updated_at)
-             VALUES (:task_id, :original_name, :stored_path, :mime_type, :size_bytes, :author_id, :author_name,
-                     :created_by, :updated_by, :created_at, :updated_at)'
-        );
-        $stmt->execute([
-            'task_id' => $taskId, 'original_name' => $original, 'stored_path' => $relativePath,
-            'mime_type' => $mime, 'size_bytes' => $size, 'author_id' => $this->auth->userId(),
-            'author_name' => $this->auth->actorName(), 'created_by' => $this->auth->userId(),
-            'updated_by' => $this->auth->userId(), 'created_at' => Clock::dbNow(), 'updated_at' => Clock::dbNow(),
-        ]);
-        $id = (int) $this->db->lastInsertId();
-        $this->audit->log('FIELD CHANGE', 'Task', $taskId, (string) $task['name'], 'Attachment', '—', $original, ['attachment_id' => $id]);
+        $id = $this->resources->storeWithinQuota($size, function () use ($taskId, $task, $file, $extension, $original, $mime, $size): int {
+            $relativeDirectory = 'tasks/' . $taskId . '/' . gmdate('Y/m');
+            $baseUpload = Config::root((string) Config::get('UPLOAD_DIR', 'storage/uploads'));
+            $directory = $baseUpload . '/' . $relativeDirectory;
+            if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
+                throw new ApiException(500, 'storage_unavailable', 'Не удалось подготовить каталог вложений.');
+            }
+            $storedName = bin2hex(random_bytes(20)) . '.' . $extension;
+            $relativePath = $relativeDirectory . '/' . $storedName;
+            $absolutePath = $directory . '/' . $storedName;
+            if (!move_uploaded_file((string) $file['tmp_name'], $absolutePath)) {
+                throw new ApiException(500, 'upload_failed', 'Не удалось сохранить вложение.');
+            }
+            $this->db->beginTransaction();
+            try {
+                $stmt = $this->db->prepare(
+                    'INSERT INTO task_attachments
+                        (task_id, original_name, stored_path, mime_type, size_bytes, author_user_id, author_name,
+                         created_by, updated_by, created_at, updated_at)
+                     VALUES (:task_id, :original_name, :stored_path, :mime_type, :size_bytes, :author_id, :author_name,
+                             :created_by, :updated_by, :created_at, :updated_at)'
+                );
+                $stmt->execute([
+                    'task_id' => $taskId, 'original_name' => $original, 'stored_path' => $relativePath,
+                    'mime_type' => $mime, 'size_bytes' => $size, 'author_id' => $this->auth->userId(),
+                    'author_name' => $this->auth->actorName(), 'created_by' => $this->auth->userId(),
+                    'updated_by' => $this->auth->userId(), 'created_at' => Clock::dbNow(), 'updated_at' => Clock::dbNow(),
+                ]);
+                $id = (int) $this->db->lastInsertId();
+                $this->audit->log('FIELD CHANGE', 'Task', $taskId, (string) $task['name'], 'Attachment', '—', $original, ['attachment_id' => $id]);
+                $this->db->commit();
+                return $id;
+            } catch (Throwable $error) {
+                if ($this->db->inTransaction()) {
+                    $this->db->rollBack();
+                }
+                @unlink($absolutePath);
+                throw $error;
+            }
+        });
         Response::json(['data' => $this->attachment($id)], 201);
     }
 
@@ -339,7 +394,7 @@ final class TaskController
         $this->find($taskId, $this->canViewArchived());
         $attachment = $this->attachmentRow($attachmentId, $taskId);
         Response::download(
-            Config::root((string) Config::get('UPLOAD_DIR', 'storage/uploads')) . '/' . $attachment['stored_path'],
+            StoredFile::absolute((string) $attachment['stored_path']),
             (string) $attachment['original_name'],
             (string) $attachment['mime_type']
         );
@@ -353,10 +408,21 @@ final class TaskController
         if ($this->auth->user()['role'] !== 'admin' && (int) $attachment['author_user_id'] !== $this->auth->userId()) {
             throw new ApiException(403, 'forbidden', 'Удалить вложение может только его автор или Admin.');
         }
-        $now = Clock::dbNow();
-        $stmt = $this->db->prepare('UPDATE task_attachments SET deleted_at = :deleted_at, updated_by = :user_id, updated_at = :updated_at WHERE id = :id AND deleted_at IS NULL');
-        $stmt->execute(['deleted_at' => $now, 'user_id' => $this->auth->userId(), 'updated_at' => $now, 'id' => $attachmentId]);
-        $this->audit->log('FIELD CHANGE', 'Task', $taskId, (string) $task['name'], 'Attachment', (string) $attachment['original_name'], '—', ['attachment_id' => $attachmentId]);
+        $quarantine = StoredFile::quarantine((string) $attachment['stored_path']);
+        $this->db->beginTransaction();
+        try {
+            $stmt = $this->db->prepare('DELETE FROM task_attachments WHERE id = :id AND deleted_at IS NULL');
+            $stmt->execute(['id' => $attachmentId]);
+            $this->audit->log('FIELD CHANGE', 'Task', $taskId, (string) $task['name'], 'Attachment', (string) $attachment['original_name'], '—', ['attachment_id' => $attachmentId]);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            StoredFile::restore($quarantine);
+            throw $error;
+        }
+        StoredFile::purge($quarantine);
         Response::noContent();
     }
 
@@ -479,7 +545,7 @@ final class TaskController
     }
 
     /** @return array<string, mixed> */
-    private function detail(int $id): array
+    private function detail(int $id, array $query = []): array
     {
         $task = EntityMapper::task($this->find($id, $this->canViewArchived()));
         $task['reminder_lead_ids'] = $this->leadIds($id);
@@ -488,22 +554,45 @@ final class TaskController
             $task['reminder_leads'][] = $this->lookups->get($leadId, 'reminder_lead_time', true);
         }
         $visibility = $this->canViewArchived() ? '' : ' AND is_hidden = 0';
-        $comments = $this->db->prepare('SELECT * FROM task_comments WHERE task_id = :task_id' . $visibility . ' ORDER BY created_at, id');
-        $comments->execute(['task_id' => $id]);
+        $commentsPagination = new Pagination($query, 50, 100, 'comments');
+        $commentsCount = $this->db->prepare('SELECT COUNT(*) FROM task_comments WHERE task_id = :task_id' . $visibility);
+        $commentsCount->execute(['task_id' => $id]);
+        $comments = $this->db->prepare('SELECT * FROM task_comments WHERE task_id = :task_id' . $visibility . ' ORDER BY created_at, id LIMIT :limit OFFSET :offset');
+        $comments->bindValue(':task_id', $id, PDO::PARAM_INT);
+        $comments->bindValue(':limit', $commentsPagination->perPage, PDO::PARAM_INT);
+        $comments->bindValue(':offset', $commentsPagination->offset(), PDO::PARAM_INT);
+        $comments->execute();
         $task['comments'] = array_map(fn (array $row): array => $this->mapComment($row), $comments->fetchAll());
-        $attachments = $this->db->prepare('SELECT * FROM task_attachments WHERE task_id = :task_id AND deleted_at IS NULL ORDER BY created_at, id');
-        $attachments->execute(['task_id' => $id]);
+        $attachmentsPagination = new Pagination($query, 50, 100, 'attachments');
+        $attachmentsCount = $this->db->prepare('SELECT COUNT(*) FROM task_attachments WHERE task_id = :task_id AND deleted_at IS NULL');
+        $attachmentsCount->execute(['task_id' => $id]);
+        $attachments = $this->db->prepare('SELECT * FROM task_attachments WHERE task_id = :task_id AND deleted_at IS NULL ORDER BY created_at, id LIMIT :limit OFFSET :offset');
+        $attachments->bindValue(':task_id', $id, PDO::PARAM_INT);
+        $attachments->bindValue(':limit', $attachmentsPagination->perPage, PDO::PARAM_INT);
+        $attachments->bindValue(':offset', $attachmentsPagination->offset(), PDO::PARAM_INT);
+        $attachments->execute();
         $task['attachments'] = array_map([$this, 'mapAttachment'], $attachments->fetchAll());
-        $scheduled = $this->db->prepare('SELECT r.*, l.value AS lead_time FROM task_reminders r JOIN lookups l ON l.id = r.reminder_lead_lookup_id WHERE r.task_id = :task_id ORDER BY r.created_at DESC, r.id DESC');
-        $scheduled->execute(['task_id' => $id]);
-        $task['reminders'] = $scheduled->fetchAll();
+        $remindersPagination = new Pagination($query, 50, 100, 'reminders');
+        $remindersCount = $this->db->prepare('SELECT COUNT(*) FROM task_reminders WHERE task_id = :task_id');
+        $remindersCount->execute(['task_id' => $id]);
+        $scheduled = $this->db->prepare('SELECT r.*, l.value AS lead_time FROM task_reminders r JOIN lookups l ON l.id = r.reminder_lead_lookup_id WHERE r.task_id = :task_id ORDER BY r.created_at DESC, r.id DESC LIMIT :limit OFFSET :offset');
+        $scheduled->bindValue(':task_id', $id, PDO::PARAM_INT);
+        $scheduled->bindValue(':limit', $remindersPagination->perPage, PDO::PARAM_INT);
+        $scheduled->bindValue(':offset', $remindersPagination->offset(), PDO::PARAM_INT);
+        $scheduled->execute();
+        $task['reminders'] = array_map(fn (array $row): array => $this->mapReminder($row), $scheduled->fetchAll());
+        $task['collections_meta'] = [
+            'comments' => $commentsPagination->meta((int) $commentsCount->fetchColumn()),
+            'attachments' => $attachmentsPagination->meta((int) $attachmentsCount->fetchColumn()),
+            'reminders' => $remindersPagination->meta((int) $remindersCount->fetchColumn()),
+        ];
         return $task;
     }
 
     /** @return array<string, mixed> */
     private function find(int $id, bool $includeArchived): array
     {
-        $stmt = $this->db->prepare($this->baseSelect() . ' WHERE t.id = :id' . ($includeArchived ? '' : ' AND t.is_archived = 0'));
+        $stmt = $this->db->prepare($this->baseSelect() . ' WHERE t.id = :id' . ($includeArchived ? '' : ' AND t.is_archived = 0 AND c.is_archived = 0'));
         $stmt->execute(['id' => $id]);
         $row = $stmt->fetch();
         if (!$row) {
@@ -660,5 +749,26 @@ final class TaskController
         $row['detail'] = $row['detail_json'] ? json_decode((string) $row['detail_json'], true) : null;
         unset($row['detail_json']);
         return $row;
+    }
+
+    /** @return array<string, mixed> */
+    private function mapReminder(array $row): array
+    {
+        $mapped = [
+            'id' => (int) $row['id'],
+            'lead_time' => (string) $row['lead_time'],
+            'scheduled_at' => Clock::api((string) $row['scheduled_at']),
+            'state' => (string) $row['state'],
+            'sent_at' => Clock::api($row['sent_at'] ?? null),
+            'created_at' => Clock::api((string) $row['created_at']),
+            'updated_at' => Clock::api((string) $row['updated_at']),
+        ];
+        if ($this->auth->user()['role'] === 'admin') {
+            $mapped['attempts'] = (int) $row['attempts'];
+            $mapped['recipient_email'] = $row['recipient_email'];
+            $mapped['error_message'] = $row['error_message'];
+            $mapped['locked_at'] = Clock::api($row['locked_at'] ?? null);
+        }
+        return $mapped;
     }
 }

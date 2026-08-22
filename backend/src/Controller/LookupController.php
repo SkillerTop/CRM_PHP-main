@@ -14,6 +14,7 @@ use CRM\Security\AuthContext;
 use CRM\Support\Arr;
 use CRM\Support\Clock;
 use CRM\Support\Validator;
+use CRM\Support\Pagination;
 use PDO;
 use Throwable;
 
@@ -36,8 +37,9 @@ final class LookupController
         $stmt = $this->db->prepare('SELECT * FROM lookups' . ($includeInactive ? '' : ' WHERE is_active = 1') . ' ORDER BY type, sort_order, id');
         $stmt->execute();
         $grouped = [];
+        $includeDeliveryFields = $this->auth->user()['role'] === 'admin';
         foreach ($stmt->fetchAll() as $row) {
-            $grouped[$row['type']][] = $this->lookups->map($row);
+            $grouped[$row['type']][] = $this->lookups->map($row, $includeDeliveryFields);
         }
         Response::json(['data' => $grouped]);
     }
@@ -49,9 +51,17 @@ final class LookupController
         if ($includeInactive) {
             $this->auth->requireAdmin();
         }
-        $stmt = $this->db->prepare('SELECT * FROM lookups WHERE type = :type' . ($includeInactive ? '' : ' AND is_active = 1') . ' ORDER BY sort_order, id');
-        $stmt->execute(['type' => $type]);
-        Response::json(['data' => array_map([$this->lookups, 'map'], $stmt->fetchAll())]);
+        $pagination = new Pagination($request->query);
+        $where = 'type = :type' . ($includeInactive ? '' : ' AND is_active = 1');
+        $count = $this->db->prepare('SELECT COUNT(*) FROM lookups WHERE ' . $where);
+        $count->execute(['type' => $type]);
+        $stmt = $this->db->prepare('SELECT * FROM lookups WHERE ' . $where . ' ORDER BY sort_order, id LIMIT :limit OFFSET :offset');
+        $stmt->bindValue(':type', $type);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        $includeDeliveryFields = $this->auth->user()['role'] === 'admin';
+        Response::json(['data' => array_map(fn (array $row): array => $this->lookups->map($row, $includeDeliveryFields), $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
     public function store(Request $request, string $type): never
@@ -72,6 +82,7 @@ final class LookupController
             $sort = (int) $max->fetchColumn();
         }
         $extra = $this->extraFields($type, $input);
+        $this->db->beginTransaction();
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO lookups
@@ -85,14 +96,18 @@ final class LookupController
                 'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
                 'created_at' => Clock::dbNow(), 'updated_at' => Clock::dbNow(),
             ]);
-        } catch (\PDOException $error) {
-            if ((string) $error->getCode() === '23000') {
+            $id = (int) $this->db->lastInsertId();
+            $this->audit->log('LOOKUP CHANGE', 'Lookup', $id, $value, detail: ['operation' => 'create', 'type' => $type]);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            if ($error instanceof \PDOException && (string) $error->getCode() === '23000') {
                 throw new ApiException(409, 'lookup_duplicate', 'Такой ключ или значение уже существует в справочнике.');
             }
             throw $error;
         }
-        $id = (int) $this->db->lastInsertId();
-        $this->audit->log('LOOKUP CHANGE', 'Lookup', $id, $value, detail: ['operation' => 'create', 'type' => $type]);
         Response::json(['data' => $this->getRow($id)], 201);
     }
 
@@ -141,7 +156,7 @@ final class LookupController
         Response::json(['data' => $this->getRow($id)]);
     }
 
-    public function log(string $type, int $id): never
+    public function log(Request $request, string $type, int $id): never
     {
         $this->auth->requireAdmin();
         LookupService::assertType($type);
@@ -149,13 +164,20 @@ final class LookupController
         if ($lookup['type'] !== $type) {
             throw new ApiException(404, 'lookup_not_found', 'Значение справочника не найдено.');
         }
+        $pagination = new Pagination($request->query);
+        $count = $this->db->prepare('SELECT COUNT(*) FROM change_events WHERE entity_type = :entity_type AND entity_id = :entity_id');
+        $count->execute(['entity_type' => 'Lookup', 'entity_id' => $id]);
         $stmt = $this->db->prepare(
             'SELECT * FROM change_events
              WHERE entity_type = :entity_type AND entity_id = :entity_id
-             ORDER BY created_at DESC, id DESC'
+             ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset'
         );
-        $stmt->execute(['entity_type' => 'Lookup', 'entity_id' => $id]);
-        Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll())]);
+        $stmt->bindValue(':entity_type', 'Lookup');
+        $stmt->bindValue(':entity_id', $id, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
     /** @return array<string, mixed> */

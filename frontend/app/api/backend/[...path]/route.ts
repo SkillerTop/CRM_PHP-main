@@ -2,11 +2,28 @@ import { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
 
+function normalizedCloudflareIp(value: string | null): string | null {
+  const candidate = value?.trim() ?? "";
+  if (!candidate || candidate.length > 45 || candidate.includes(",")) return null;
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(candidate)) {
+    const octets = candidate.split(".").map(Number);
+    return octets.every((octet) => octet >= 0 && octet <= 255) ? candidate : null;
+  }
+  if (!candidate.includes(":") || !/^[0-9a-f:]+$/i.test(candidate)) return null;
+  try {
+    const parsed = new URL(`http://[${candidate}]/`).hostname;
+    return parsed.startsWith("[") && parsed.endsWith("]") ? parsed.slice(1, -1) : null;
+  } catch {
+    return null;
+  }
+}
+
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const backend = process.env.CRM_BACKEND_URL?.replace(/\/$/, "");
-  if (!backend) {
+  const proxySecret = process.env.CRM_PROXY_SHARED_SECRET;
+  if (!backend || !proxySecret || proxySecret.length < 32) {
     return Response.json(
-      { error: { code: "backend_not_configured", message: "CRM_BACKEND_URL is not configured." } },
+      { error: { code: "backend_not_configured", message: "Backend proxy configuration is incomplete." } },
       { status: 503 },
     );
   }
@@ -22,8 +39,9 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   }
   headers.set("x-forwarded-host", request.headers.get("host") ?? request.nextUrl.host);
   headers.set("x-forwarded-proto", request.nextUrl.protocol.replace(":", ""));
-  const forwardedFor = request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip");
-  if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
+  const clientIp = normalizedCloudflareIp(request.headers.get("cf-connecting-ip"));
+  if (clientIp) headers.set("x-forwarded-for", clientIp);
+  headers.set("x-crm-proxy-secret", proxySecret);
 
   let upstream: Response;
   try {

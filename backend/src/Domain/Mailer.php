@@ -23,7 +23,8 @@ final class Mailer
         match ($transport) {
             'smtp' => $this->sendSmtp($to, $raw),
             'mail' => $this->sendPhpMail($to, $subject, $raw),
-            default => $this->writeLog($raw),
+            'log' => $this->suppressToLog($raw),
+            default => throw new RuntimeException('Unsupported MAIL_TRANSPORT value.'),
         };
     }
 
@@ -140,7 +141,7 @@ final class Mailer
         }
     }
 
-    private function writeLog(string $raw): void
+    private function suppressToLog(string $raw): never
     {
         $directory = Config::root('storage/logs');
         if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
@@ -152,7 +153,11 @@ final class Mailer
             strlen($raw),
             hash('sha256', $raw)
         );
-        file_put_contents($directory . '/mail.log', $record, FILE_APPEND | LOCK_EX);
+        if (file_put_contents($directory . '/mail.log', $record, FILE_APPEND | LOCK_EX) === false) {
+            throw new RuntimeException('Unable to write the suppressed mail record.');
+        }
+
+        throw new RuntimeException('Mail delivery is suppressed by MAIL_TRANSPORT=log.');
     }
 
     private function cleanHeader(string $value): string
