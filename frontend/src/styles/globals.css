@@ -5546,14 +5546,22 @@ img.detail-logo {
 
 .task-outcome,
 .task-reminder-row {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  align-items: start;
   gap: .15rem;
   padding: .5rem .65rem;
   border-radius: .55rem;
   background: #f8fafc;
   color: #475569;
   font-size: .78rem;
+}
+
+.task-outcome > b,
+.task-outcome > small,
+.task-reminder-row > b,
+.task-reminder-row > small {
+  display: block;
+  line-height: 1.35;
 }
 
 .task-reminder-row.reminder-impossible {

@@ -19,3 +19,4 @@ frontend/.env.local
 frontend/tsconfig.tsbuildinfo
 work/
 
+tests/proxy_route.py

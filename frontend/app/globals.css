@@ -2703,6 +2703,48 @@ button:disabled {
   white-space: nowrap;
 }
 
+.task-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .35rem 1rem;
+  margin-top: 6px;
+  color: #64748b;
+  font-size: .78rem;
+  line-height: 1.35;
+}
+
+.task-facts > span {
+  display: block;
+  white-space: nowrap;
+}
+
+.task-facts > span + span {
+  margin-left: .35rem;
+}
+
+.task-outcome,
+.task-reminder-row {
+  display: grid;
+  align-items: start;
+  gap: .15rem;
+  margin-top: .55rem;
+  padding: .5rem .65rem;
+  border-radius: .55rem;
+  background: #f8fafc;
+  color: #475569;
+  font-size: .78rem;
+  line-height: 1.35;
+}
+
+.task-outcome > b,
+.task-outcome > small,
+.task-reminder-row > b,
+.task-reminder-row > small {
+  display: block;
+  line-height: 1.35;
+}
+
 .task-card-side {
   align-items: flex-end;
   gap: 6px;
@@ -6973,5 +7015,121 @@ img.detail-logo {
   *::after {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* Final readability pass: keep the CRM copy comfortable on both laptop and phone. */
+.page-description,
+.pipeline-card > p,
+.pipeline-card-meta,
+.pipeline-card footer,
+.task-company,
+.task-note,
+.task-card-side,
+.owner-cell {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.data-table th,
+.filter-drawer label > span,
+.responsive-card-table td::before {
+  font-size: 13px;
+}
+
+.company-cell b,
+.contact-person b,
+.pipeline-card h3,
+.task-title-row > b {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.company-cell small,
+.contact-person small,
+.cell-sub,
+.detail-contact small,
+.detail-task small {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* Keep the file picker as a styled CRM action instead of exposing the browser's native control. */
+.attachment-section {
+  margin-top: 1.25rem;
+}
+
+.attachment-section .detail-section-head {
+  align-items: center;
+}
+
+.attachment-upload {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 132px;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  overflow: hidden;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.attachment-upload input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.attachment-list {
+  display: grid;
+  gap: .6rem;
+  margin-top: .75rem;
+}
+
+.attachment-list article {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  min-width: 0;
+  padding: .75rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+}
+
+.attachment-list article > span {
+  display: grid;
+  gap: .2rem;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.attachment-list article b {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .attachment-section .detail-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .attachment-upload {
+    width: 100%;
+  }
+
+  .attachment-list article {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .attachment-list article .secondary-button,
+  .attachment-list article .danger-button {
+    width: 100%;
   }
 }

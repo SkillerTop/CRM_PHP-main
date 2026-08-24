@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiDownload, apiMessage, apiRequest, setCsrfToken } from "../shared/api/api-client";
 import { Avatar, EntityLogo } from "../shared/components/identity";
 import { useUrlStringState } from "../shared/hooks/use-url-string-state";
@@ -52,6 +52,7 @@ type Contact = {
   position: string;
   email: string;
   phone: string;
+  contactStatus?: "active" | "inactive";
   linkedin?: string;
   source: string;
   sourceDetail?: string;
@@ -203,6 +204,7 @@ type ContactDraft = {
   position?: string;
   email?: string;
   phone?: string;
+  contactStatus?: "active" | "inactive";
   linkedin?: string;
   source?: string;
   sourceDetail?: string;
@@ -543,6 +545,7 @@ function mapContact(record: ApiRecord): Contact {
     firstName, lastName, position: apiString(record, "position"), email: apiString(record, "email"), phone: apiString(record, "phone"),
     linkedin: apiString(record, "linkedin") || undefined, source: apiString(record, "source"), sourceDetail: apiString(record, "source_detail"),
     referredBy: apiString(record, "referred_by"), owner: apiString(record, "manager") || "Unassigned", initiatedBy: apiString(record, "initiated_by"),
+    contactStatus: apiString(record, "status") === "inactive" ? "inactive" : "active",
     ownerUserEmail: apiString(record, "manager_email").toLowerCase() || undefined, photoDataUrl: apiString(record, "photo_data_url") || undefined,
     sourceId: apiNumber(record, "source_id"), initiatedById: apiNumber(record, "initiated_by_id"), managerId: apiNumber(record, "manager_id"),
     updatedAt: apiString(record, "updated_at"), isArchived: apiBoolean(record, "is_archived"),
@@ -1380,7 +1383,7 @@ export function CRMApp() {
   const contactPayload = (contact: Contact) => {
     const names = contact.firstName ? [contact.firstName, contact.lastName ?? ""] : contact.name.trim().split(/\s+/, 2);
     const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
-    return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), photo_data_url: contact.photoDataUrl || null, business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, updated_at: contact.updatedAt };
+    return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, status: contact.contactStatus ?? "active", manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), photo_data_url: contact.photoDataUrl || null, business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, updated_at: contact.updatedAt };
   };
   const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null, outcome_notes: task.outcomeNotes || null, deadline: task.deadline, reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
   const reportServerError = (error: unknown) => { notify(apiMessage(error), "warning"); void loadWorkspace().catch(() => undefined); };
@@ -1760,6 +1763,7 @@ export function CRMApp() {
       position: draft.position?.trim() ?? "",
       email,
       phone,
+      contactStatus: draft.contactStatus === "inactive" ? "inactive" : "active",
       linkedin,
       source,
       sourceDetail: draft.sourceDetail?.trim() ?? "",
@@ -1806,6 +1810,7 @@ export function CRMApp() {
       position: String(data.get("position") ?? ""),
       email: String(data.get("email") ?? ""),
       phone: String(data.get("phone") ?? ""),
+      contactStatus: String(data.get("contactStatus") ?? "active") === "inactive" ? "inactive" : "active",
       linkedin: String(data.get("linkedin") ?? ""),
       source: String(data.get("source") ?? ""),
       sourceDetail: String(data.get("sourceDetail") ?? ""),
@@ -1956,6 +1961,10 @@ export function CRMApp() {
     }
     if (updated.source && !lookupValues("contact-source", false).includes(updated.source)) {
       notify("Select a valid contact source.", "warning");
+      return false;
+    }
+    if (updated.contactStatus !== "active" && updated.contactStatus !== "inactive") {
+      notify("Select a valid contact status.", "warning");
       return false;
     }
     if (existing?.owner !== updated.owner && !managerOptions.includes(updated.owner)) {
@@ -2501,7 +2510,7 @@ export function CRMApp() {
               openTasksForManager={(manager) => { setTaskManagerFilter(manager); setTaskFilter("All"); navigate("activity"); }}
             />
           )}
-          {view === "pipeline" && <Pipeline companies={liveCompanies} contacts={liveContacts} tasks={liveTasks} statusOrder={clientStatusOrder} canMove={hasPermission(currentRole, "pipeline.move")} moveCompany={moveCompany} openCompany={setSelectedCompany} />}
+          {view === "pipeline" && <Pipeline companies={liveCompanies} contacts={liveContacts} tasks={liveTasks} statusOrder={clientStatusOrder} canMove={hasPermission(currentRole, "pipeline.move")} showInternalIds={currentRole === "Admin"} moveCompany={moveCompany} openCompany={setSelectedCompany} />}
           {view === "companies" && (
             <Companies
               companies={filteredCompanies}
@@ -2511,6 +2520,7 @@ export function CRMApp() {
               setStatus={setCompanyStatus}
               contacts={liveContacts}
               statusOptions={clientStatusOrder}
+              showInternalIds={currentRole === "Admin"}
               canCreate={hasPermission(currentRole, "company.create")}
               openCompany={setSelectedCompany}
               add={() => { if (requirePermission("company.create", "create companies")) setModal("company"); }}
@@ -2536,6 +2546,7 @@ export function CRMApp() {
               setFilter={setTaskFilter}
               managerFilter={taskManagerFilter}
               setManagerFilter={setTaskManagerFilter}
+              showTaskIds={currentRole === "Admin"}
               comments={taskComments}
               canCreate={hasPermission(currentRole, "task.create")}
               canCreateContact={hasPermission(currentRole, "contact.create")}
@@ -2561,6 +2572,7 @@ export function CRMApp() {
           company={companies.find((company) => company.id === selectedCompany.id) ?? selectedCompany}
           contacts={liveContacts.filter((contact) => contact.companyId === selectedCompany.id)}
           tasks={liveTasks.filter((task) => task.companyId === selectedCompany.id)}
+          showInternalIds={currentRole === "Admin"}
           onClose={() => setSelectedCompany(null)}
           openTask={(task) => { setSelectedCompany(null); void openTaskDetail(task); }}
           openContact={(contact) => { setSelectedCompany(null); setSelectedContact(contact); }}
@@ -2739,7 +2751,7 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
   );
 }
 
-function Pipeline({ companies, contacts, tasks, statusOrder, canMove, moveCompany, openCompany }: { companies: Company[]; contacts: Contact[]; tasks: Task[]; statusOrder: string[]; canMove: boolean; moveCompany: (id: string, status: string) => void; openCompany: (company: Company) => void }) {
+function Pipeline({ companies, contacts, tasks, statusOrder, canMove, showInternalIds, moveCompany, openCompany }: { companies: Company[]; contacts: Contact[]; tasks: Task[]; statusOrder: string[]; canMove: boolean; showInternalIds: boolean; moveCompany: (id: string, status: string) => void; openCompany: (company: Company) => void }) {
   return (
     <>
       <div className="page-actions-row">
@@ -2757,10 +2769,9 @@ function Pipeline({ companies, contacts, tasks, statusOrder, canMove, moveCompan
               <div className="kanban-stack">
                 {items.map((company) => (
                   <article key={company.id} className="pipeline-card" tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
-                    <div className="pipeline-card-top"><span>{company.id}</span><button type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></div>
+                    <div className="pipeline-card-top">{showInternalIds && <span>{company.id}</span>}<button type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></div>
                     <h3>{company.name}</h3>
                     <p>{company.city}, {company.country}</p>
-                    <div className="pipeline-card-facts"><span>{company.kind}</span><span>Last contact: {company.lastContact || "—"}</span></div>
                     <div className="pipeline-card-meta"><span>{openTaskLabel(tasks.filter((task) => task.companyId === company.id && isOpenTask(task)).length)}</span><CountBadge count={contactCount(contacts, company.id)} label="contacts" detail={`Contact people at ${company.name}. Open the card to view the full list.`} /></div>
                     {canMove && <select className="pipeline-stage-select" value={company.status} aria-label={`Relationship status for ${company.name}`} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); moveCompany(company.id, event.target.value); }}>{statusOrder.map((stage) => <option key={stage}>{stage}</option>)}</select>}
                     <footer><span className="mini-avatar">{company.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><span>Next activity: {nextActivityLabel(tasks, company.id)}</span></footer>
@@ -2776,7 +2787,7 @@ function Pipeline({ companies, contacts, tasks, statusOrder, canMove, moveCompan
   );
 }
 
-function Companies({ companies, contacts, statusOptions, query, setQuery, status, setStatus, canCreate, openCompany, add }: {
+function Companies({ companies, contacts, statusOptions, query, setQuery, status, setStatus, showInternalIds, canCreate, openCompany, add }: {
   companies: Company[];
   contacts: Contact[];
   statusOptions: string[];
@@ -2784,11 +2795,14 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
   setQuery: (value: string) => void;
   status: string;
   setStatus: (value: string) => void;
+  showInternalIds: boolean;
   canCreate: boolean;
   openCompany: (company: Company) => void;
   add: () => void;
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [ownerFilter, setOwnerFilter] = useUrlStringState("company_owner", "All owners");
   const [countryFilter, setCountryFilter] = useUrlStringState("company_country", "All countries");
   const [typeFilter, setTypeFilter] = useUrlStringState("company_type", "All types");
@@ -2808,20 +2822,38 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
   const countries = Array.from(new Set(companies.map((company) => company.country))).sort();
   const types = Array.from(new Set(companies.map((company) => company.kind))).sort();
   const sortBy = (field: typeof sortField) => { setPage(1); if (sortField === field) setSortDirection((direction) => direction === "asc" ? "desc" : "asc"); else { setSortField(field); setSortDirection("asc"); } };
-  const hasActiveFilters = Boolean(query) || status !== "All statuses" || ownerFilter !== "All owners" || countryFilter !== "All countries" || typeFilter !== "All types";
+  const searchSuggestions = query.trim() ? companies.filter((company) => company.name.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 8) : [];
+  const showSearchSuggestions = searchFocused && query.trim().length > 0;
+  const selectSearchSuggestion = (company: Company) => { setQuery(company.name); setPage(1); setSearchFocused(false); };
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (!showSearchSuggestions || searchSuggestions.length === 0) {
+      if (event.key === "Escape") setSearchFocused(false);
+      return;
+    }
+    if (event.key === "ArrowDown") { event.preventDefault(); setSuggestionIndex((current) => Math.min(current + 1, searchSuggestions.length - 1)); }
+    if (event.key === "ArrowUp") { event.preventDefault(); setSuggestionIndex((current) => Math.max(current - 1, 0)); }
+    if (event.key === "Enter") { event.preventDefault(); selectSearchSuggestion(searchSuggestions[suggestionIndex] ?? searchSuggestions[0]); }
+    if (event.key === "Escape") { event.preventDefault(); setSearchFocused(false); }
+  };
 
   return (
     <section className="panel data-panel">
-      <div className="data-toolbar">
-        <div className="toolbar-search"><span>⌕</span><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search companies" aria-label="Search companies" /></div>
-        <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }} aria-label="Filter by status">
-          <option>All statuses</option>
-          {statusOptions.map((item) => <option key={item}>{item}</option>)}
-        </select>
-        <button className={`secondary-button${filtersOpen ? " control-active" : ""}`} type="button" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>≡ Filters</button>
-        {hasActiveFilters && <button className="text-button toolbar-clear" type="button" onClick={() => { setQuery(""); setStatus("All statuses"); setOwnerFilter("All owners"); setCountryFilter("All countries"); setTypeFilter("All types"); setPage(1); }}>Clear</button>}
-        <span className="toolbar-spacer" />
-        {canCreate && <button className="primary-button" type="button" onClick={add}>＋ Add company</button>}
+      <div className="data-toolbar companies-toolbar">
+        <div className="company-search-combobox">
+          <div className="toolbar-search"><span aria-hidden="true">⌕</span><input type="search" role="combobox" value={query} onFocus={() => { setSearchFocused(true); setSuggestionIndex(0); }} onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)} onKeyDown={handleSearchKeyDown} onChange={(event) => { setQuery(event.target.value); setPage(1); setSearchFocused(true); setSuggestionIndex(0); }} placeholder="Search companies" aria-label="Search companies" aria-controls="company-search-suggestions" aria-expanded={showSearchSuggestions} aria-autocomplete="list" autoComplete="off" spellCheck={false} />{query && <button className="search-clear-button" type="button" aria-label="Clear company search" onMouseDown={(event) => event.preventDefault()} onClick={() => { setQuery(""); setPage(1); setSearchFocused(false); }}>×</button>}</div>
+          {showSearchSuggestions && <div className="company-search-suggestions" id="company-search-suggestions" role="listbox" aria-label="Company search suggestions">
+            {searchSuggestions.length > 0 ? searchSuggestions.map((company, index) => <button key={company.id} type="button" role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? "active" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSearchSuggestion(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{company.city}, {company.country}</small></span><span aria-hidden="true">›</span></button>) : <div className="company-search-empty">No companies found</div>}
+          </div>}
+        </div>
+        <div className="companies-toolbar-controls">
+          <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }} aria-label="Filter by status">
+            <option>All statuses</option>
+            {statusOptions.map((item) => <option key={item}>{item}</option>)}
+          </select>
+          <button className={`secondary-button${filtersOpen ? " control-active" : ""}`} type="button" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>≡ Filters</button>
+          <span className="toolbar-spacer" />
+          {canCreate && <button className="primary-button companies-add-button" type="button" onClick={add}><span className="button-label-full">＋ Add company</span><span className="button-label-short">＋ Add</span></button>}
+        </div>
       </div>
       {filtersOpen && (
         <div className="filter-drawer">
@@ -2838,7 +2870,7 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
           <tbody>
             {visibleCompanies.map((company) => (
               <tr key={company.id} tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
-                <td data-label="Company"><span className="company-cell"><EntityLogo name={company.name} src={company.logoDataUrl} lazy /><span><b>{company.name}</b><small>{company.id}{company.website && <> · <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{company.website}</a></>}</small></span></span></td>
+                <td data-label="Company"><span className="company-cell"><EntityLogo name={company.name} src={company.logoDataUrl} lazy /><span><b>{company.name}</b>{(showInternalIds || company.website) && <small>{showInternalIds && <>{company.id}{company.website ? " · " : ""}</>}{company.website && <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{company.website}</a>}</small>}</span></span></td>
                 <td data-label="Type"><span className="company-card-value">{company.kind}</span></td>
                 <td data-label="Location"><span className="company-card-value"><b className="normal-weight">{company.city}</b><small className="cell-sub">{company.country}</small></span></td>
                 <td data-label="Client status"><span className="company-card-value"><StatusBadge value={company.status} /></span></td>
@@ -2889,12 +2921,16 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
 
   return (
     <section className="panel data-panel">
-      <div className="data-toolbar">
-        <div className="toolbar-search"><span>⌕</span><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Name, email, position, or initiator" aria-label="Search contacts" /></div>
-        <button className={`secondary-button${filtersOpen ? " control-active" : ""}`} type="button" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>≡ Filters</button>
-        {hasActiveFilters && <button className="text-button toolbar-clear" type="button" onClick={() => { setQuery(""); setSourceFilter("All sources"); setInitiatorFilter("All initiators"); setCompanyFilter("All companies"); setLinkedinFilter("Any LinkedIn"); setPage(1); }}>Clear</button>}
-        <span className="toolbar-spacer" />
-        {canCreate && <button className="primary-button" type="button" onClick={add}>＋ Add contact manually</button>}
+      <div className="data-toolbar contacts-toolbar">
+        <div className="contact-search-combobox">
+          <div className="toolbar-search"><span aria-hidden="true">⌕</span><input type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Name, email, or company" aria-label="Search contacts" autoComplete="off" spellCheck={false} /></div>
+        </div>
+        <div className="contacts-toolbar-controls">
+          <button className={`secondary-button${filtersOpen ? " control-active" : ""}`} type="button" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}>≡ Filters</button>
+          {hasActiveFilters && <button className="text-button toolbar-clear" type="button" onClick={() => { setQuery(""); setSourceFilter("All sources"); setInitiatorFilter("All initiators"); setCompanyFilter("All companies"); setLinkedinFilter("Any LinkedIn"); setPage(1); }}>Clear</button>}
+          <span className="toolbar-spacer" />
+          {canCreate && <button className="primary-button contacts-add-button" type="button" onClick={add}><span className="button-label-full">＋ Add contact manually</span><span className="button-label-short">＋ Add</span></button>}
+        </div>
       </div>
       {filtersOpen && (
         <div className="filter-drawer">
@@ -2913,8 +2949,8 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
             {visibleContacts.map((contact) => {
               const company = companies.find((item) => item.id === contact.companyId);
               return (
-                <tr key={contact.id} tabIndex={0} onClick={() => openContact(contact)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openContact(contact); }}>
-                  <td data-label="Contact"><span className="contact-person"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b>{contact.email ? <a className="inline-data-link compact" href={`mailto:${contact.email}`} onClick={(event) => event.stopPropagation()}>{contact.email}</a> : <small>No email</small>}</span></span></td>
+                <tr key={contact.id} className={contact.contactStatus === "inactive" ? "inactive-contact" : ""} tabIndex={0} onClick={() => openContact(contact)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openContact(contact); }}>
+                  <td data-label="Contact"><span className="contact-person"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b>{contact.email ? <a className="inline-data-link compact" href={`mailto:${contact.email}`} onClick={(event) => event.stopPropagation()}>{contact.email}</a> : <small>No email</small>}<StatusBadge value={contact.contactStatus === "inactive" ? "Inactive" : "Active"} /></span></span></td>
                   <td data-label="Company"><button className="table-link" type="button" onClick={(event) => { event.stopPropagation(); if (company) openCompany(company); }}>{company?.name}</button></td>
                   <td data-label="Position">{contact.position || "—"}</td><td data-label="Phone">{contact.phone && contact.phone !== "—" ? <a className="inline-data-link" href={`tel:${contact.phone}`} onClick={(event) => event.stopPropagation()}>{contact.phone}</a> : "—"}</td><td data-label="Source"><StatusBadge value={contact.source} /></td>
                   <td data-label="Initiated by"><span className="owner-cell"><span className="mini-avatar">{(contact.initiatedBy || "?").split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>{contact.initiatedBy || "—"}</span></td>
@@ -2931,7 +2967,7 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
   );
 }
 
-function Activity({ tasks, companies, comments, filter, setFilter, managerFilter, setManagerFilter, canCreate, canCreateContact, add, addContact, openTask }: {
+function Activity({ tasks, companies, comments, filter, setFilter, managerFilter, setManagerFilter, showTaskIds, canCreate, canCreateContact, add, addContact, openTask }: {
   tasks: Task[];
   companies: Company[];
   comments: TaskComment[];
@@ -2939,6 +2975,7 @@ function Activity({ tasks, companies, comments, filter, setFilter, managerFilter
   setFilter: (value: string) => void;
   managerFilter: string;
   setManagerFilter: (value: string) => void;
+  showTaskIds: boolean;
   canCreate: boolean;
   canCreateContact: boolean;
   add: () => void;
@@ -2975,7 +3012,7 @@ function Activity({ tasks, companies, comments, filter, setFilter, managerFilter
             <span className={`task-status-line ${task.status.toLowerCase().replace(" ", "-")}`} />
             <span className="task-card-main">
               <span className="task-title-row"><b>{task.title}</b><StaticStatusBadge value={task.status} /></span>
-              <span className="task-company">{companyName(companies, task.companyId)} · {task.id}</span>
+              <span className="task-company">{companyName(companies, task.companyId)}{showTaskIds ? ` · ${task.id}` : ""}</span>
               <span className="task-facts"><span>Contact: {task.contactDate || "—"}</span><span>Person: {task.contactPerson || "—"}</span></span>
               <span className="task-note">{task.note}</span>
               {(task.outcomeStatus || task.outcomeNotes) && <span className="task-outcome"><b>{task.outcomeStatus || "Outcome"}</b>{task.outcomeNotes && <small>{task.outcomeNotes}</small>}</span>}
@@ -3145,10 +3182,11 @@ function Audit({ events, users, canExport }: { events: AuditEvent[]; users: CRMU
   );
 }
 
-function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContact, updateCompany, canEdit, canMovePipeline, canAddContact, canAddTask, canArchive, archive, statusOptions, companyTypeOptions, addContact, addTask }: {
+function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, openTask, openContact, updateCompany, canEdit, canMovePipeline, canAddContact, canAddTask, canArchive, archive, statusOptions, companyTypeOptions, addContact, addTask }: {
   company: Company;
   contacts: Contact[];
   tasks: Task[];
+  showInternalIds: boolean;
   onClose: () => void;
   openTask: (task: Task) => void;
   openContact: (contact: Contact) => void;
@@ -3202,7 +3240,7 @@ function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContac
   }
 
   return (
-    <Modal title={company.name} eyebrow={`${company.id} · ${company.kind}`} onClose={onClose} wide>
+    <Modal title={company.name} eyebrow={showInternalIds ? `${company.id} · ${company.kind}` : company.kind} onClose={onClose} wide>
       {editing ? (
         <form className="entity-form detail-edit-form" onSubmit={save}>
           <ImageField label="Company logo" name="companyLogo" value={logoDataUrl} onChange={setLogoDataUrl} onProcessingChange={setImageProcessing} kind="company" />
@@ -3222,7 +3260,7 @@ function CompanyDetail({ company, contacts, tasks, onClose, openTask, openContac
           <div className="detail-grid"><div><small>Owner</small><b>{company.owner}</b></div><div><small>Open tasks</small><b>{tasks.filter(isOpenTask).length}</b></div><div><small>Last contact</small><b>{company.lastContact}</b></div><div><small>Next activity</small><b>{nextActivityLabel(tasks)}</b></div></div>
           <div className="detail-description"><small>About company</small><p>{company.description}</p></div>
           <div className="detail-columns">
-            <section><div className="detail-section-head"><h3>Contacts <CountBadge count={contacts.length} label="contacts" detail={`Contact people at ${company.name}.`} /></h3>{canAddContact && <button type="button" aria-label="Add contact" onClick={addContact}>＋</button>}</div>{contacts.map((contact) => <button className="detail-contact" type="button" key={contact.id} onClick={() => openContact(contact)}><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b><small>{contact.position} · {contact.email}</small></span><span className="row-arrow">›</span></button>)}{contacts.length === 0 && <p className="muted-copy">No contacts yet.</p>}</section>
+            <section><div className="detail-section-head"><h3>Contacts <CountBadge count={contacts.length} label="contacts" detail={`Contact people at ${company.name}.`} /></h3>{canAddContact && <button type="button" aria-label="Add contact" onClick={addContact}>＋</button>}</div>{contacts.map((contact) => <button className={`detail-contact${contact.contactStatus === "inactive" ? " inactive-contact" : ""}`} type="button" key={contact.id} onClick={() => openContact(contact)}><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b><small>{contact.position} · {contact.email} · {contact.contactStatus === "inactive" ? "Inactive" : "Active"}</small></span><span className="row-arrow">›</span></button>)}{contacts.length === 0 && <p className="muted-copy">No contacts yet.</p>}</section>
             <section><div className="detail-section-head"><h3>Activity <CountBadge count={tasks.length} label="tasks" detail={`All tasks linked to ${company.name}.`} /></h3>{canAddTask && <button type="button" aria-label="Add task" onClick={addTask}>＋</button>}</div>{tasks.slice().sort((a, b) => (b.contactDate ?? "").localeCompare(a.contactDate ?? "")).map((task) => <button className="detail-task" type="button" key={task.id} onClick={() => openTask(task)}><span className={`priority-mark ${isOverdue(task) ? "overdue" : ""}`}>{task.status === "Completed" ? "✓" : "!"}</span><span><b>{task.title}</b><small>{task.contactDate || "—"} · {formatDateTime(task.deadline)}</small></span><span>›</span></button>)}{tasks.length === 0 && <p className="muted-copy">No tasks yet.</p>}</section>
           </div>
           <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive company</button>}</div>
@@ -3271,6 +3309,7 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
       position: String(data.get("position") ?? contact.position).trim(),
       email,
       phone,
+      contactStatus: String(data.get("contactStatus") ?? contact.contactStatus ?? "active") === "inactive" ? "inactive" : "active",
       linkedin,
       source: sourceValue,
       sourceDetail: ["Exhibition / Conference", "Other"].includes(sourceValue) ? String(data.get("sourceDetail") ?? "").trim() : "",
@@ -3282,16 +3321,17 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
   }
 
   return (
-    <Modal title={contact.name} eyebrow={`${contact.id} · ${company}`} onClose={onClose}>
+    <Modal title={contact.name} eyebrow={company} onClose={onClose}>
       {editing ? (
         <form className="entity-form detail-edit-form" onSubmit={save}>
           <ImageField label="Contact photo" name="contactPhoto" value={photoDataUrl} onChange={setPhotoDataUrl} onProcessingChange={setImageProcessing} />
-          {canTransfer ? <label className="field field-full"><span>Transfer to company (Admin only)</span><select name="companyId" defaultValue={contact.companyId}>{companies.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label> : <label className="field field-full"><span>Company</span><input value={company} readOnly /></label>}
+          {canTransfer ? <label className="field field-full"><span>Company (Admin only to change)</span><select name="companyId" defaultValue={contact.companyId}>{companies.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label> : <label className="field field-full"><span>Company (Admin only to change)</span><input value={company} readOnly /></label>}
           <label className="field field-full"><span>Full name</span><input name="name" defaultValue={contact.name} required minLength={2} maxLength={120} autoFocus /></label>
           <label className="field"><span>Position</span><input name="position" defaultValue={contact.position} maxLength={120} /></label>
           <label className="field"><span>Phone</span><input name="phone" type="tel" defaultValue={contact.phone} maxLength={24} /></label>
           <label className="field"><span>Email</span><input name="email" type="email" defaultValue={contact.email} maxLength={254} /></label>
           <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" defaultValue={contact.linkedin ?? ""} maxLength={300} /></label>
+          <label className="field"><span>Contact status</span><select name="contactStatus" defaultValue={contact.contactStatus ?? "active"}><option value="active">Active — contactable</option><option value="inactive">Inactive — do not contact</option></select></label>
           <label className="field"><span>Source</span><select name="source" value={sourceValue} onChange={(event) => setSourceValue(event.target.value)}><option value="">Not specified</option>{Array.from(new Set([...sourceOptions, contact.source].filter(Boolean))).map((source) => <option key={source}>{source}</option>)}</select></label>
           <label className="field"><span>CJN Manager</span><select name="owner" defaultValue={contact.owner}>{Array.from(new Set([...managerOptions, contact.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           {["Exhibition / Conference", "Other"].includes(sourceValue) && <label className="field field-full"><span>{sourceValue === "Other" ? "Source detail" : "Exhibition / event name"}</span><input name="sourceDetail" defaultValue={contact.sourceDetail ?? ""} maxLength={255} /></label>}
@@ -3300,7 +3340,7 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
         </form>
       ) : (
         <>
-          <div className="person-detail-head"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-detail-avatar" /><div><h3>{contact.position || "Position not specified"}</h3><p>{company}</p></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
+          <div className="person-detail-head"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-detail-avatar" /><div><h3>{contact.position || "Position not specified"}</h3><p>{company}</p><StatusBadge value={contact.contactStatus === "inactive" ? "Inactive — do not contact" : "Active — contactable"} /></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
           <div className="detail-grid contact-info-grid"><div><small>Email</small>{contact.email ? <a href={`mailto:${contact.email}`}>{contact.email}</a> : <b>—</b>}</div><div><small>Phone</small>{contact.phone && contact.phone !== "—" ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : <b>—</b>}</div><div><small>LinkedIn</small>{contact.linkedin ? <a href={websiteHref(contact.linkedin)} target="_blank" rel="noreferrer">Open profile</a> : <b>—</b>}</div><div><small>Source</small><b>{contact.source || "—"}</b></div><div><small>Source detail</small><b>{contact.sourceDetail || contact.referredBy || "—"}</b></div><div><small>CJN Manager</small><b>{contact.owner}</b></div><div><small>Initiated by</small><b>{contact.initiatedBy || "Not recorded"}</b></div></div>
           <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive contact</button>}{contact.email && <a className="primary-button action-link" href={`mailto:${contact.email}`}>Send email</a>}</div>
         </>
@@ -3427,7 +3467,7 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
   }
 
   return (
-    <Modal title={task.title} eyebrow={`${task.id} · ${company}`} onClose={onClose} wide>
+    <Modal title={task.title} eyebrow={isAdmin ? `${task.id} · ${company}` : company} onClose={onClose} wide>
       {editing ? (
         <form className="entity-form detail-edit-form" onSubmit={save}>
           <label className="field field-full"><span>Task title *</span><input name="title" defaultValue={task.title} required minLength={3} maxLength={255} autoFocus /></label>
@@ -3545,7 +3585,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
 
   return (
     <Modal title="Add contact manually" eyebrow="Contacts" onClose={onClose}>
-      <form ref={formRef} onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { if (cardScanning) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, photoDataUrl).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); } } }} className="entity-form">
+      <form ref={formRef} onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { if (cardScanning) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, photoDataUrl).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); } } }} className="entity-form contact-entry-form">
         {AI_INPUTS_ENABLED && <section className="ai-capture-panel field-full">
           <div>
             <b>Scan business card</b>
@@ -3566,6 +3606,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
         <label className="field"><span>Last name</span><input name="lastName" maxLength={100} /></label>
         <label className="field"><span>Position</span><input name="position" maxLength={150} placeholder="External Relations Director" /></label>
         <label className="field"><span>Phone</span><input name="phone" type="tel" maxLength={50} placeholder="+380…" /></label>
+        <label className="field"><span>Contact status</span><select name="contactStatus" defaultValue="active"><option value="active">Active — contactable</option><option value="inactive">Inactive — do not contact</option></select></label>
         <label className="field"><span>Email</span><input name="email" type="email" maxLength={255} placeholder="name@company.com" /></label>
         <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/in/..." /></label>
         <label className="field"><span>First contact source</span><select name="source" value={source} onChange={(event) => setSource(event.target.value)}><option value="">Not specified</option>{sourceOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
