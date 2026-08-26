@@ -10,6 +10,7 @@ storage/tmp/
 !**/storage/logs/.gitkeep
 !**/storage/uploads/.gitkeep
 deploy/client-data-crm-backend.zip
+deploy/client-data-crm-frontend.zip
 deploy/package/
 frontend/node_modules/
 frontend/dist/

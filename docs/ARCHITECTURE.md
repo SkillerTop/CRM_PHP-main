@@ -14,12 +14,13 @@
 ## Frontend
 
 - `frontend/src/app/CRMApp.tsx` — композиция приложения и orchestration серверных операций.
-- `frontend/app` — Next/Vinext route surface: страницы, layout и API-proxy.
+- `frontend/index.html` и `frontend/src/main.tsx` — статическая точка входа Vite SPA.
 - `frontend/src/shared/components` — переиспользуемые визуальные компоненты.
 - `frontend/src/shared/hooks` — клиентские React-хуки, связанные с состоянием интерфейса.
 - `frontend/src/shared/api/api-client.ts` — единый HTTP-клиент фронтенда.
 - `frontend/src/shared/utils` — чистые функции дат, URL-фильтров и других общих преобразований.
-- `frontend/src/styles/globals.css` — общая дизайн-система и адаптивные правила.
+- `frontend/app/globals.css` — подключаемая общая дизайн-система и адаптивные правила.
+- `frontend/public/.htaccess` — same-origin маршрутизация `/api/*` в PHP и SPA fallback.
 - `frontend/src/features` — целевые границы для постепенного выноса крупных CRM-разделов из `CRMApp.tsx`.
 - `frontend/tests` — проверки поведения и responsive-ограничений.
 

@@ -7,6 +7,7 @@ namespace CRM\Controller;
 use CRM\Config\Config;
 use CRM\Domain\AuditLogger;
 use CRM\Domain\Mailer;
+use CRM\Domain\ManagerUserLinker;
 use CRM\Domain\RecordGuard;
 use CRM\Http\ApiException;
 use CRM\Http\Request;
@@ -29,7 +30,8 @@ final class UserController
         private readonly AuthContext $auth,
         private readonly AuditLogger $audit,
         private readonly Mailer $mailer,
-        private readonly AuthController $authController
+        private readonly AuthController $authController,
+        private readonly ManagerUserLinker $managerUsers
     ) {
     }
 
@@ -81,6 +83,7 @@ final class UserController
                 'created_at' => $now, 'updated_at' => $now,
             ]);
             $id = (int) $this->db->lastInsertId();
+            $this->managerUsers->ensureForUser($id);
             $this->audit->log('CREATE', 'User', $id, $name, detail: ['role' => $role, 'delivery' => $delivery]);
             if ($delivery === 'invite') {
                 $token = $this->authController->createPasswordToken($id, 'invite', 1440);
@@ -135,6 +138,7 @@ final class UserController
                 'name' => $name, 'role' => $role, 'active' => (int) $active,
                 'actor_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $id,
             ]);
+            $this->managerUsers->ensureForUser($id);
             if ($role !== $before['role']) {
                 $this->audit->log('ROLE CHANGE', 'User', $id, $name, 'Role', (string) $before['role'], $role);
             }
@@ -176,6 +180,7 @@ final class UserController
                     updated_by = :actor_id, updated_at = :now WHERE id = :id'
             );
             $stmt->execute(['role' => $role, 'actor_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $id]);
+            $this->managerUsers->ensureForUser($id);
             if ($role !== (string) $before['role']) {
                 $this->audit->log('ROLE CHANGE', 'User', $id, (string) $before['full_name'], 'Role', (string) $before['role'], $role, ['approved' => true]);
             }

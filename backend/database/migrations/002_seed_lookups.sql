@@ -57,5 +57,4 @@ VALUES
     ('cjn_manager', 'olga_kucherenko', 'Olga Kucherenko', 12, 1, 0, NULL, 0, 0, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6));
 
 INSERT INTO settings (setting_key, setting_value, updated_at)
-VALUES ('notify_new_registrations', 'true', UTC_TIMESTAMP(6)), ('system_notification_email', '', UTC_TIMESTAMP(6));
-
+VALUES ('notify_new_registrations', 'true', UTC_TIMESTAMP(6)), ('system_notification_email', 'm.zhyvotovskyi@c-job.com.ua', UTC_TIMESTAMP(6));

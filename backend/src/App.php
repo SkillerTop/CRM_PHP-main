@@ -25,6 +25,7 @@ use CRM\Domain\BusinessCardOcrService;
 use CRM\Domain\IcsGenerator;
 use CRM\Domain\LookupService;
 use CRM\Domain\Mailer;
+use CRM\Domain\ManagerUserLinker;
 use CRM\Domain\ProcessRunner;
 use CRM\Domain\ReminderService;
 use CRM\Domain\SpeechTranscriptionService;
@@ -55,6 +56,7 @@ final class App
         $mailer = new Mailer();
         $ics = new IcsGenerator();
         $lookups = new LookupService($db);
+        $managerUsers = new ManagerUserLinker($db);
         $settings = new SystemSettings($db);
         $rateLimiter = new RateLimiter($db);
         $resourceGuard = new ResourceGuard($db);
@@ -63,19 +65,19 @@ final class App
         $businessCardOcr = new BusinessCardOcrService($processRunner);
         $speechTranscription = new SpeechTranscriptionService($processRunner);
 
-        $authController = new AuthController($db, $this->auth, $audit, $rateLimiter, $mailer, $settings);
+        $authController = new AuthController($db, $this->auth, $audit, $rateLimiter, $mailer, $settings, $managerUsers);
         $profileController = new ProfileController($db, $this->auth, $audit, $mailer);
         $companyController = new CompanyController($db, $this->auth, $audit, $lookups);
         $contactController = new ContactController($db, $this->auth, $audit, $lookups, $resourceGuard);
         $taskController = new TaskController($db, $this->auth, $audit, $lookups, $reminders, $ics, $resourceGuard);
         $lookupController = new LookupController($db, $this->auth, $audit, $lookups);
-        $userController = new UserController($db, $this->auth, $audit, $mailer, $authController);
+        $userController = new UserController($db, $this->auth, $audit, $mailer, $authController, $managerUsers);
         $auditController = new AuditController($db, $this->auth);
         $dashboardController = new DashboardController($db);
         $searchController = new SearchController($db);
         $settingsController = new SettingsController($db, $this->auth, $audit, $settings);
         $healthController = new HealthController($db);
-        $appController = new AppController($db, $this->auth, $lookups);
+        $appController = new AppController($db, $this->auth, $lookups, $managerUsers);
         $aiInputController = new AiInputController($this->auth, $businessCardOcr, $speechTranscription, $resourceGuard);
 
         $this->router = Routes::create(

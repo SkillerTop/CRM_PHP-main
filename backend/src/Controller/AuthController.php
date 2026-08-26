@@ -7,6 +7,7 @@ namespace CRM\Controller;
 use CRM\Config\Config;
 use CRM\Domain\AuditLogger;
 use CRM\Domain\Mailer;
+use CRM\Domain\ManagerUserLinker;
 use CRM\Domain\SystemSettings;
 use CRM\Http\ApiException;
 use CRM\Http\Request;
@@ -28,7 +29,8 @@ final class AuthController
         private readonly AuditLogger $audit,
         private readonly RateLimiter $limiter,
         private readonly Mailer $mailer,
-        private readonly SystemSettings $settings
+        private readonly SystemSettings $settings,
+        private readonly ManagerUserLinker $managerUsers
     ) {
     }
 
@@ -62,6 +64,7 @@ final class AuthController
         }
 
         $this->limiter->clear('login_ip', $rateKey);
+        $this->managerUsers->ensureForUser((int) $user['id']);
         $now = Clock::dbNow();
         $update = $this->db->prepare('UPDATE users SET last_login_at = :now, updated_at = updated_at WHERE id = :id');
         $update->execute(['now' => $now, 'id' => $user['id']]);

@@ -1,10 +1,10 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiDownload, apiMessage, apiRequest, setCsrfToken } from "../shared/api/api-client";
 import { Avatar, EntityLogo } from "../shared/components/identity";
 import { useUrlStringState } from "../shared/hooks/use-url-string-state";
-import { currentKyivStamp, formatDateTime, formatKyivDateTime, formatKyivDateTimeInput, kyivGreeting, todayKyiv } from "../shared/utils/dates";
+import { DEFAULT_TIME_ZONE, formatDateTime, formatUserDateTime, formatUserDateTimeInput, getBrowserTimeZone, isLocalDateTimePast, localDateTimeToUtc, todayUser, userGreeting } from "../shared/utils/dates";
 import { readUrlFilter, urlWithFilter } from "../shared/utils/url-filters.mjs";
 
 type View =
@@ -229,6 +229,9 @@ type OcrResult = { raw_text: string; draft: OcrDraft; confidence: "low" | "mediu
 
 const DEFAULT_PREFERENCES: Preferences = { deadlineReminders: true, overdueNotifications: true, workspaceSummary: true };
 const AI_INPUTS_ENABLED = false;
+const CLIENT_TIME_ZONE = getBrowserTimeZone();
+const CLIENT_TIME_ZONE_IS_DEFAULT = CLIENT_TIME_ZONE === DEFAULT_TIME_ZONE;
+const CLIENT_TIME_ZONE_LABEL = CLIENT_TIME_ZONE_IS_DEFAULT ? "Kyiv" : CLIENT_TIME_ZONE;
 
 const ROLE_ORDER: Role[] = ["Admin", "Manager", "Editor", "Read-only"];
 
@@ -487,6 +490,7 @@ const INITIAL_USERS: CRMUser[] = [
 type ApiRecord = Record<string, unknown>;
 type WorkspacePayload = {
   identity: ApiRecord;
+  current_manager?: ApiRecord | null;
   csrf_token: string;
   companies: ApiRecord[];
   contacts: ApiRecord[];
@@ -556,7 +560,7 @@ function mapTask(record: ApiRecord): Task {
   const rawLeads = Array.isArray(record.reminder_leads) ? record.reminder_leads as ApiRecord[] : [];
   return {
     id: apiString(record, "id"), companyId: apiString(record, "company_id"), title: apiString(record, "name"),
-    contactDate: apiString(record, "contact_date"), deadline: formatKyivDateTimeInput(apiString(record, "deadline")), owner: apiString(record, "manager"),
+    contactDate: apiString(record, "contact_date"), deadline: formatUserDateTimeInput(apiString(record, "deadline")), owner: apiString(record, "manager"),
     createdBy: apiString(record, "created_by_name"), ownerUserEmail: apiString(record, "manager_email").toLowerCase() || undefined,
     createdByUserEmail: apiString(record, "created_by_email").toLowerCase() || undefined,
     contactPersonId: apiString(record, "contact_person_id") || undefined, status: apiString(record, "status"),
@@ -575,7 +579,7 @@ function mapUser(record: ApiRecord): CRMUser {
   return {
     id: apiNumber(record, "id"), name: apiString(record, "full_name"), email: apiString(record, "email"), role: roleFromApi(record.role),
     state: apiBoolean(record, "pending_approval") ? "Pending" : apiBoolean(record, "is_active") ? "Active" : "Inactive",
-    lastLogin: formatKyivDateTime(apiString(record, "last_login_at")) || (apiBoolean(record, "pending_approval") ? "Awaiting approval" : "Not signed in yet"),
+    lastLogin: formatUserDateTime(apiString(record, "last_login_at")) || (apiBoolean(record, "pending_approval") ? "Awaiting approval" : "Not signed in yet"),
     photoDataUrl: apiString(record, "photo_data_url") || undefined, updatedAt: apiString(record, "updated_at"),
   };
 }
@@ -591,7 +595,7 @@ function mapAuditEvent(event: ApiRecord): AuditEvent {
   const field = apiString(event, "field");
   return {
     id: `E-${apiString(event, "id")}`,
-    at: formatKyivDateTime(apiString(event, "timestamp")),
+    at: formatUserDateTime(apiString(event, "timestamp")),
     actor: apiString(event, "actor"),
     actorUserId: apiNumber(event, "actor_user_id"),
     action: apiString(event, "action"),
@@ -616,6 +620,10 @@ function companyName(companies: Company[], id: string) {
   return companies.find((company) => company.id === id)?.name ?? "Unknown company";
 }
 
+function companyLocation(company: Pick<Company, "city" | "country">) {
+  return [company.city, company.country].filter((value) => value.trim() !== "").join(", ");
+}
+
 function useMediaQuery(query: string) {
   const [matches, setMatches] = useState(false);
 
@@ -631,7 +639,7 @@ function useMediaQuery(query: string) {
 }
 
 function isOverdue(task: Task) {
-  return !["Completed", "Canceled", "Deferred"].includes(task.status) && Boolean(task.deadline) && task.deadline.replace("T", " ") < currentKyivStamp();
+  return !["Completed", "Canceled", "Deferred"].includes(task.status) && isLocalDateTimePast(task.deadline);
 }
 
 function isOpenTask(task: Task) {
@@ -652,6 +660,10 @@ function normalizeUrl(value: string) {
   } catch {
     return "";
   }
+}
+
+function normalizePersonName(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function contactCount(contacts: Contact[], companyId: string) {
@@ -1022,7 +1034,7 @@ function AuthScreen({ onLogin, onRegister, onRecover }: {
         <div className="auth-intro">
           <div className="auth-brand"><span className="brand-mark">C</span><span><b>Client Data</b><small>CRM workspace</small></span></div>
           <div className="auth-intro-copy"><p className="eyebrow">CRM workspace</p><h1>Clients, contacts, and tasks in one clear workflow.</h1><p>Use email and password to review the role-aware frontend.</p></div>
-          <div className="auth-benefits"><span><i>✓</i>Four clearly separated roles</span><span><i>✓</i>Responsive client workflow</span><span><i>✓</i>Europe/Kyiv interface dates</span></div>
+          <div className="auth-benefits"><span><i>✓</i>Four clearly separated roles</span><span><i>✓</i>Responsive client workflow</span><span><i>✓</i>Browser-local reminder dates</span></div>
           <div className="auth-orbit auth-orbit-one" /><div className="auth-orbit auth-orbit-two" />
         </div>
         <div className="auth-card-wrap">
@@ -1036,7 +1048,7 @@ function AuthScreen({ onLogin, onRegister, onRecover }: {
             <div id="auth-mode-panel" role="tabpanel" aria-labelledby={mode === "signin" ? "auth-tab-signin" : "auth-tab-signup"}>
               <form className="auth-form" onSubmit={emailLogin} key={mode}>
                 {mode === "signup" && <label><span>Full name</span><input name="name" autoComplete="name" required minLength={2} maxLength={120} placeholder="Andrey Zherebetsky" /></label>}
-                <label><span>Work email</span><input name="email" type="email" autoComplete="email" required maxLength={254} autoFocus defaultValue={mode === "signin" ? "admin@cjn.example" : ""} placeholder="name@company.com" /></label>
+                <label><span>Work email</span><input name="email" type="email" autoComplete="email" required maxLength={254} autoFocus defaultValue={mode === "signin" ? "" : ""} placeholder="name@company.com" /></label>
                 <label><span>Password</span><span className="password-field"><input name="password" type={showPassword ? "text" : "password"} autoComplete={mode === "signin" ? "current-password" : "new-password"} required minLength={8} maxLength={128} placeholder="8+ characters, letters and numbers" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? "Hide" : "Show"}</button></span></label>
                 {mode === "signup" && <label><span>Confirm password</span><input name="confirmPassword" type={showPassword ? "text" : "password"} autoComplete="new-password" required minLength={8} maxLength={128} placeholder="Repeat your password" /></label>}
                 <div className="auth-form-options auth-form-options-end">{mode === "signin" && <button type="button" onClick={() => { setRecoveryOpen(true); setMessage(""); }}>Forgot password?</button>}</div>
@@ -1232,6 +1244,7 @@ export function CRMApp() {
   const [preferencesByAccount, setPreferencesByAccount] = useState<Record<string, Preferences>>({});
   const [toast, setToast] = useState<ToastState | null>(null);
   const [identity, setIdentity] = useState<AuthIdentity | null>(null);
+  const [currentManagerName, setCurrentManagerName] = useState("");
   const [sessionLoading, setSessionLoading] = useState(true);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
@@ -1267,6 +1280,7 @@ export function CRMApp() {
     setTaskComments([]);
     setTaskAttachments([]);
     setLookups(lookupGroups);
+    setCurrentManagerName(payload.current_manager ? apiString(payload.current_manager, "value") : "");
     setUsers(mappedUsers);
     if (typeof window !== "undefined" && readUrlFilter(window.location.search, "view", "dashboard", ALL_VIEWS) === "users") {
       const requestedUserId = Number(new URLSearchParams(window.location.search).get("user") ?? 0);
@@ -1303,14 +1317,14 @@ export function CRMApp() {
       setTasks((current) => current.map((item) => item.id === mapped.id ? mapped : item));
       setTaskComments((detail.comments as ApiRecord[] | undefined ?? []).map((comment) => ({
         id: apiString(comment, "id"), taskId: apiString(comment, "task_id"), author: apiString(comment, "author_name"),
-        createdAt: formatKyivDateTime(apiString(comment, "created_at")), text: apiString(comment, "text"),
+        createdAt: formatUserDateTime(apiString(comment, "created_at")), text: apiString(comment, "text"),
         authorUserId: apiNumber(comment, "author_user_id"), isHidden: apiBoolean(comment, "is_hidden"),
       })));
       setTaskAttachments((detail.attachments as ApiRecord[] | undefined ?? []).map((attachment) => ({
         id: Number(attachment.id), taskId: apiString(attachment, "task_id"), name: apiString(attachment, "original_name"),
         mimeType: apiString(attachment, "mime_type"), sizeBytes: Number(attachment.size_bytes ?? 0),
         authorUserId: Number(attachment.author_user_id), author: apiString(attachment, "author_name"),
-        createdAt: formatKyivDateTime(apiString(attachment, "created_at")),
+        createdAt: formatUserDateTime(apiString(attachment, "created_at")),
       })));
     } catch (error) {
       notify(apiMessage(error), "warning");
@@ -1377,6 +1391,11 @@ export function CRMApp() {
   const companyTypeOptions = lookupValues("company-type");
   const managerOptions = lookupValues("cjn-manager");
   const allManagerOptions = lookupValues("cjn-manager", false);
+  const normalizedIdentityName = normalizePersonName(identity?.name ?? "");
+  const defaultManager = managerOptions.find((owner) => owner === currentManagerName)
+    ?? managerOptions.find((owner) => normalizedIdentityName !== "" && normalizePersonName(owner) === normalizedIdentityName)
+    ?? managerOptions[0]
+    ?? "";
   const userEmailForName = (name: string) => users.find((user) => user.name === name)?.email.toLowerCase();
   const lookupId = (type: string, value?: string) => Number(lookups.find((group) => group.type === type)?.items.find((item) => item.value === value)?.id || 0) || null;
   const companyPayload = (company: Company) => ({ name: company.name, type_id: lookupId("company-type", company.kind), country: company.country, city: company.city || null, status_id: lookupId("client-status", company.status), manager_id: lookupId("cjn-manager", company.owner), website: company.website || null, linkedin: company.linkedin || null, logo_data_url: company.logoDataUrl || null, description: company.description || null, updated_at: company.updatedAt });
@@ -1385,7 +1404,7 @@ export function CRMApp() {
     const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
     return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, status: contact.contactStatus ?? "active", manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), photo_data_url: contact.photoDataUrl || null, business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, updated_at: contact.updatedAt };
   };
-  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null, outcome_notes: task.outcomeNotes || null, deadline: task.deadline, reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
+  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null, outcome_notes: task.outcomeNotes || null, deadline: localDateTimeToUtc(task.deadline), reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
   const reportServerError = (error: unknown) => { notify(apiMessage(error), "warning"); void loadWorkspace().catch(() => undefined); };
 
   const notifications = useMemo<AppNotification[]>(() => {
@@ -1597,6 +1616,7 @@ export function CRMApp() {
     setCsrfToken("");
     setPasswordChangeRequired(false);
     setIdentity(null);
+    setCurrentManagerName("");
     setProfileOpen(false);
     setNotificationsOpen(false);
     setSelectedCompany(null);
@@ -1849,7 +1869,7 @@ export function CRMApp() {
       id: "",
       companyId: String(data.get("companyId") ?? companies[0]?.id),
       title: String(data.get("title") ?? "").trim(),
-      contactDate: String(data.get("contactDate") ?? todayKyiv()),
+      contactDate: String(data.get("contactDate") ?? todayUser()),
       deadline: String(data.get("deadline") ?? ""),
       owner: String(data.get("owner") ?? "Andrey Zherebetsky"),
       createdBy: identity?.name ?? "Unknown user",
@@ -1878,7 +1898,7 @@ export function CRMApp() {
       setTasks(nextTasks);
       recalculateLastContact(mapped.companyId, nextTasks);
       setModal(null);
-      const past = Boolean(mapped.deadline) && mapped.deadline.replace("T", " ") <= currentKyivStamp();
+      const past = isLocalDateTimePast(mapped.deadline);
       notify(past ? "Task saved. Its past deadline will not generate reminders." : "Task saved. Calendar download is available.", past ? "warning" : "success");
       return true;
     } catch (error) {
@@ -2028,7 +2048,7 @@ export function CRMApp() {
     }
     try {
       const { data: saved } = await apiRequest<{ data: ApiRecord }>(`/tasks/${taskId}/comments`, { method: "POST", body: JSON.stringify({ text: body }) });
-      const mapped: TaskComment = { id: apiString(saved, "id"), taskId: apiString(saved, "task_id"), author: apiString(saved, "author_name"), authorUserId: apiNumber(saved, "author_user_id"), createdAt: formatKyivDateTime(apiString(saved, "created_at")), text: apiString(saved, "text"), isHidden: apiBoolean(saved, "is_hidden") };
+      const mapped: TaskComment = { id: apiString(saved, "id"), taskId: apiString(saved, "task_id"), author: apiString(saved, "author_name"), authorUserId: apiNumber(saved, "author_user_id"), createdAt: formatUserDateTime(apiString(saved, "created_at")), text: apiString(saved, "text"), isHidden: apiBoolean(saved, "is_hidden") };
       setTaskComments((current) => [...current, mapped]);
       setTasks((current) => current.map((task) => task.id === taskId ? { ...task, commentCount: (task.commentCount ?? current.filter((item) => item.id === taskId).length) + 1 } : task));
       notify("Comment posted");
@@ -2052,7 +2072,7 @@ export function CRMApp() {
     body.set("file", file);
     try {
       const { data } = await apiRequest<{ data: ApiRecord }>(`/tasks/${taskId}/attachments`, { method: "POST", body });
-      setTaskAttachments((current) => [...current, { id: Number(data.id), taskId: apiString(data, "task_id"), name: apiString(data, "original_name"), mimeType: apiString(data, "mime_type"), sizeBytes: Number(data.size_bytes ?? 0), authorUserId: Number(data.author_user_id), author: apiString(data, "author_name"), createdAt: formatKyivDateTime(apiString(data, "created_at")) }]);
+      setTaskAttachments((current) => [...current, { id: Number(data.id), taskId: apiString(data, "task_id"), name: apiString(data, "original_name"), mimeType: apiString(data, "mime_type"), sizeBytes: Number(data.size_bytes ?? 0), authorUserId: Number(data.author_user_id), author: apiString(data, "author_name"), createdAt: formatUserDateTime(apiString(data, "created_at")) }]);
       notify("Attachment uploaded");
       return true;
     } catch (error) { notify(apiMessage(error), "warning"); return false; }
@@ -2478,7 +2498,7 @@ export function CRMApp() {
           </nav>
           <div className="sidebar-foot">
             <span className="sync-dot" />
-            <div><b>Workspace ready</b><small>Europe/Kyiv · Session data</small></div>
+            <div><b>Workspace ready</b><small>{CLIENT_TIME_ZONE_IS_DEFAULT ? "Europe/Kyiv · Session data" : `${CLIENT_TIME_ZONE} · Local session`}</small></div>
           </div>
         </aside>
         {sidebarOpen && <button className="sidebar-scrim" type="button" tabIndex={-1} onClick={() => setSidebarOpen(false)} aria-label="Close menu" />}
@@ -2489,7 +2509,7 @@ export function CRMApp() {
               <p className="eyebrow">{VIEW_META[view].eyebrow}</p>
               <h1>{VIEW_META[view].label}</h1>
             </div>
-            <div className="date-chip"><span>●</span> {todayKyiv()} · Kyiv</div>
+            <div className="date-chip"><span>●</span> {todayUser()} · {CLIENT_TIME_ZONE_LABEL}</div>
           </div>
 
           {forbiddenAdminView ? <section className="empty-state forbidden-state" role="alert"><b>403 · Access forbidden</b><span>This administration section is available only to Admin users.</span><button className="primary-button" type="button" onClick={() => navigate("dashboard")}>Return to Dashboard</button></section> : <>
@@ -2648,9 +2668,9 @@ export function CRMApp() {
         />
       )}
 
-      {modal === "company" && <CompanyForm statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={managerOptions.includes(identity.name) ? identity.name : managerOptions[0] ?? ""} onClose={() => setModal(null)} onSubmit={addCompany} />}
+      {modal === "company" && <CompanyForm statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} onClose={() => setModal(null)} onSubmit={addCompany} />}
       {modal === "contact" && <ContactForm companies={liveCompanies} sourceOptions={contactSourceOptions} initiatorOptions={users.filter((user) => user.state === "Active")} initialCompanyId={modalCompanyId} currentUserEmail={identity.accountEmail} onClose={() => setModal(null)} onSubmit={addContact} />}
-      {modal === "task" && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} outcomeStatusOptions={outcomeStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
+      {modal === "task" && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} outcomeStatusOptions={outcomeStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} defaultOwner={defaultManager} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
       {modal === "user" && <UserForm onClose={() => setModal(null)} onSubmit={inviteUser} />}
       {modal === "profile" && <ProfileModal identity={identity} onClose={() => setModal(null)} onSave={updateProfile} />}
       {modal === "settings" && <SettingsModal preferences={preferences} systemSettings={currentRole === "Admin" ? systemSettings : null} onClose={() => setModal(null)} onSave={updatePreferences} />}
@@ -2687,7 +2707,7 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
     <>
       <section className="welcome-card">
         <div>
-          <p>{kyivGreeting()}, {identity.name.split(" ")[0]}</p>
+          <p>{userGreeting()}, {identity.name.split(" ")[0]}{CLIENT_TIME_ZONE_IS_DEFAULT ? "" : ` · ${CLIENT_TIME_ZONE}`}</p>
           <h2>Here is what needs the team&apos;s attention today.</h2>
         </div>
         <button className="primary-button" type="button" onClick={() => navigate("activity")}>View tasks <span>→</span></button>
@@ -2719,7 +2739,7 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
       {canViewAudit && <section className="panel recent-panel dashboard-recent-panel">
           <div className="panel-heading"><div><p className="eyebrow">Live</p><h2>Recent changes</h2></div><CountBadge count={audit.length} label="events" detail={`${audit.length} events are currently recorded in the Audit Log.`} /></div>
           <div className="timeline">
-            {audit.slice(0, 4).map((event, index) => <button className="timeline-event" type="button" key={event.id} onClick={() => openAuditEntity(event)}><span className={`timeline-avatar ${["green", "blue", "violet", "navy"][index % 4]}`}>{event.actor.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><span><b>{event.actor}</b><small>{event.action.toLowerCase()} · {event.entity}</small><em>{event.at} · Kyiv</em></span><span className="row-arrow">›</span></button>)}
+            {audit.slice(0, 4).map((event, index) => <button className="timeline-event" type="button" key={event.id} onClick={() => openAuditEntity(event)}><span className={`timeline-avatar ${["green", "blue", "violet", "navy"][index % 4]}`}>{event.actor.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><span><b>{event.actor}</b><small>{event.action.toLowerCase()} · {event.entity}</small><em>{event.at} · {CLIENT_TIME_ZONE_LABEL}</em></span><span className="row-arrow">›</span></button>)}
             {audit.length === 0 && <div className="empty-state compact"><b>No recent changes</b><span>New CRM activity will appear here.</span></div>}
           </div>
         </section>}
@@ -2771,7 +2791,7 @@ function Pipeline({ companies, contacts, tasks, statusOrder, canMove, showIntern
                   <article key={company.id} className="pipeline-card" tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
                     <div className="pipeline-card-top">{showInternalIds && <span>{company.id}</span>}<button type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></div>
                     <h3>{company.name}</h3>
-                    <p>{company.city}, {company.country}</p>
+                    <p>{companyLocation(company)}</p>
                     <div className="pipeline-card-meta"><span>{openTaskLabel(tasks.filter((task) => task.companyId === company.id && isOpenTask(task)).length)}</span><CountBadge count={contactCount(contacts, company.id)} label="contacts" detail={`Contact people at ${company.name}. Open the card to view the full list.`} /></div>
                     {canMove && <select className="pipeline-stage-select" value={company.status} aria-label={`Relationship status for ${company.name}`} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); moveCompany(company.id, event.target.value); }}>{statusOrder.map((stage) => <option key={stage}>{stage}</option>)}</select>}
                     <footer><span className="mini-avatar">{company.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><span>Next activity: {nextActivityLabel(tasks, company.id)}</span></footer>
@@ -2825,7 +2845,7 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
   const searchSuggestions = query.trim() ? companies.filter((company) => company.name.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 8) : [];
   const showSearchSuggestions = searchFocused && query.trim().length > 0;
   const selectSearchSuggestion = (company: Company) => { setQuery(company.name); setPage(1); setSearchFocused(false); };
-  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (!showSearchSuggestions || searchSuggestions.length === 0) {
       if (event.key === "Escape") setSearchFocused(false);
       return;
@@ -2842,7 +2862,7 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
         <div className="company-search-combobox">
           <div className="toolbar-search"><span aria-hidden="true">⌕</span><input type="search" role="combobox" value={query} onFocus={() => { setSearchFocused(true); setSuggestionIndex(0); }} onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)} onKeyDown={handleSearchKeyDown} onChange={(event) => { setQuery(event.target.value); setPage(1); setSearchFocused(true); setSuggestionIndex(0); }} placeholder="Search companies" aria-label="Search companies" aria-controls="company-search-suggestions" aria-expanded={showSearchSuggestions} aria-autocomplete="list" autoComplete="off" spellCheck={false} />{query && <button className="search-clear-button" type="button" aria-label="Clear company search" onMouseDown={(event) => event.preventDefault()} onClick={() => { setQuery(""); setPage(1); setSearchFocused(false); }}>×</button>}</div>
           {showSearchSuggestions && <div className="company-search-suggestions" id="company-search-suggestions" role="listbox" aria-label="Company search suggestions">
-            {searchSuggestions.length > 0 ? searchSuggestions.map((company, index) => <button key={company.id} type="button" role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? "active" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSearchSuggestion(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{company.city}, {company.country}</small></span><span aria-hidden="true">›</span></button>) : <div className="company-search-empty">No companies found</div>}
+            {searchSuggestions.length > 0 ? searchSuggestions.map((company, index) => <button key={company.id} type="button" role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? "active" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSearchSuggestion(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{companyLocation(company)}</small></span><span aria-hidden="true">›</span></button>) : <div className="company-search-empty">No companies found</div>}
           </div>}
         </div>
         <div className="companies-toolbar-controls">
@@ -3097,8 +3117,8 @@ function Users({ users, invite, openUser }: { users: CRMUser[]; invite: () => vo
       <div className="data-toolbar"><p className="page-description">Manager and Editor have identical record permissions. Select a role card to filter the team.</p><span className="toolbar-spacer" /><button className="primary-button" type="button" onClick={invite}>＋ Add user</button></div>
       <div className="role-grid" aria-label="Role permissions">{ROLE_ORDER.map((role) => <button type="button" key={role} className={roleFilter === role ? "active" : ""} aria-pressed={roleFilter === role} onClick={() => setRoleFilter((current) => current === role ? "All" : role)}><span><StaticStatusBadge value={role} /><b>{users.filter((user) => user.role === role).length}</b></span><strong>{ROLE_DETAILS[role].summary}</strong><small>{ROLE_DETAILS[role].permissions.join(" · ")}</small></button>)}</div>
       <div className="table-scroll responsive-card-scroll" role="region" aria-label="Users and roles table" tabIndex={0}>
-        <table className="data-table users-table responsive-card-table"><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login · Kyiv</th><th>Access note</th><th aria-label="Actions" /></tr></thead>
-          <tbody>{visibleUsers.map((user) => <tr key={user.email} tabIndex={0} onClick={() => openUser(user)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openUser(user); }}><td data-label="User"><span className="contact-person"><Avatar name={user.name} src={user.photoDataUrl} className="person-avatar" lazy /><span><b>{user.name}</b><a className="inline-data-link compact" href={`mailto:${user.email}`} onClick={(event) => event.stopPropagation()}>{user.email}</a></span></span></td><td data-label="Role"><StatusBadge value={user.role} /></td><td data-label="Status"><StatusBadge value={user.state} /></td><td data-label="Last login · Kyiv">{user.lastLogin}</td><td data-label="Access note">{ROLE_DETAILS[user.role].summary}</td><td data-label="Actions"><button className="row-menu" type="button" aria-label={`Edit access for ${user.name}`} onClick={(event) => { event.stopPropagation(); openUser(user); }}>•••</button></td></tr>)}{visibleUsers.length === 0 && <tr className="table-empty-row"><td colSpan={6}>No users are assigned to this role.</td></tr>}</tbody>
+        <table className="data-table users-table responsive-card-table"><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login · {CLIENT_TIME_ZONE_LABEL}</th><th>Access note</th><th aria-label="Actions" /></tr></thead>
+          <tbody>{visibleUsers.map((user) => <tr key={user.email} tabIndex={0} onClick={() => openUser(user)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openUser(user); }}><td data-label="User"><span className="contact-person"><Avatar name={user.name} src={user.photoDataUrl} className="person-avatar" lazy /><span><b>{user.name}</b><a className="inline-data-link compact" href={`mailto:${user.email}`} onClick={(event) => event.stopPropagation()}>{user.email}</a></span></span></td><td data-label="Role"><StatusBadge value={user.role} /></td><td data-label="Status"><StatusBadge value={user.state} /></td><td data-label="Last login">{user.lastLogin}</td><td data-label="Access note">{ROLE_DETAILS[user.role].summary}</td><td data-label="Actions"><button className="row-menu" type="button" aria-label={`Edit access for ${user.name}`} onClick={(event) => { event.stopPropagation(); openUser(user); }}>•••</button></td></tr>)}{visibleUsers.length === 0 && <tr className="table-empty-row"><td colSpan={6}>No users are assigned to this role.</td></tr>}</tbody>
         </table>
       </div>
     </section>
@@ -3162,7 +3182,7 @@ function Audit({ events, users, canExport }: { events: AuditEvent[]; users: CRMU
     if (entityType !== "All entities") params.set("entity_type", entityType);
     if (from) params.set("from", from);
     if (to) params.set("to", to);
-    link.href = `/api/backend/audit?${params}`;
+    link.href = `/api/audit?${params}`;
     link.download = "";
     link.click();
   }
@@ -3176,7 +3196,7 @@ function Audit({ events, users, canExport }: { events: AuditEvent[]; users: CRMU
     <section className="panel data-panel">
       <div className="audit-banner"><span>↻</span><p><b>Read-only event view</b><small>This frontend exposes no edit or delete action for activity events.</small></p></div>
       <div className="data-toolbar audit-toolbar"><div className="toolbar-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the current page" aria-label="Search the current audit page" /></div><label><span>From</span><input type="date" value={from} onChange={(event) => updateAuditFilter(setFrom, event.target.value)} /></label><label><span>To</span><input type="date" value={to} onChange={(event) => updateAuditFilter(setTo, event.target.value)} /></label><select value={actor} onChange={(event) => updateAuditFilter(setActor, event.target.value)} aria-label="User"><option>All users</option>{users.filter((user) => user.id).map((user) => <option key={user.id} value={String(user.id)}>{user.name}</option>)}</select><select value={action} onChange={(event) => updateAuditFilter(setAction, event.target.value)} aria-label="Event type"><option>All actions</option>{actionOptions.map((value) => <option key={value}>{value}</option>)}</select><select value={entityType} onChange={(event) => updateAuditFilter(setEntityType, event.target.value)} aria-label="Entity"><option>All entities</option>{entityOptions.map((value) => <option key={value}>{value}</option>)}</select><button className="text-button" type="button" onClick={() => { setQuery(""); setActor("All users"); setAction("All actions"); setEntityType("All entities"); setFrom(""); setTo(""); setPage(1); }}>Clear</button><span className="toolbar-spacer" />{canExport && <button className="secondary-button" type="button" onClick={exportCsv}>Export CSV</button>}</div>
-      <div className="table-scroll responsive-card-scroll" role="region" aria-label="Audit Log table" tabIndex={0}><table className="data-table audit-table responsive-card-table"><thead><tr><th>Time · Kyiv</th><th>Actor</th><th>Action</th><th>Entity</th><th>Change detail</th><th>Event ID</th></tr></thead><tbody>{visibleEvents.map((event) => <tr key={event.id}><td data-label="Time · Kyiv">{event.at}</td><td data-label="Actor"><b className="normal-weight">{event.actor}</b></td><td data-label="Action"><StatusBadge value={event.action} /></td><td data-label="Entity">{event.entity}</td><td className="audit-detail" data-label="Change detail">{event.detail}</td><td data-label="Event ID"><code>{event.id}</code></td></tr>)}{loading && <tr className="table-empty-row"><td colSpan={6}>Loading audit events…</td></tr>}{error && !loading && <tr className="table-empty-row"><td colSpan={6}>{error}</td></tr>}{visibleEvents.length === 0 && !loading && !error && <tr className="table-empty-row"><td colSpan={6}>No audit events match the current filters.</td></tr>}</tbody></table></div>
+      <div className="table-scroll responsive-card-scroll" role="region" aria-label="Audit Log table" tabIndex={0}><table className="data-table audit-table responsive-card-table"><thead><tr><th>Time · {CLIENT_TIME_ZONE_LABEL}</th><th>Actor</th><th>Action</th><th>Entity</th><th>Change detail</th><th>Event ID</th></tr></thead><tbody>{visibleEvents.map((event) => <tr key={event.id}><td data-label="Time">{event.at}</td><td data-label="Actor"><b className="normal-weight">{event.actor}</b></td><td data-label="Action"><StatusBadge value={event.action} /></td><td data-label="Entity">{event.entity}</td><td className="audit-detail" data-label="Change detail">{event.detail}</td><td data-label="Event ID"><code>{event.id}</code></td></tr>)}{loading && <tr className="table-empty-row"><td colSpan={6}>Loading audit events…</td></tr>}{error && !loading && <tr className="table-empty-row"><td colSpan={6}>{error}</td></tr>}{visibleEvents.length === 0 && !loading && !error && <tr className="table-empty-row"><td colSpan={6}>No audit events match the current filters.</td></tr>}</tbody></table></div>
       <footer className="table-footer"><span>Showing {visibleEvents.length} of {meta.total} events</span><div><button type="button" aria-label="Previous audit page" disabled={loading || meta.page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>‹</button><b>{meta.page}/{meta.pages}</b><button type="button" aria-label="Next audit page" disabled={loading || meta.page >= meta.pages} onClick={() => setPage((value) => Math.min(meta.pages, value + 1))}>›</button></div></footer>
     </section>
   );
@@ -3256,7 +3276,7 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
         </form>
       ) : (
         <>
-          <div className="company-detail-head"><EntityLogo name={company.name} src={company.logoDataUrl} className="detail-logo" /><div><StatusBadge value={company.status} /><p>{company.city}, {company.country}{company.website && <> · <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer">{company.website}</a></>}</p></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
+          <div className="company-detail-head"><EntityLogo name={company.name} src={company.logoDataUrl} className="detail-logo" /><div><StatusBadge value={company.status} /><p>{companyLocation(company)}{company.website && <> · <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer">{company.website}</a></>}</p></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
           <div className="detail-grid"><div><small>Owner</small><b>{company.owner}</b></div><div><small>Open tasks</small><b>{tasks.filter(isOpenTask).length}</b></div><div><small>Last contact</small><b>{company.lastContact}</b></div><div><small>Next activity</small><b>{nextActivityLabel(tasks)}</b></div></div>
           <div className="detail-description"><small>About company</small><p>{company.description}</p></div>
           <div className="detail-columns">
@@ -3341,7 +3361,14 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
       ) : (
         <>
           <div className="person-detail-head"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-detail-avatar" /><div><h3>{contact.position || "Position not specified"}</h3><p>{company}</p><StatusBadge value={contact.contactStatus === "inactive" ? "Inactive — do not contact" : "Active — contactable"} /></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
-          <div className="detail-grid contact-info-grid"><div><small>Email</small>{contact.email ? <a href={`mailto:${contact.email}`}>{contact.email}</a> : <b>—</b>}</div><div><small>Phone</small>{contact.phone && contact.phone !== "—" ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : <b>—</b>}</div><div><small>LinkedIn</small>{contact.linkedin ? <a href={websiteHref(contact.linkedin)} target="_blank" rel="noreferrer">Open profile</a> : <b>—</b>}</div><div><small>Source</small><b>{contact.source || "—"}</b></div><div><small>Source detail</small><b>{contact.sourceDetail || contact.referredBy || "—"}</b></div><div><small>CJN Manager</small><b>{contact.owner}</b></div><div><small>Initiated by</small><b>{contact.initiatedBy || "Not recorded"}</b></div></div>
+          <div className="detail-grid contact-info-grid">
+            <div><small>Email</small>{contact.email ? <a href={`mailto:${contact.email}`}>{contact.email}</a> : <b>—</b>}</div>
+            <div><small>Phone</small>{contact.phone && contact.phone !== "—" ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : <b>—</b>}</div>
+            <div><small>LinkedIn</small>{contact.linkedin ? <a href={websiteHref(contact.linkedin)} target="_blank" rel="noreferrer">Open profile</a> : <b>—</b>}</div>
+            <div className="contact-source-value"><small>Source / detail</small><b>{contact.source || "—"}</b>{(contact.sourceDetail || contact.referredBy) && <span>{contact.sourceDetail || contact.referredBy}</span>}</div>
+            <div><small>CJN Manager</small><b>{contact.owner}</b></div>
+            <div><small>Initiated by</small><b>{contact.initiatedBy || "Not recorded"}</b></div>
+          </div>
           <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive contact</button>}{contact.email && <a className="primary-button action-link" href={`mailto:${contact.email}`}>Send email</a>}</div>
         </>
       )}
@@ -3472,7 +3499,7 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
         <form className="entity-form detail-edit-form" onSubmit={save}>
           <label className="field field-full"><span>Task title *</span><input name="title" defaultValue={task.title} required minLength={3} maxLength={255} autoFocus /></label>
           <label className="field"><span>Contact date *</span><input name="contactDate" type="date" defaultValue={task.contactDate ?? task.deadline.slice(0, 10)} required /></label>
-          <label className="field"><span>Deadline · Europe/Kyiv</span><input name="deadline" type="datetime-local" defaultValue={task.deadline} /></label>
+          <label className="field"><span>Deadline · {CLIENT_TIME_ZONE}</span><input name="deadline" type="datetime-local" defaultValue={task.deadline} /></label>
           <label className="field"><span>Responsible manager</span><select name="owner" defaultValue={task.owner}>{Array.from(new Set([...managerOptions, task.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           <label className="field"><span>Contact person</span><select name="contactPersonId" defaultValue={task.contactPersonId ?? ""}><option value="">Not specified</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
           <label className="field"><span>Status</span><select name="status" defaultValue={task.status}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>
@@ -3485,11 +3512,11 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
       ) : (
         <>
           <div className="task-detail-status"><StatusBadge value={task.status} /><StatusBadge value={`${task.priority} priority`} />{isOverdue(task) && <StaticStatusBadge value="Overdue" />}{canEdit && <button className="secondary-button task-edit-button" type="button" onClick={openEditor}>Edit task</button>}</div>
-          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · Europe/Kyiv</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}</b></div><div><small>Outcome</small><b>{task.outcomeStatus || "—"}</b></div><div><small>Calendar</small>{task.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(task)}>Download .ics</button> : <b>Set a deadline first</b>}</div></div>
+          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE}</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}</b></div><div><small>Outcome</small><b>{task.outcomeStatus || "—"}</b></div><div><small>Calendar</small>{task.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(task)}>Download .ics</button> : <b>Set a deadline first</b>}</div></div>
           <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p>{task.outcomeNotes && <><small>Outcome notes</small><p>{task.outcomeNotes}</p></>}</div>
           <section className="attachment-section"><div className="detail-section-head"><h3>Attachments <StaticStatusBadge value={String(attachments.length)} /></h3>{canEdit && <label className="secondary-button attachment-upload">{attachmentUploading ? "Uploading…" : "＋ Upload file"}<input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,image/*" disabled={attachmentUploading} onChange={(event) => void attach(event)} /></label>}</div><div className="attachment-list">{attachments.map((attachment) => <article key={attachment.id}><span><b>{attachment.name}</b><small>{(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB · {attachment.author}</small></span><button className="secondary-button" type="button" onClick={() => void downloadAttachment(attachment)}>Download</button>{(isAdmin || attachment.authorUserId === currentUserId) && <button className="danger-button" type="button" onClick={() => void deleteAttachment(attachment)}>Delete</button>}</article>)}{attachments.length === 0 && <p className="muted-copy">No attachments yet. PDF, Word, Excel, and images up to 20 MB are supported.</p>}</div></section>
-          <section className="comment-stream"><div className="detail-section-head"><h3>Comments <StaticStatusBadge value={String(comments.filter((comment) => !comment.isHidden).length)} /></h3></div>{comments.map((comment) => <article key={comment.id} className={comment.isHidden ? "comment-hidden" : ""}><span className="timeline-avatar blue">{comment.author.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><p><b>{comment.author}</b><small>{comment.createdAt} · Kyiv</small><span>{comment.isHidden ? "Comment hidden by Admin" : comment.text}</span></p>{isAdmin && <button className="text-button" type="button" onClick={() => void setCommentHidden(task.id, comment.id, !comment.isHidden)}>{comment.isHidden ? "Restore" : "Hide"}</button>}</article>)}{comments.length === 0 && <div className="empty-state compact"><b>No comments yet</b><span>The task discussion will appear here.</span></div>}{canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write a clear update for the team" />{AI_INPUTS_ENABLED && <VoiceInputButton disabled={commentSubmitting} onText={(text) => { setCommentDraft((current) => appendVoiceText(current, text)); setCommentRetry(false); }} />}</label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}</section>
-          <section className="change-log"><div className="detail-section-head"><h3>Change log</h3><small>{events.length} events</small></div>{events.slice(0, 8).map((event) => <article key={event.id}><span>{event.action}</span><p><b>{event.detail}</b><small>{event.actor} · {event.at} · Kyiv</small></p></article>)}{events.length === 0 && <p className="muted-copy">No changes recorded for this task.</p>}</section>
+          <section className="comment-stream"><div className="detail-section-head"><h3>Comments <StaticStatusBadge value={String(comments.filter((comment) => !comment.isHidden).length)} /></h3></div>{comments.map((comment) => <article key={comment.id} className={comment.isHidden ? "comment-hidden" : ""}><span className="timeline-avatar blue">{comment.author.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><p><b>{comment.author}</b><small>{comment.createdAt} · {CLIENT_TIME_ZONE_LABEL}</small><span>{comment.isHidden ? "Comment hidden by Admin" : comment.text}</span></p>{isAdmin && <button className="text-button" type="button" onClick={() => void setCommentHidden(task.id, comment.id, !comment.isHidden)}>{comment.isHidden ? "Restore" : "Hide"}</button>}</article>)}{comments.length === 0 && <div className="empty-state compact"><b>No comments yet</b><span>The task discussion will appear here.</span></div>}{canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write a clear update for the team" />{AI_INPUTS_ENABLED && <VoiceInputButton disabled={commentSubmitting} onText={(text) => { setCommentDraft((current) => appendVoiceText(current, text)); setCommentRetry(false); }} />}</label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}</section>
+          <section className="change-log"><div className="detail-section-head"><h3>Change log</h3><small>{events.length} events</small></div>{events.slice(0, 8).map((event) => <article key={event.id}><span>{event.action}</span><p><b>{event.detail}</b><small>{event.actor} · {event.at} · {CLIENT_TIME_ZONE_LABEL}</small></p></article>)}{events.length === 0 && <p className="muted-copy">No changes recorded for this task.</p>}</section>
           <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{task.deadline && <button className="secondary-button" type="button" onClick={() => void downloadIcs(task)}>↓ Add to calendar</button>}{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive task</button>}{canEdit && task.status !== "Completed" && task.status !== "Started" && taskStatusOptions.includes("Started") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Started")}>Start task</button>}{canEdit && task.status === "Started" && taskStatusOptions.includes("Deferred") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Deferred")}>Defer</button>}{canEdit && task.status !== "Completed" && taskStatusOptions.includes("Completed") && <button className="primary-button" type="button" onClick={() => updateStatus(task, "Completed")}>✓ Mark as completed</button>}</div>
         </>
       )}
@@ -3622,7 +3649,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
   );
 }
 
-function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions, reminderLeadOptions, managerOptions, initiatorOptions, currentUserEmail, initialCompanyId, canAddContact, onAddContact, onClose, onSubmit }: { companies: Company[]; contacts: Contact[]; taskStatusOptions: string[]; outcomeStatusOptions: string[]; reminderLeadOptions: string[]; managerOptions: string[]; initiatorOptions: CRMUser[]; currentUserEmail: string; initialCompanyId?: string; canAddContact: boolean; onAddContact: (draft: ContactDraft) => Promise<ContactCreationResult>; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean> }) {
+function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions, reminderLeadOptions, managerOptions, defaultOwner, initiatorOptions, currentUserEmail, initialCompanyId, canAddContact, onAddContact, onClose, onSubmit }: { companies: Company[]; contacts: Contact[]; taskStatusOptions: string[]; outcomeStatusOptions: string[]; reminderLeadOptions: string[]; managerOptions: string[]; defaultOwner: string; initiatorOptions: CRMUser[]; currentUserEmail: string; initialCompanyId?: string; canAddContact: boolean; onAddContact: (draft: ContactDraft) => Promise<ContactCreationResult>; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean> }) {
   const [companyId, setCompanyId] = useState(initialCompanyId ?? companies[0]?.id ?? "");
   const [contactPersonId, setContactPersonId] = useState("");
   const [quickContactOpen, setQuickContactOpen] = useState(false);
@@ -3691,9 +3718,9 @@ function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions
           {quickError && <div className="form-error" role="alert">{quickError}</div>}
           <div className="quick-contact-actions"><button className="secondary-button" type="button" onClick={resetQuickContact}>Cancel</button><button className="primary-button" type="button" disabled={quickPhotoProcessing} onClick={saveQuickContact}>{quickPhotoProcessing ? "Processing image…" : "Save contact"}</button></div>
         </section>}
-        <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required defaultValue={todayKyiv()} /></label>
-        <label className="field"><span>Deadline · Europe/Kyiv</span><input name="deadline" type="datetime-local" /></label>
-        <label className="field"><span>Responsible manager *</span><select name="owner" required>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
+        <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required defaultValue={todayUser()} /></label>
+        <label className="field"><span>Deadline · {CLIENT_TIME_ZONE}</span><input name="deadline" type="datetime-local" /></label>
+        <label className="field"><span>Responsible manager *</span><select name="owner" required defaultValue={defaultOwner}>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
         <label className="field"><span>Status *</span><select name="status" defaultValue="Not Started">{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
         <label className="field"><span>Outcome status</span><select name="outcomeStatus"><option value="">Not specified</option>{outcomeStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
         <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setNoteDraft((current) => appendVoiceText(current, text))} />}</label>
@@ -3796,7 +3823,7 @@ function SettingsModal({ preferences, systemSettings, onClose, onSave }: { prefe
     <Modal title="Settings" eyebrow="Workspace preferences" onClose={onClose}>
       <form className="entity-form" onSubmit={submit}>
         <label className="field"><span>Interface language</span><input value="English" readOnly /></label>
-        <label className="field"><span>Timezone</span><input value="Europe/Kyiv" readOnly /></label>
+        <label className="field"><span>Timezone</span><input value={CLIENT_TIME_ZONE} readOnly /></label>
         <fieldset className="settings-list field-full"><legend>Notifications</legend><label><input name="deadlineReminders" type="checkbox" defaultChecked={preferences.deadlineReminders} /> <span>My upcoming deadlines</span></label><label><input name="overdueNotifications" type="checkbox" defaultChecked={preferences.overdueNotifications} /> <span>My overdue tasks</span></label><label><input name="workspaceSummary" type="checkbox" defaultChecked={preferences.workspaceSummary} /> <span>My activity summary</span></label></fieldset>
         {systemSettings && <><div className="form-divider field-full"><span>Registration and system email</span></div><label className="field field-full"><span>Allowed registration domains</span><textarea name="registrationAllowedDomains" rows={3} defaultValue={systemSettings.registrationAllowedDomains.join("\n")} placeholder="company.com&#10;subsidiary.com" /></label><label className="field field-full"><span>System notification email</span><input name="systemNotificationEmail" type="email" defaultValue={systemSettings.systemNotificationEmail} placeholder="admin@company.com" /></label><fieldset className="settings-list field-full"><legend>New registrations</legend><label><input name="notifyNewRegistrations" type="checkbox" defaultChecked={systemSettings.notifyNewRegistrations} /><span>Notify the system email when a user registers</span></label></fieldset></>}
         {retry && <div className="form-error field-full" role="alert">Settings were not saved. Your entries are preserved; try again.</div>}

@@ -66,12 +66,13 @@ final class CompanyController
                        c.manager_lookup_id, c.last_contact_date, c.website, c.linkedin, c.description,
                        c.is_archived, c.created_at, c.updated_at, c.created_by, c.updated_by,
                        ct.value AS type_value, cs.value AS status_value,
-                       mgr.value AS manager_value, mgr.email AS manager_email,
+                       mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                        creator.full_name AS created_by_name, creator.email AS created_by_email
                 FROM companies c
                 JOIN lookups ct ON ct.id = c.type_lookup_id
                 JOIN lookups cs ON cs.id = c.status_lookup_id
                 JOIN lookups mgr ON mgr.id = c.manager_lookup_id
+                LEFT JOIN users manager_user ON manager_user.id = mgr.user_id
                 LEFT JOIN users creator ON creator.id = c.created_by
                 WHERE {$whereSql}
                 ORDER BY {$sort} {$direction}, c.id {$direction}
@@ -266,10 +267,12 @@ final class CompanyController
     private function find(int $id, bool $includeArchived = false): array
     {
         $sql = 'SELECT c.*, ct.value AS type_value, cs.value AS status_value,
-                       mgr.value AS manager_value, mgr.email AS manager_email,
+                       mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                        creator.full_name AS created_by_name, creator.email AS created_by_email
                 FROM companies c JOIN lookups ct ON ct.id = c.type_lookup_id JOIN lookups cs ON cs.id = c.status_lookup_id
-                JOIN lookups mgr ON mgr.id = c.manager_lookup_id LEFT JOIN users creator ON creator.id = c.created_by
+                JOIN lookups mgr ON mgr.id = c.manager_lookup_id
+                LEFT JOIN users manager_user ON manager_user.id = mgr.user_id
+                LEFT JOIN users creator ON creator.id = c.created_by
                 WHERE c.id = :id' . ($includeArchived ? '' : ' AND c.is_archived = 0');
         $stmt = $this->db->prepare($sql);
         $stmt->execute(['id' => $id]);

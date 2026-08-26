@@ -6371,7 +6371,7 @@ img.detail-logo {
 }
 
 .crm-app:has(.page-scroll-controls) .main-content {
-  padding-bottom: calc(116px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(132px + env(safe-area-inset-bottom, 0px));
 }
 
 .page-topline {
@@ -6614,6 +6614,37 @@ img.detail-logo {
 
 .detail-grid b {
   font-size: 15px;
+}
+
+.contact-info-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.contact-info-grid > div:nth-child(3n) {
+  border-right: 0;
+}
+
+.contact-info-grid > div:nth-child(-n + 3) {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.contact-info-grid > div:nth-child(n + 4) {
+  padding-top: 12px;
+}
+
+.contact-source-value span {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.contact-source-value b {
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .detail-description {

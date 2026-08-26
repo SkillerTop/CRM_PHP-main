@@ -21,7 +21,7 @@ try {
         $normalized = $relativeToBackend.Replace('\', '/')
         $skip = $false
 
-        if ($normalized -match '(^|/)\.env(?:\..*)?$' -and $normalized -notmatch '(^|/)\.env\.example$') { $skip = $true }
+        if ($normalized -match '(^|/)\.env(?:$|[\.\s_-])' -and $normalized -notmatch '(^|/)\.env\.example$') { $skip = $true }
         if ($normalized -eq 'database/queries/postman-verification.sql') { $skip = $true }
         if ($normalized -eq 'src/Service/README.md') { $skip = $true }
         if ($normalized.StartsWith('.runtime/') -or $normalized.StartsWith('.tmp/')) { $skip = $true }

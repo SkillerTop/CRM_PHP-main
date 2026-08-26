@@ -21,7 +21,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
   if (init.body && !isForm && !headers.has("content-type")) headers.set("content-type", "application/json");
   if (csrfToken && init.method && !["GET", "HEAD"].includes(init.method.toUpperCase())) headers.set("x-csrf-token", csrfToken);
 
-  const response = await fetch(`/api/backend${path.startsWith("/") ? path : `/${path}`}`, {
+  const response = await fetch(`/api${path.startsWith("/") ? path : `/${path}`}`, {
     ...init,
     headers,
     credentials: "same-origin",
@@ -52,7 +52,7 @@ export function apiMessage(error: unknown) {
 export async function apiDownload(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   if (csrfToken && init.method && !["GET", "HEAD"].includes(init.method.toUpperCase())) headers.set("x-csrf-token", csrfToken);
-  const response = await fetch(`/api/backend${path.startsWith("/") ? path : `/${path}`}`, {
+  const response = await fetch(`/api${path.startsWith("/") ? path : `/${path}`}`, {
     ...init,
     headers,
     credentials: "same-origin",

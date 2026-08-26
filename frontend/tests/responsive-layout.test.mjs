@@ -66,7 +66,7 @@ function blockAfterAny(source, markers) {
 }
 
 async function readBuiltAssets() {
-  const directories = ["dist/client/assets/", "dist/server/assets/", "dist/server/ssr/assets/"];
+  const directories = ["dist/assets/"];
   const chunks = [];
 
   for (const directory of directories) {
@@ -716,7 +716,7 @@ test("removes obsolete Priority dashboard artifacts from production assets", asy
 });
 
 test("ships the Lookups, Dashboard, and workflow containment rules in the compiled CSS", async () => {
-  const assetsUrl = new URL("dist/client/assets/", root);
+  const assetsUrl = new URL("dist/assets/", root);
   const cssFiles = (await readdir(assetsUrl)).filter((name) => name.endsWith(".css"));
   assert.ok(cssFiles.length > 0, "The production build must contain a CSS asset");
 
@@ -754,7 +754,7 @@ test("ships the Lookups, Dashboard, and workflow containment rules in the compil
 });
 
 test("ships the Companies card breakpoint and containment rules in compiled CSS", async () => {
-  const assetsUrl = new URL("dist/client/assets/", root);
+  const assetsUrl = new URL("dist/assets/", root);
   const cssFiles = (await readdir(assetsUrl)).filter((name) => name.endsWith(".css"));
   assert.ok(cssFiles.length > 0, "The production build must contain a CSS asset");
 
@@ -827,4 +827,39 @@ test("covers the v3.1 audit gaps in the integrated frontend", async () => {
   assert.match(component, /Reject registration/);
   assert.match(component, /Cannot change role: this is the last active Admin/);
   assert.match(component, /search-result-group/);
+});
+
+test("omits location punctuation when a company city is empty", async () => {
+  const app = await readFile(new URL("../src/app/CRMApp.tsx", import.meta.url), "utf8");
+  assert.match(app, /function companyLocation[\s\S]*?filter\(\(value\) => value\.trim\(\) !== ""\)\.join\(", "\)/);
+  assert.match(app, /<p>\{companyLocation\(company\)\}<\/p>/);
+  assert.doesNotMatch(app, /\{company\.city\}, \{company\.country\}/);
+});
+
+test("selects the signed-in user's linked manager for new records", async () => {
+  const app = await readFile(new URL("../src/app/CRMApp.tsx", import.meta.url), "utf8");
+  assert.match(app, /current_manager\?: ApiRecord \| null/);
+  assert.match(app, /setCurrentManagerName\(payload\.current_manager \? apiString\(payload\.current_manager, "value"\) : ""\)/);
+  assert.match(app, /const defaultManager = managerOptions\.find\(\(owner\) => owner === currentManagerName\)[\s\S]*?normalizePersonName\(owner\) === normalizedIdentityName/);
+  assert.match(app, /<CompanyForm[\s\S]*?defaultOwner=\{defaultManager\}/);
+  assert.match(app, /<TaskForm[\s\S]*?defaultOwner=\{defaultManager\}/);
+  assert.match(app, /<select name="owner" required defaultValue=\{defaultOwner\}>/);
+});
+
+test("reloads persisted contact photos from the paginated API", async () => {
+  const controller = await readFile(new URL("../backend/src/Controller/ContactController.php", root), "utf8");
+  const listSelections = controller.match(/k\.manager_lookup_id, k\.initiated_by_text, k\.photo_data_url/g) ?? [];
+  assert.equal(listSelections.length, 2, "Both contact list queries must return the persisted photo_data_url column");
+});
+
+test("uses a three-column contact information grid and combines source with its detail", async () => {
+  const [app, css] = await Promise.all([
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+  ]);
+  const contactDetail = sectionBetween(app, "function ContactDetail(", "function UserDetail(");
+  const infoGrid = sectionBetween(contactDetail, '<div className="detail-grid contact-info-grid">', '<div className="modal-actions">');
+  assert.match(infoGrid, /Email[\s\S]*?Phone[\s\S]*?LinkedIn[\s\S]*?Source \/ detail[\s\S]*?CJN Manager[\s\S]*?Initiated by/);
+  assert.match(infoGrid, /contact\.sourceDetail \|\| contact\.referredBy/);
+  assert.match(blockAfter(css, ".contact-info-grid {"), /grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
 });

@@ -6,27 +6,46 @@
 <IfModule mod_ssl.c>
 <VirtualHost *:443>
     ServerName crm.example.com
-    DocumentRoot /var/www/client-data-crm/backend/public
+    DocumentRoot /var/www/client-data-crm/frontend/dist
 
     SSLEngine on
     SSLCertificateFile /etc/letsencrypt/live/crm.example.com/fullchain.pem
     SSLCertificateKeyFile /etc/letsencrypt/live/crm.example.com/privkey.pem
+
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Header always set X-Frame-Options "DENY"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "same-origin"
+    Header always set Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+    Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'self'"
 
     <Directory /var/www/client-data-crm>
         Require all denied
     </Directory>
 
+    <Directory /var/www/client-data-crm/frontend/dist>
+        AllowOverride None
+        Options -Indexes +FollowSymLinks
+        DirectoryIndex index.html
+        Require all granted
+    </Directory>
+
     <Directory /var/www/client-data-crm/backend/public>
         AllowOverride None
         Options -Indexes +FollowSymLinks
-        DirectoryIndex index.php
-        RewriteEngine On
-        RewriteCond %{REQUEST_FILENAME} !-f
-        RewriteCond %{REQUEST_FILENAME} !-d
-        RewriteRule ^ index.php [QSA,L]
         Require all granted
     </Directory>
+
+    RewriteEngine On
+
+    # Route same-origin API requests to the only public PHP entry point.
+    RewriteRule ^/?api(?:/.*)?$ /var/www/client-data-crm/backend/public/index.php [QSA,END]
+
+    # Serve existing generated assets directly, then fall back to the SPA shell.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [END]
+    RewriteRule ^ /index.html [END]
 
     <FilesMatch "\.php$">
         SetHandler "proxy:unix:/run/php/php8.3-fpm.sock|fcgi://localhost/"
@@ -36,4 +55,3 @@
     CustomLog ${APACHE_LOG_DIR}/client-data-crm-access.log combined
 </VirtualHost>
 </IfModule>
-

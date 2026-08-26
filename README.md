@@ -7,10 +7,10 @@
 - cron/планировщик каждые 15 минут;
 - SMTP relay или настроенный `mail()`; `MAIL_TRANSPORT=log` подходит только для разработки.
 - Apache/PHP-FPM пример: `deploy/apache-vhost.conf.example`.
-- Перед перезагрузкой Apache обязательно выполните `apachectl configtest`; production-vhost маршрутизирует API внутри `backend/public` и не зависит от `.htaccess` (`AllowOverride None`).
-- Сборка безопасного PHP-архива: `deploy/build-package.ps1`. Он содержит только актуальный runtime из `backend/`; frontend разворачивается отдельной Vinext/hosting-сборкой.
+- Перед перезагрузкой Apache обязательно выполните `apachectl configtest`; production-vhost отдаёт статический SPA и маршрутизирует `/api/*` внутри `backend/public` без CORS.
+- Сборка безопасного PHP-архива: `deploy/build-package.ps1`. Статический FTP-архив frontend создаётся отдельно через `deploy/build-frontend-package.ps1`.
 - Загрузка выполняется `deploy/ftp-deploy.ps1`; хост по умолчанию — ` `, протокол — explicit FTPS.
-- Для frontend proxy задайте одинаковый случайный секрет минимум 32 байта в `CRM_PROXY_SHARED_SECRET` (frontend) и `PROXY_SHARED_SECRET` (backend). Proxy отбрасывает клиентские `X-Forwarded-For`/`X-Real-IP`, принимает только нормализованный Cloudflare `CF-Connecting-IP`; backend доверяет ему только при совпадении секрета. Прямой backend следует ограничить сетью/ACL.
+- Frontend обращается напрямую к same-origin `/api/*`; серверные адреса и `PROXY_SHARED_SECRET` в JavaScript не передаются. Backend-параметр `PROXY_SHARED_SECRET` остаётся только серверным секретом, а `TRUSTED_PROXIES` должен содержать исключительно реальные reverse proxy перед Apache/PHP.
 - Скопируйте `backend/.env.example` в `backend/.env`, замените placeholders, установите права `0600` и выполните `php backend/bin/console config:check`. Production запускается fail-closed: HTTP/CLI не стартуют с HTTP URL, debug, root/пустым паролем БД, `MAIL_TRANSPORT=log`, небезопасной cookie или коротким proxy secret. Реальный `.env` исключён из Git и deployment-архивов.
 
 ## Резервные копии

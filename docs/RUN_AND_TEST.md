@@ -17,17 +17,27 @@ npm install
 npm run dev
 ```
 
+Локальный Vite-сервер принимает запросы `/api/*` на своём origin и проксирует их на `CRM_BACKEND_URL` из `frontend/.env.local` (по умолчанию `http://127.0.0.1:8080`). Production-сборка не содержит этого адреса и обращается к `/api/*` напрямую.
+
 Production
 
 - примените `php backend/bin/console migrate` до переключения трафика;
 - backend `.env` находится в `backend/.env`: `APP_ENV=production`, `APP_DEBUG=false`, `SESSION_SECURE=true`, публичный HTTPS `APP_URL`; `TRUSTED_PROXIES` должен содержать только адреса reverse proxy, которые действительно передают клиентский IP;
-- frontend runtime: `CRM_BACKEND_URL` должен указывать на доступный frontend-серверу HTTPS endpoint PHP API;
+- frontend и PHP API должны быть на одном HTTPS origin: интерфейс в `/`, API в `/api/*`;
 - PHP-архив собирается из корня командой `& .\deploy\build-package.ps1`; он содержит только `backend/` и не содержит локальный `.env`;
-- frontend соберите отдельно командой `npm run build`, затем запустите `npm run start`;
+- frontend соберите командой `npm run build`; содержимое `frontend/dist` загрузите в корень домена;
+- готовый FTP-архив frontend создаётся командой `& .\deploy\build-frontend-package.ps1`;
+- загрузите скрытый файл `.htaccess`: он направляет `/api/*` в `backend/public/index.php` и возвращает `index.html` для SPA-маршрутов;
 - оставьте cron из корневого README для напоминаний и cleanup;
 - не публикуйте `backend/.env`, `.env.local`, пароли или содержимое `backend/storage/uploads`.
 
 После развёртывания проверьте: health, вход, смену пароля, создание/изменение/архивирование записи, конфликт `updated_at`, роли Read-only/Admin, комментарий, `.ics` и Audit CSV.
+
+Проверка автоматической связи User ↔ CJN Manager (использует транзакцию и откатывает тестовые записи):
+
+```bash
+/usr/bin/php8.3 tests/manager_user_linker.php
+```
 
 OCR и голосовой ввод
 

@@ -7,6 +7,7 @@ namespace CRM\Controller;
 use CRM\Domain\AuditLogger;
 use CRM\Domain\EntityMapper;
 use CRM\Domain\LookupService;
+use CRM\Domain\ManagerUserLinker;
 use CRM\Http\Response;
 use CRM\Http\Request;
 use CRM\Security\AuthContext;
@@ -18,25 +19,29 @@ final class AppController
     public function __construct(
         private readonly PDO $db,
         private readonly AuthContext $auth,
-        private readonly LookupService $lookups
+        private readonly LookupService $lookups,
+        private readonly ManagerUserLinker $managerUsers
     ) {
     }
 
     public function bootstrap(Request $request): never
     {
-        $admin = $this->auth->user()['role'] === 'admin';
-        $canWrite = in_array($this->auth->user()['role'], ['admin', 'manager', 'editor'], true);
+        $user = $this->auth->user();
+        $currentManager = $this->managerUsers->ensureForUser((int) $user['id']);
+        $admin = $user['role'] === 'admin';
+        $canWrite = in_array($user['role'], ['admin', 'manager', 'editor'], true);
         // Bootstrap is intentionally metadata-only. Records are loaded through paginated endpoints.
         $includeRecords = false;
         $archiveWhere = !$includeRecords ? ' WHERE 1 = 0' : ($admin ? '' : ' WHERE c.is_archived = 0');
         $companies = $this->db->query(
             "SELECT c.*, ct.value AS type_value, cs.value AS status_value,
-                    mgr.value AS manager_value, mgr.email AS manager_email,
+                    mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                     creator.full_name AS created_by_name, creator.email AS created_by_email
              FROM companies c
              JOIN lookups ct ON ct.id = c.type_lookup_id
              JOIN lookups cs ON cs.id = c.status_lookup_id
              JOIN lookups mgr ON mgr.id = c.manager_lookup_id
+             LEFT JOIN users manager_user ON manager_user.id = mgr.user_id
              LEFT JOIN users creator ON creator.id = c.created_by{$archiveWhere}
              ORDER BY c.name, c.id"
         )->fetchAll();
@@ -44,19 +49,20 @@ final class AppController
         $contactWhere = !$includeRecords ? ' WHERE 1 = 0' : ($admin ? '' : ' WHERE k.is_archived = 0 AND c.is_archived = 0');
         $contacts = $this->db->query(
             "SELECT k.*, c.name AS company_name, src.value AS source_value, ini.value AS initiated_by_value,
-                    mgr.value AS manager_value, mgr.email AS manager_email,
+                    mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                     creator.full_name AS created_by_name, creator.email AS created_by_email
              FROM contacts k JOIN companies c ON c.id = k.company_id
              LEFT JOIN lookups src ON src.id = k.source_lookup_id
              LEFT JOIN lookups ini ON ini.id = k.initiated_by_lookup_id
              JOIN lookups mgr ON mgr.id = k.manager_lookup_id
+             LEFT JOIN users manager_user ON manager_user.id = mgr.user_id
              LEFT JOIN users creator ON creator.id = k.created_by{$contactWhere}
              ORDER BY k.last_name, k.first_name, k.id"
         )->fetchAll();
 
         $taskWhere = !$includeRecords ? ' WHERE 1 = 0' : ($admin ? '' : ' WHERE t.is_archived = 0 AND c.is_archived = 0');
         $tasks = $this->db->query(
-            "SELECT t.*, c.name AS company_name, m.value AS manager_value, m.email AS manager_email,
+            "SELECT t.*, c.name AS company_name, m.value AS manager_value, COALESCE(manager_user.email, m.email) AS manager_email,
                     s.value AS status_value, s.is_closed AS status_is_closed, o.value AS outcome_status_value,
                     creator.full_name AS created_by_name, creator.email AS created_by_email,
                     TRIM(CONCAT(COALESCE(k.first_name, ''), ' ', COALESCE(k.last_name, ''))) AS contact_person_name,
@@ -135,9 +141,21 @@ final class AppController
                 'updated_at' => Clock::api($row['updated_at'] ?? null), 'photo_data_url' => $row['photo_data_url'] ?? null,
             ], $rows);
         } elseif ($canWrite) {
-            foreach ($lookupGroups['cjn_manager'] ?? [] as $manager) {
-                if (!empty($manager['email'])) {
-                    $users[] = ['id' => $manager['user_id'], 'full_name' => $manager['value'], 'email' => $manager['email'], 'role' => 'editor', 'is_active' => true, 'pending_approval' => false, 'last_login_at' => null, 'updated_at' => $manager['updated_at']];
+            $managerRows = $this->db->query(
+                "SELECT m.user_id, m.value, m.updated_at,
+                        CASE
+                            WHEN m.user_id IS NOT NULL AND u.is_active = 1 AND u.pending_approval = 0 THEN u.email
+                            WHEN m.user_id IS NULL THEN m.email
+                            ELSE NULL
+                        END AS delivery_email
+                 FROM lookups m
+                 LEFT JOIN users u ON u.id = m.user_id
+                 WHERE m.type = 'cjn_manager' AND m.is_active = 1
+                 ORDER BY m.sort_order, m.id"
+            )->fetchAll();
+            foreach ($managerRows as $manager) {
+                if (!empty($manager['delivery_email'])) {
+                    $users[] = ['id' => $manager['user_id'], 'full_name' => $manager['value'], 'email' => $manager['delivery_email'], 'role' => 'editor', 'is_active' => true, 'pending_approval' => false, 'last_login_at' => null, 'updated_at' => Clock::api($manager['updated_at'] ?? null)];
                 }
             }
         }
@@ -159,7 +177,7 @@ final class AppController
         }
 
         Response::json(['data' => [
-            'identity' => $this->auth->user(), 'csrf_token' => $this->auth->csrfToken(),
+            'identity' => $user, 'current_manager' => $currentManager, 'csrf_token' => $this->auth->csrfToken(),
             'companies' => array_map([EntityMapper::class, 'company'], $companies),
             'contacts' => array_map([EntityMapper::class, 'contact'], $contacts),
             'tasks' => $mappedTasks, 'comments' => $mappedComments, 'attachments' => $attachments,

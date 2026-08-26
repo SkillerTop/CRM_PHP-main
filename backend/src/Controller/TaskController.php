@@ -55,7 +55,9 @@ final class TaskController
         $sort = $sorts[(string) ($request->query['sort'] ?? 'contact_date')] ?? 't.contact_date';
         $dir = strtolower((string) ($request->query['dir'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
         $stmt = $this->db->prepare(
-            "SELECT t.*, c.name AS company_name, m.value AS manager_value, s.value AS status_value,
+            "SELECT t.*, c.name AS company_name, m.value AS manager_value,
+                    COALESCE(u.email, m.email) AS manager_email, s.value AS status_value,
+                    creator.full_name AS created_by_name, creator.email AS created_by_email,
                     s.is_closed AS status_is_closed, o.value AS outcome_status_value,
                     TRIM(CONCAT(COALESCE(k.first_name, ''), ' ', COALESCE(k.last_name, ''))) AS contact_person_name,
                     (s.is_closed = 0 AND t.deadline IS NOT NULL AND t.deadline < UTC_TIMESTAMP(6)) AS is_overdue,
@@ -69,6 +71,7 @@ final class TaskController
              JOIN companies c ON c.id = t.company_id
              JOIN lookups m ON m.id = t.manager_lookup_id
              LEFT JOIN users u ON u.id = m.user_id
+             LEFT JOIN users creator ON creator.id = t.created_by
              JOIN lookups s ON s.id = t.status_lookup_id
              LEFT JOIN lookups o ON o.id = t.outcome_status_lookup_id
              LEFT JOIN contacts k ON k.id = t.contact_person_id
@@ -526,7 +529,7 @@ final class TaskController
 
     private function baseSelect(): string
     {
-        return "SELECT t.*, c.name AS company_name, m.value AS manager_value, m.email AS manager_email, s.value AS status_value,
+        return "SELECT t.*, c.name AS company_name, m.value AS manager_value, COALESCE(u.email, m.email) AS manager_email, s.value AS status_value,
                        creator.full_name AS created_by_name, creator.email AS created_by_email,
                        s.is_closed AS status_is_closed, o.value AS outcome_status_value,
                        TRIM(CONCAT(COALESCE(k.first_name, ''), ' ', COALESCE(k.last_name, ''))) AS contact_person_name,

@@ -50,15 +50,16 @@ final class ContactController
         $stmt = $this->db->prepare(
             "SELECT k.id, k.company_id, k.first_name, k.last_name, k.position, k.phone, k.email, k.linkedin,
                     k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id, k.contact_status,
-                    k.manager_lookup_id, k.initiated_by_text, k.is_archived, k.created_at, k.updated_at,
+                    k.manager_lookup_id, k.initiated_by_text, k.photo_data_url, k.is_archived, k.created_at, k.updated_at,
                     k.created_by, k.updated_by, c.name AS company_name, src.value AS source_value, ini.value AS initiated_by_value,
-                    mgr.value AS manager_value, mgr.email AS manager_email,
+                    mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                     creator.full_name AS created_by_name, creator.email AS created_by_email
              FROM contacts k
              JOIN companies c ON c.id = k.company_id
              LEFT JOIN lookups src ON src.id = k.source_lookup_id
              LEFT JOIN lookups ini ON ini.id = k.initiated_by_lookup_id
              JOIN lookups mgr ON mgr.id = k.manager_lookup_id
+             LEFT JOIN users manager_user ON manager_user.id = mgr.user_id
              LEFT JOIN users creator ON creator.id = k.created_by
              WHERE {$whereSql}
              ORDER BY {$sort} {$dir}, k.id {$dir}
@@ -82,14 +83,15 @@ final class ContactController
         $stmt = $this->db->prepare(
             'SELECT k.id, k.company_id, k.first_name, k.last_name, k.position, k.phone, k.email, k.linkedin,
                     k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id, k.contact_status,
-                    k.manager_lookup_id, k.initiated_by_text, k.is_archived, k.created_at, k.updated_at,
+                    k.manager_lookup_id, k.initiated_by_text, k.photo_data_url, k.is_archived, k.created_at, k.updated_at,
                     k.created_by, k.updated_by, c.name AS company_name, src.value AS source_value, ini.value AS initiated_by_value,
-                    mgr.value AS manager_value, mgr.email AS manager_email,
+                    mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                     creator.full_name AS created_by_name, creator.email AS created_by_email
              FROM contacts k JOIN companies c ON c.id = k.company_id
              LEFT JOIN lookups src ON src.id = k.source_lookup_id
              LEFT JOIN lookups ini ON ini.id = k.initiated_by_lookup_id
              JOIN lookups mgr ON mgr.id = k.manager_lookup_id
+             LEFT JOIN users manager_user ON manager_user.id = mgr.user_id
              LEFT JOIN users creator ON creator.id = k.created_by
              WHERE k.company_id = :company_id AND k.is_archived = 0 AND c.is_archived = 0
              ORDER BY k.last_name, k.first_name LIMIT :limit OFFSET :offset'
@@ -431,11 +433,13 @@ final class ContactController
     {
         $stmt = $this->db->prepare(
             'SELECT k.*, c.name AS company_name, src.value AS source_value, ini.value AS initiated_by_value,
-                    mgr.value AS manager_value, mgr.email AS manager_email,
+                    mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                     creator.full_name AS created_by_name, creator.email AS created_by_email
              FROM contacts k JOIN companies c ON c.id = k.company_id
              LEFT JOIN lookups src ON src.id = k.source_lookup_id LEFT JOIN lookups ini ON ini.id = k.initiated_by_lookup_id
-             JOIN lookups mgr ON mgr.id = k.manager_lookup_id LEFT JOIN users creator ON creator.id = k.created_by
+             JOIN lookups mgr ON mgr.id = k.manager_lookup_id
+             LEFT JOIN users manager_user ON manager_user.id = mgr.user_id
+             LEFT JOIN users creator ON creator.id = k.created_by
              WHERE k.id = :id' . ($includeArchived ? '' : ' AND k.is_archived = 0 AND c.is_archived = 0')
         );
         $stmt->execute(['id' => $id]);
