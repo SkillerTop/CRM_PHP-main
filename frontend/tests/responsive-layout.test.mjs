@@ -482,6 +482,50 @@ test("keeps Activity contact creation permissioned and selects quick-created con
   assert.match(addContact, /initiatedByUserEmail: initiatorChoice === "manual" \? undefined : initiatorChoice/);
 });
 
+test("uses lookup task statuses in manager-scoped Activity filters without sidebar totals", async () => {
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
+  const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
+  const activity = sectionBetween(component, "function Activity(", "function Lookups(");
+
+  assert.match(app, /const taskStatusOptions = lookupValues\("task-status"\)/);
+  assert.match(app, /<Activity[\s\S]*?taskStatusOptions=\{taskStatusOptions\}/);
+  assert.match(activity, /const filters = \[\.\.\.taskStatusOptions, "Overdue", "All"\]/);
+  assert.match(activity, /const managerTasks = managerFilter === "All managers" \? tasks : tasks\.filter\(\(task\) => task\.owner === managerFilter\)/);
+  assert.match(activity, /item === "All"[\s\S]*?managerTasks\.length[\s\S]*?item === "Overdue"[\s\S]*?managerTasks\.filter\(isOverdue\)\.length[\s\S]*?managerTasks\.filter\(\(task\) => task\.status === item\)\.length/);
+  assert.doesNotMatch(component, /TASK_FILTER_VALUES/);
+  assert.doesNotMatch(app, /item === "activity" &&/);
+});
+
+test("removes outcome controls and keeps the searchable company list inside the form", async () => {
+  const [component, css] = await Promise.all([
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+  ]);
+  const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
+  const activity = sectionBetween(component, "function Activity(", "function Lookups(");
+  const taskDetail = sectionBetween(component, "function TaskDetail(", "function CompanyForm(");
+  const contactDetail = sectionBetween(component, "function ContactDetail(", "function UserDetail(");
+  const contactForm = sectionBetween(component, "function ContactForm(", "function TaskForm(");
+  const taskForm = sectionBetween(component, "function TaskForm(", "function UserForm(");
+  const companyCombobox = sectionBetween(component, "function CompanyCombobox(", "function PageScrollControls(");
+
+  assert.match(app, /const administrationLookups = lookups\.filter\(\(group\) => group\.type !== "outcome-status"\)/);
+  assert.doesNotMatch(activity, /task-outcome|Outcome notes|Outcome status/i);
+  assert.doesNotMatch(taskDetail, /name="outcome|Outcome notes|Outcome status/i);
+  assert.doesNotMatch(taskForm, /name="outcome|Outcome notes|Outcome status/i);
+  assert.doesNotMatch(component, /<datalist/);
+  assert.match(contactForm, /<CompanyCombobox inputId="contact-create-company"[\s\S]*?onChange=\{selectCompany\} required/);
+  assert.match(contactDetail, /<CompanyCombobox inputId="contact-edit-company"[\s\S]*?onChange=\{selectCompany\} required/);
+  assert.match(companyCombobox, /role="combobox"[\s\S]*?aria-autocomplete="list"[\s\S]*?aria-expanded=\{open\}/);
+  assert.match(companyCombobox, /event\.key === "ArrowDown"[\s\S]*?event\.key === "ArrowUp"[\s\S]*?event\.key === "Enter"[\s\S]*?event\.key === "Escape"/);
+  assert.match(companyCombobox, /className="company-combobox-toggle"[\s\S]*?<span className="company-combobox-chevron" aria-hidden="true" \/>/);
+  assert.match(companyCombobox, /className="company-combobox-options"[\s\S]*?role="listbox"/);
+  assert.match(blockAfter(css, ".company-combobox-chevron {"), /border-right:\s*2px solid currentColor[\s\S]*?border-bottom:\s*2px solid currentColor[\s\S]*?rotate\(45deg\)/);
+  assert.match(blockAfter(css, ".company-combobox-options {"), /position:\s*absolute[\s\S]*?right:\s*0[\s\S]*?left:\s*0[\s\S]*?overflow-y:\s*auto/);
+  assert.match(contactForm, /Select an existing company from the list\./);
+  assert.match(contactDetail, /Select an existing company from the list\./);
+});
+
 test("validates, processes, previews, and wires profile and entity images", async () => {
   const [component, css] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
@@ -532,7 +576,8 @@ test("validates, processes, previews, and wires profile and entity images", asyn
   assert.match(companyForm, /type="submit" disabled=\{imageProcessing \|\| submitting\}/);
   assert.match(companyDetail, /useState\(company\.logoDataUrl \?\? ""\)[\s\S]*?<ImageField label="Company logo"[^>]*kind="company"/);
   assert.match(companyDetail, /onProcessingChange=\{setImageProcessing\}[\s\S]*?type="submit" disabled=\{imageProcessing\}/);
-  assert.match(contactForm, /onSubmit=\{\(event\) => \{ if \(imageProcessing\) event\.preventDefault\(\); else \{[\s\S]*?onSubmit\(event, photoDataUrl\)\.then/);
+  assert.match(contactForm, /async function submit\(event: FormEvent<HTMLFormElement>\)[\s\S]*?if \(imageProcessing \|\| cardScanning\) return;[\s\S]*?const saved = await onSubmit\(event, photoDataUrl\)/);
+  assert.match(contactForm, /onSubmit=\{\(event\) => void submit\(event\)\}/);
   assert.match(contactForm, /<ImageField label="Contact photo"[^>]*value=\{photoDataUrl\}[^>]*onChange=\{setPhotoDataUrl\}/);
   assert.match(contactForm, /apiRequest<\{ data: OcrResult \}>\("\/ocr\/business-card", \{ method: "POST", body \}\)/);
   assert.match(contactForm, /Review everything before saving/);

@@ -53,6 +53,24 @@ export function todayUser() {
   return currentUserStamp().slice(0, 10);
 }
 
+export function userWeekQuarter(value = todayUser()) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return "";
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const localDate = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(localDate.getTime())) return "";
+
+  const isoWeekDate = new Date(localDate);
+  const weekday = isoWeekDate.getUTCDay() || 7;
+  isoWeekDate.setUTCDate(isoWeekDate.getUTCDate() + 4 - weekday);
+  const isoYearStart = new Date(Date.UTC(isoWeekDate.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((isoWeekDate.getTime() - isoYearStart.getTime()) / 86400000) + 1) / 7);
+  const quarter = Math.ceil(month / 3);
+  return `Wk${week} · Q${quarter}`;
+}
+
 export function userGreeting() {
   const hour = Number(currentUserStamp().slice(11, 13));
   if (hour < 12) return "Good morning";

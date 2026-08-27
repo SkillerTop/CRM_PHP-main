@@ -3015,6 +3015,129 @@ button:disabled {
   resize: vertical;
 }
 
+.company-combobox-field {
+  position: relative;
+  z-index: 1;
+}
+
+.company-combobox-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.company-combobox-control {
+  position: relative;
+}
+
+.company-combobox-control > input[type="text"],
+.company-combobox-control > input:not([type]) {
+  padding-right: 46px;
+}
+
+.company-combobox-toggle {
+  position: absolute;
+  z-index: 2;
+  top: 1px;
+  right: 1px;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  place-items: center;
+  color: var(--navy-800);
+  font-size: 17px;
+  background: transparent;
+  border: 0;
+  border-radius: 0 7px 7px 0;
+}
+
+.company-combobox-toggle:hover,
+.company-combobox-toggle:focus-visible {
+  background: var(--cyan-100);
+}
+
+.company-combobox-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.company-combobox-options {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  max-height: 250px;
+  padding: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-md);
+}
+
+.company-combobox-options > button {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 6px 9px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+}
+
+.company-combobox-options > button:hover,
+.company-combobox-options > button.active {
+  background: var(--cyan-100);
+}
+
+.company-combobox-options > button > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.company-combobox-options b,
+.company-combobox-options small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.company-combobox-options b {
+  font-size: 14px;
+}
+
+.company-combobox-options small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.company-combobox-check {
+  color: var(--cyan-700);
+  font-weight: 850;
+  text-align: center;
+}
+
+.company-combobox-empty {
+  padding: 14px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .modal-actions {
   display: flex;
   align-items: center;

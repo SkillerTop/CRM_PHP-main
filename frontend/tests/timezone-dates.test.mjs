@@ -43,10 +43,23 @@ test("keeps Europe/Kyiv as the standard timezone while respecting summer offset"
   });
 });
 
+test("formats the ISO week number and calendar quarter for the page date", () => {
+  const result = runInTimeZone("Europe/Kyiv", `({
+    august: dates.userWeekQuarter("2026-08-26"),
+    january: dates.userWeekQuarter("2026-01-01"),
+  })`);
+
+  assert.deepEqual(result, {
+    august: "Wk35 · Q3",
+    january: "Wk1 · Q1",
+  });
+});
+
 test("wires local deadlines to UTC API payloads and exposes a non-default timezone", async () => {
   const app = await readFile(new URL("../src/app/CRMApp.tsx", import.meta.url), "utf8");
   assert.match(app, /const CLIENT_TIME_ZONE = getBrowserTimeZone\(\)/);
   assert.match(app, /deadline: localDateTimeToUtc\(task\.deadline\)/);
+  assert.match(app, /\{userWeekQuarter\(\)\} · \{todayUser\(\)\} · \{CLIENT_TIME_ZONE_LABEL\}/);
   assert.match(app, /CLIENT_TIME_ZONE_IS_DEFAULT \? "" : ` · \$\{CLIENT_TIME_ZONE\}`/);
   assert.match(app, /value=\{CLIENT_TIME_ZONE\} readOnly/);
 });

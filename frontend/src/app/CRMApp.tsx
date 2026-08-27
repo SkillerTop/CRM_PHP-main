@@ -4,7 +4,7 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState
 import { ApiError, apiDownload, apiMessage, apiRequest, setCsrfToken } from "../shared/api/api-client";
 import { Avatar, EntityLogo } from "../shared/components/identity";
 import { useUrlStringState } from "../shared/hooks/use-url-string-state";
-import { DEFAULT_TIME_ZONE, formatDateTime, formatUserDateTime, formatUserDateTimeInput, getBrowserTimeZone, isLocalDateTimePast, localDateTimeToUtc, todayUser, userGreeting } from "../shared/utils/dates";
+import { DEFAULT_TIME_ZONE, formatDateTime, formatUserDateTime, formatUserDateTimeInput, getBrowserTimeZone, isLocalDateTimePast, localDateTimeToUtc, todayUser, userGreeting, userWeekQuarter } from "../shared/utils/dates";
 import { readUrlFilter, urlWithFilter } from "../shared/utils/url-filters.mjs";
 
 type View =
@@ -18,7 +18,6 @@ type View =
   | "audit";
 
 const ALL_VIEWS: readonly View[] = ["dashboard", "pipeline", "companies", "contacts", "activity", "lookups", "users", "audit"];
-const TASK_FILTER_VALUES = ["Actual", "Overdue", "Completed", "Deferred", "Canceled", "All"] as const;
 const CONTACT_LINKEDIN_VALUES = ["Any LinkedIn", "Has LinkedIn", "No LinkedIn"] as const;
 
 type Company = {
@@ -85,6 +84,7 @@ type Task = {
   createdByUserEmail?: string;
   contactPersonId?: string;
   status: string;
+  isClosed?: boolean;
   priority: "High" | "Medium" | "Normal";
   note: string;
   outcomeStatus?: string;
@@ -564,6 +564,7 @@ function mapTask(record: ApiRecord): Task {
     createdBy: apiString(record, "created_by_name"), ownerUserEmail: apiString(record, "manager_email").toLowerCase() || undefined,
     createdByUserEmail: apiString(record, "created_by_email").toLowerCase() || undefined,
     contactPersonId: apiString(record, "contact_person_id") || undefined, status: apiString(record, "status"),
+    isClosed: record.is_closed == null ? undefined : apiBoolean(record, "is_closed"),
     priority: (apiString(record, "priority") || "Normal") as Task["priority"], note: apiString(record, "description"),
     outcomeStatus: apiString(record, "outcome_status"), outcomeNotes: apiString(record, "outcome_notes"),
     reminderLeads: rawLeads.map((lead) => apiString(lead, "value")), reminderLeadIds: rawLeads.map((lead) => Number(lead.id)),
@@ -620,6 +621,11 @@ function companyName(companies: Company[], id: string) {
   return companies.find((company) => company.id === id)?.name ?? "Unknown company";
 }
 
+function companyByName(companies: Company[], value: string) {
+  const normalized = value.trim().toLocaleLowerCase();
+  return companies.find((company) => company.name.trim().toLocaleLowerCase() === normalized);
+}
+
 function companyLocation(company: Pick<Company, "city" | "country">) {
   return [company.city, company.country].filter((value) => value.trim() !== "").join(", ");
 }
@@ -639,11 +645,12 @@ function useMediaQuery(query: string) {
 }
 
 function isOverdue(task: Task) {
-  return !["Completed", "Canceled", "Deferred"].includes(task.status) && isLocalDateTimePast(task.deadline);
+  return isOpenTask(task) && isLocalDateTimePast(task.deadline);
 }
 
 function isOpenTask(task: Task) {
-  return !["Completed", "Canceled", "Deferred"].includes(task.status);
+  if (task.isClosed !== undefined) return !task.isClosed;
+  return !["Completed", "Canceled", "Deferred", "Not interested"].includes(task.status);
 }
 
 function websiteHref(value: string) {
@@ -775,6 +782,78 @@ function ImageField({ label, name, value, onChange, onProcessingChange, kind = "
         <input ref={inputRef} className="image-input" name={name} type="file" accept="image/jpeg,image/png,image/webp" onChange={chooseImage} aria-describedby={`${name}-image-help`} />
         <span className="sr-only" id={`${name}-image-help`}>Accepted formats are JPG, PNG, and WebP, up to 5 MB.</span>
         {error && <small className="image-error" role="alert">{error}</small>}
+      </div>
+    </div>
+  );
+}
+
+function CompanyCombobox({ inputId, label, companies, value, onChange, required = false }: {
+  inputId: string;
+  label: string;
+  companies: Company[];
+  value: string;
+  onChange: (value: string) => void;
+  required?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const query = value.trim().toLocaleLowerCase();
+  const matches = companies
+    .filter((company) => !query || company.name.toLocaleLowerCase().includes(query))
+    .slice(0, 12);
+  const selectedCompany = companyByName(companies, value);
+  const listId = `${inputId}-options`;
+  const visibleActiveIndex = Math.min(activeIndex, Math.max(0, matches.length - 1));
+
+  function choose(company: Company) {
+    onChange(company.name);
+    setOpen(false);
+    setActiveIndex(0);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => Math.min(current + 1, Math.max(0, matches.length - 1)));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => Math.max(0, current - 1));
+    } else if (event.key === "Enter" && open && matches.length > 0) {
+      event.preventDefault();
+      choose(matches[visibleActiveIndex] ?? matches[0]);
+    } else if (event.key === "Escape" && open) {
+      event.preventDefault();
+      setOpen(false);
+    }
+  }
+
+  return (
+    <div className="field field-full company-combobox-field" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
+      <label className="company-combobox-label" htmlFor={inputId}>{label}</label>
+      <div className="company-combobox-control">
+        <input
+          id={inputId}
+          name="companyName"
+          value={value}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls={listId}
+          aria-expanded={open}
+          aria-activedescendant={open && matches.length > 0 ? `${listId}-${matches[visibleActiveIndex].id}` : undefined}
+          onFocus={() => { setOpen(true); setActiveIndex(0); }}
+          onChange={(event) => { onChange(event.target.value); setOpen(true); setActiveIndex(0); }}
+          onKeyDown={handleKeyDown}
+          autoComplete="off"
+          spellCheck={false}
+          required={required}
+        />
+        <button className="company-combobox-toggle" type="button" aria-label={open ? "Close company list" : "Open company list"} aria-expanded={open} onMouseDown={(event) => event.preventDefault()} onClick={() => { setOpen((current) => !current); setActiveIndex(0); }}><span className="company-combobox-chevron" aria-hidden="true" /></button>
+        <input name="companyId" type="hidden" value={selectedCompany?.id ?? ""} />
+        {open && <div className="company-combobox-options" id={listId} role="listbox" aria-label="Companies">
+          {matches.length > 0 ? matches.map((company, index) => <button id={`${listId}-${company.id}`} className={index === visibleActiveIndex ? "active" : ""} key={company.id} type="button" role="option" aria-selected={company.id === selectedCompany?.id} onMouseEnter={() => setActiveIndex(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{companyLocation(company) || "Location not specified"}</small></span>{company.id === selectedCompany?.id && <span className="company-combobox-check" aria-hidden="true">✓</span>}</button>) : <div className="company-combobox-empty">No companies found</div>}
+        </div>}
       </div>
     </div>
   );
@@ -1230,7 +1309,7 @@ export function CRMApp() {
   const [companyQuery, setCompanyQuery] = useUrlStringState("company_q", "");
   const [companyStatus, setCompanyStatus] = useUrlStringState("company_status", "All statuses");
   const [contactQuery, setContactQuery] = useUrlStringState("contact_q", "");
-  const [taskFilter, setTaskFilter] = useUrlStringState("task_state", "Actual", TASK_FILTER_VALUES);
+  const [taskFilter, setTaskFilter] = useUrlStringState("task_state", "All");
   const [taskManagerFilter, setTaskManagerFilter] = useUrlStringState("task_manager", "All managers");
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
@@ -1385,7 +1464,7 @@ export function CRMApp() {
   const activeClientStatuses = lookupValues("client-status");
   const clientStatusOrder = activeClientStatuses;
   const taskStatusOptions = lookupValues("task-status");
-  const outcomeStatusOptions = lookupValues("outcome-status");
+  const administrationLookups = lookups.filter((group) => group.type !== "outcome-status");
   const contactSourceOptions = lookupValues("contact-source");
   const reminderLeadOptions = lookupValues("reminder-lead");
   const companyTypeOptions = lookupValues("company-type");
@@ -1404,7 +1483,7 @@ export function CRMApp() {
     const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
     return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, status: contact.contactStatus ?? "active", manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), photo_data_url: contact.photoDataUrl || null, business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, updated_at: contact.updatedAt };
   };
-  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null, outcome_notes: task.outcomeNotes || null, deadline: localDateTimeToUtc(task.deadline), reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
+  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatusId ?? (task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null), outcome_notes: task.outcomeNotes || null, deadline: localDateTimeToUtc(task.deadline), reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
   const reportServerError = (error: unknown) => { notify(apiMessage(error), "warning"); void loadWorkspace().catch(() => undefined); };
 
   const notifications = useMemo<AppNotification[]>(() => {
@@ -1842,7 +1921,8 @@ export function CRMApp() {
       businessCardFileName: String(data.get("businessCardFileName") ?? ""),
     });
     if (result.error) {
-      if (!result.field || !setFieldError(form, result.field, result.error)) notify(result.error, "warning");
+      const field = result.field === "companyId" ? "companyName" : result.field;
+      if (!field || !setFieldError(form, field, result.error)) notify(result.error, "warning");
       return false;
     }
     setModal(null);
@@ -1876,18 +1956,15 @@ export function CRMApp() {
       ownerUserEmail: userEmailForName(String(data.get("owner") ?? "Andrey Zherebetsky")),
       createdByUserEmail: identity?.accountEmail.toLowerCase(),
       contactPersonId: String(data.get("contactPersonId") ?? ""),
-      status: String(data.get("status") ?? "Not Started") as Task["status"],
+      status: String(data.get("status") ?? taskStatusOptions[0] ?? "") as Task["status"],
       priority: String(data.get("priority") ?? "Normal") as Task["priority"],
       note: String(data.get("note") ?? "").trim(),
-      outcomeStatus: String(data.get("outcomeStatus") ?? ""),
-      outcomeNotes: String(data.get("outcomeNotes") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
     };
     if (task.title.length < 3) return setFieldError(form, "title", "Enter at least 3 characters.");
     if (!companies.some((company) => company.id === task.companyId)) return setFieldError(form, "companyId", "Select an existing company.");
     if (!managerOptions.includes(task.owner)) return setFieldError(form, "owner", "Select an active CJN Manager.");
     if (!taskStatusOptions.includes(task.status)) return setFieldError(form, "status", "Select a valid task status.");
-    if (task.outcomeStatus && !outcomeStatusOptions.includes(task.outcomeStatus)) return setFieldError(form, "outcomeStatus", "Select a valid outcome status.");
     if ((task.reminderLeads ?? []).some((lead) => !reminderLeadOptions.includes(lead))) return setFieldError(form, "reminderLeads", "Select valid reminder notice times.");
     if (!task.contactDate) return setFieldError(form, "contactDate", "Choose the contact date.");
     if (task.contactPersonId && !contacts.some((contact) => contact.id === task.contactPersonId && contact.companyId === task.companyId)) return setFieldError(form, "contactPersonId", "Select a contact from this company.");
@@ -2018,10 +2095,6 @@ export function CRMApp() {
     }
     if (!allManagerOptions.includes(updated.owner) || (existing.owner !== updated.owner && !managerOptions.includes(updated.owner))) {
       notify("Select an active CJN Manager.", "warning");
-      return false;
-    }
-    if (updated.outcomeStatus && !outcomeStatusOptions.includes(updated.outcomeStatus)) {
-      notify("Select a valid outcome status.", "warning");
       return false;
     }
     if ((updated.reminderLeads ?? []).some((lead) => !reminderLeadOptions.includes(lead))) {
@@ -2485,7 +2558,6 @@ export function CRMApp() {
               <button key={item} className={view === item ? "active" : ""} type="button" onClick={() => navigate(item)}>
                 <span className="nav-icon">{VIEW_META[item].icon}</span>
                 <span>{VIEW_META[item].label}</span>
-                {item === "activity" && openTasks.length > 0 && <em title={`${openTasks.length} open tasks`} aria-label={`${openTasks.length} open tasks`}>{openTasks.length}</em>}
               </button>
             ))}
             {navAdmin.length > 0 && <p className="nav-section nav-admin">Administration</p>}
@@ -2509,7 +2581,7 @@ export function CRMApp() {
               <p className="eyebrow">{VIEW_META[view].eyebrow}</p>
               <h1>{VIEW_META[view].label}</h1>
             </div>
-            <div className="date-chip"><span>●</span> {todayUser()} · {CLIENT_TIME_ZONE_LABEL}</div>
+            <div className="date-chip"><span>●</span> {userWeekQuarter()} · {todayUser()} · {CLIENT_TIME_ZONE_LABEL}</div>
           </div>
 
           {forbiddenAdminView ? <section className="empty-state forbidden-state" role="alert"><b>403 · Access forbidden</b><span>This administration section is available only to Admin users.</span><button className="primary-button" type="button" onClick={() => navigate("dashboard")}>Return to Dashboard</button></section> : <>
@@ -2568,6 +2640,7 @@ export function CRMApp() {
               setManagerFilter={setTaskManagerFilter}
               showTaskIds={currentRole === "Admin"}
               comments={taskComments}
+              taskStatusOptions={taskStatusOptions}
               canCreate={hasPermission(currentRole, "task.create")}
               canCreateContact={hasPermission(currentRole, "contact.create")}
               add={() => openTaskForm()}
@@ -2575,7 +2648,7 @@ export function CRMApp() {
               openTask={openTaskDetail}
             />
           )}
-          {view === "lookups" && hasPermission(currentRole, "lookup.manage") && <Lookups groups={lookups} archivedRecords={[
+          {view === "lookups" && hasPermission(currentRole, "lookup.manage") && <Lookups groups={administrationLookups} archivedRecords={[
             ...companies.filter((company) => archivedCompanyIds.includes(company.id)).map((company) => ({ entity: "Company" as const, id: company.id, label: company.name })),
             ...contacts.filter((contact) => archivedContactIds.includes(contact.id)).map((contact) => ({ entity: "Contact" as const, id: contact.id, label: contact.name })),
             ...tasks.filter((task) => archivedTaskIds.includes(task.id)).map((task) => ({ entity: "Task" as const, id: task.id, label: task.title })),
@@ -2652,7 +2725,6 @@ export function CRMApp() {
           canArchive={hasPermission(currentRole, "record.archive")}
           archive={() => archiveTask(selectedTask)}
           taskStatusOptions={taskStatusOptions}
-          outcomeStatusOptions={outcomeStatusOptions}
           reminderLeadOptions={reminderLeadOptions}
           managerOptions={managerOptions}
         />
@@ -2670,7 +2742,7 @@ export function CRMApp() {
 
       {modal === "company" && <CompanyForm statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} onClose={() => setModal(null)} onSubmit={addCompany} />}
       {modal === "contact" && <ContactForm companies={liveCompanies} sourceOptions={contactSourceOptions} initiatorOptions={users.filter((user) => user.state === "Active")} initialCompanyId={modalCompanyId} currentUserEmail={identity.accountEmail} onClose={() => setModal(null)} onSubmit={addContact} />}
-      {modal === "task" && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} outcomeStatusOptions={outcomeStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} defaultOwner={defaultManager} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
+      {modal === "task" && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} defaultOwner={defaultManager} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
       {modal === "user" && <UserForm onClose={() => setModal(null)} onSubmit={inviteUser} />}
       {modal === "profile" && <ProfileModal identity={identity} onClose={() => setModal(null)} onSave={updateProfile} />}
       {modal === "settings" && <SettingsModal preferences={preferences} systemSettings={currentRole === "Admin" ? systemSettings : null} onClose={() => setModal(null)} onSave={updatePreferences} />}
@@ -2987,10 +3059,11 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
   );
 }
 
-function Activity({ tasks, companies, comments, filter, setFilter, managerFilter, setManagerFilter, showTaskIds, canCreate, canCreateContact, add, addContact, openTask }: {
+function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFilter, managerFilter, setManagerFilter, showTaskIds, canCreate, canCreateContact, add, addContact, openTask }: {
   tasks: Task[];
   companies: Company[];
   comments: TaskComment[];
+  taskStatusOptions: string[];
   filter: string;
   setFilter: (value: string) => void;
   managerFilter: string;
@@ -3002,25 +3075,27 @@ function Activity({ tasks, companies, comments, filter, setFilter, managerFilter
   addContact: () => void;
   openTask: (task: Task) => void;
 }) {
-  const filters = ["Actual", "Overdue", "Completed", "Deferred", "Canceled", "All"];
-  const counts: Record<string, number> = {
-    Actual: tasks.filter(isOpenTask).length,
-    Overdue: tasks.filter(isOverdue).length,
-    Completed: tasks.filter((task) => task.status === "Completed").length,
-    Deferred: tasks.filter((task) => task.status === "Deferred").length,
-    Canceled: tasks.filter((task) => task.status === "Canceled").length,
-    All: tasks.length,
-  };
+  const filters = [...taskStatusOptions, "Overdue", "All"];
   const managers = Array.from(new Set(tasks.map((task) => task.owner))).sort();
-  const visibleTasks = tasks.filter((task) => {
-    const matchesManager = managerFilter === "All managers" || task.owner === managerFilter;
-    const matchesState = filter === "All" || (filter === "Actual" ? isOpenTask(task) : filter === "Overdue" ? isOverdue(task) : task.status === filter);
-    return matchesManager && matchesState;
-  });
+  const managerTasks = managerFilter === "All managers" ? tasks : tasks.filter((task) => task.owner === managerFilter);
+  const counts = Object.fromEntries(filters.map((item) => [
+    item,
+    item === "All"
+      ? managerTasks.length
+      : item === "Overdue"
+        ? managerTasks.filter(isOverdue).length
+        : managerTasks.filter((task) => task.status === item).length,
+  ])) as Record<string, number>;
+  const activeFilter = filters.includes(filter) ? filter : "All";
+  const filterSignature = filters.join("\u001f");
+  useEffect(() => {
+    if (!filterSignature.split("\u001f").includes(filter)) setFilter("All");
+  }, [filter, filterSignature, setFilter]);
+  const visibleTasks = managerTasks.filter((task) => activeFilter === "All" || (activeFilter === "Overdue" ? isOverdue(task) : task.status === activeFilter));
   return (
     <>
       <div className="activity-toolbar">
-        <div className="activity-filter-group"><label><span>Manager</span><select value={managerFilter} onChange={(event) => setManagerFilter(event.target.value)}><option>All managers</option>{managers.map((manager) => <option key={manager}>{manager}</option>)}</select></label><div className="segmented-control">{filters.map((item) => <button key={item} className={filter === item ? "active" : ""} type="button" onClick={() => setFilter(item)}>{item}<span>{counts[item]}</span></button>)}</div></div>
+        <div className="activity-filter-group"><label><span>Manager</span><select value={managerFilter} onChange={(event) => setManagerFilter(event.target.value)}><option>All managers</option>{managers.map((manager) => <option key={manager}>{manager}</option>)}</select></label><div className="segmented-control">{filters.map((item) => <button key={item} className={activeFilter === item ? "active" : ""} type="button" onClick={() => setFilter(item)}>{item}<span>{counts[item]}</span></button>)}</div></div>
         <div className="activity-toolbar-actions">
           {canCreateContact && <button className="secondary-button" type="button" onClick={addContact}>＋ Add contact</button>}
           {canCreate && <button className="primary-button" type="button" onClick={add}>＋ New task</button>}
@@ -3035,7 +3110,6 @@ function Activity({ tasks, companies, comments, filter, setFilter, managerFilter
               <span className="task-company">{companyName(companies, task.companyId)}{showTaskIds ? ` · ${task.id}` : ""}</span>
               <span className="task-facts"><span>Contact: {task.contactDate || "—"}</span><span>Person: {task.contactPerson || "—"}</span></span>
               <span className="task-note">{task.note}</span>
-              {(task.outcomeStatus || task.outcomeNotes) && <span className="task-outcome"><b>{task.outcomeStatus || "Outcome"}</b>{task.outcomeNotes && <small>{task.outcomeNotes}</small>}</span>}
               <span className={`task-reminder-row${task.reminderPossible === false ? " reminder-impossible" : ""}`}>{task.reminderPossible === false ? "⚠ Reminder impossible: manager has no active User or email" : (task.reminderLeads?.length ? `Reminder: ${task.reminderLeads.join(", ")}` : "No reminder scheduled")}</span>
               <span className="task-counters">💬 {task.commentCount ?? comments.filter((comment) => comment.taskId === task.id).length} comments · ↻ {task.changeCount ?? 0} changes</span>
             </span>
@@ -3307,6 +3381,27 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
   const [sourceValue, setSourceValue] = useState(contact.source);
   const [photoDataUrl, setPhotoDataUrl] = useState(contact.photoDataUrl ?? "");
   const [imageProcessing, setImageProcessing] = useState(false);
+  const [editCompanyId, setEditCompanyId] = useState(contact.companyId);
+  const [editCompanyName, setEditCompanyName] = useState(company);
+
+  function selectCompany(value: string) {
+    const match = companyByName(companies, value);
+    setEditCompanyName(value);
+    setEditCompanyId(match?.id ?? "");
+  }
+
+  function openEditor() {
+    setEditCompanyId(contact.companyId);
+    setEditCompanyName(company);
+    setSourceValue(contact.source);
+    setPhotoDataUrl(contact.photoDataUrl ?? "");
+    setEditing(true);
+  }
+
+  function closeEditor() {
+    setPhotoDataUrl(contact.photoDataUrl ?? "");
+    setEditing(false);
+  }
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3318,13 +3413,14 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
     const phone = String(data.get("phone") ?? contact.phone).trim();
     const linkedinInput = String(data.get("linkedin") ?? contact.linkedin ?? "").trim();
     const linkedin = normalizeUrl(linkedinInput);
+    if (canTransfer && !companies.some((item) => item.id === editCompanyId)) return void setFieldError(form, "companyName", "Select an existing company from the list.");
     if (name.length < 2) return void setFieldError(form, "name", "Enter at least 2 characters.");
     if (email && !EMAIL_PATTERN.test(email)) return void setFieldError(form, "email", "Enter a valid email address.");
     if (phone && phone !== "—" && !/^[+()\d\s.-]{7,24}$/.test(phone)) return void setFieldError(form, "phone", "Enter a valid phone number.");
     if (linkedinInput && !linkedin) return void setFieldError(form, "linkedin", "Enter a valid LinkedIn URL.");
     if (!await updateContact({
       ...contact,
-      companyId: String(data.get("companyId") ?? contact.companyId),
+      companyId: canTransfer ? editCompanyId : contact.companyId,
       name,
       position: String(data.get("position") ?? contact.position).trim(),
       email,
@@ -3345,7 +3441,7 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
       {editing ? (
         <form className="entity-form detail-edit-form" onSubmit={save}>
           <ImageField label="Contact photo" name="contactPhoto" value={photoDataUrl} onChange={setPhotoDataUrl} onProcessingChange={setImageProcessing} />
-          {canTransfer ? <label className="field field-full"><span>Company (Admin only to change)</span><select name="companyId" defaultValue={contact.companyId}>{companies.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label> : <label className="field field-full"><span>Company (Admin only to change)</span><input value={company} readOnly /></label>}
+          {canTransfer ? <CompanyCombobox inputId="contact-edit-company" label="Company (Admin only to change)" companies={companies} value={editCompanyName} onChange={selectCompany} required /> : <label className="field field-full"><span>Company (Admin only to change)</span><input value={company} readOnly /></label>}
           <label className="field field-full"><span>Full name</span><input name="name" defaultValue={contact.name} required minLength={2} maxLength={120} autoFocus /></label>
           <label className="field"><span>Position</span><input name="position" defaultValue={contact.position} maxLength={120} /></label>
           <label className="field"><span>Phone</span><input name="phone" type="tel" defaultValue={contact.phone} maxLength={24} /></label>
@@ -3356,11 +3452,11 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
           <label className="field"><span>CJN Manager</span><select name="owner" defaultValue={contact.owner}>{Array.from(new Set([...managerOptions, contact.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           {["Exhibition / Conference", "Other"].includes(sourceValue) && <label className="field field-full"><span>{sourceValue === "Other" ? "Source detail" : "Exhibition / event name"}</span><input name="sourceDetail" defaultValue={contact.sourceDetail ?? ""} maxLength={255} /></label>}
           {sourceValue === "Referral (word of mouth)" && <label className="field field-full"><span>Referred by</span><input name="referredBy" defaultValue={contact.referredBy ?? ""} maxLength={255} /></label>}
-          <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { setPhotoDataUrl(contact.photoDataUrl ?? ""); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save changes"}</button></div>
+          <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={closeEditor}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save changes"}</button></div>
         </form>
       ) : (
         <>
-          <div className="person-detail-head"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-detail-avatar" /><div><h3>{contact.position || "Position not specified"}</h3><p>{company}</p><StatusBadge value={contact.contactStatus === "inactive" ? "Inactive — do not contact" : "Active — contactable"} /></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
+          <div className="person-detail-head"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-detail-avatar" /><div><h3>{contact.position || "Position not specified"}</h3><p>{company}</p><StatusBadge value={contact.contactStatus === "inactive" ? "Inactive — do not contact" : "Active — contactable"} /></div>{canEdit && <button className="secondary-button" type="button" onClick={openEditor}>Edit</button>}</div>
           <div className="detail-grid contact-info-grid">
             <div><small>Email</small>{contact.email ? <a href={`mailto:${contact.email}`}>{contact.email}</a> : <b>—</b>}</div>
             <div><small>Phone</small>{contact.phone && contact.phone !== "—" ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : <b>—</b>}</div>
@@ -3410,7 +3506,7 @@ function UserDetail({ user, onClose, updateUser, rejectUser, lastActiveAdmin }: 
   );
 }
 
-function TaskDetail({ task, company, contacts, comments, attachments, events, onClose, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, outcomeStatusOptions, reminderLeadOptions, managerOptions }: {
+function TaskDetail({ task, company, contacts, comments, attachments, events, onClose, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, reminderLeadOptions, managerOptions }: {
   task: Task;
   company: string;
   contacts: Contact[];
@@ -3433,14 +3529,12 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
   currentUserId?: number;
   isAdmin: boolean;
   taskStatusOptions: string[];
-  outcomeStatusOptions: string[];
   reminderLeadOptions: string[];
   managerOptions: string[];
 }) {
   const [editing, setEditing] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
   const [editNote, setEditNote] = useState(task.note);
-  const [editOutcomeNotes, setEditOutcomeNotes] = useState(task.outcomeNotes ?? "");
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [commentRetry, setCommentRetry] = useState(false);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
@@ -3463,8 +3557,6 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
       contactPersonId: String(data.get("contactPersonId") ?? ""),
       status: String(data.get("status") ?? task.status),
       note: String(data.get("note") ?? "").trim(),
-      outcomeStatus: String(data.get("outcomeStatus") ?? ""),
-      outcomeNotes: String(data.get("outcomeNotes") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
     };
     if (await updateTask(updated)) setEditing(false);
@@ -3489,7 +3581,6 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
 
   function openEditor() {
     setEditNote(task.note);
-    setEditOutcomeNotes(task.outcomeNotes ?? "");
     setEditing(true);
   }
 
@@ -3503,17 +3594,15 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
           <label className="field"><span>Responsible manager</span><select name="owner" defaultValue={task.owner}>{Array.from(new Set([...managerOptions, task.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           <label className="field"><span>Contact person</span><select name="contactPersonId" defaultValue={task.contactPersonId ?? ""}><option value="">Not specified</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
           <label className="field"><span>Status</span><select name="status" defaultValue={task.status}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>
-          <label className="field"><span>Outcome status</span><select name="outcomeStatus" defaultValue={task.outcomeStatus ?? ""}><option value="">Not specified</option>{outcomeStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
           <label className="field field-full"><span>Description</span><textarea name="note" value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={4} maxLength={4000} />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setEditNote((current) => appendVoiceText(current, text))} />}</label>
-          <label className="field field-full"><span>Outcome notes</span><textarea name="outcomeNotes" value={editOutcomeNotes} onChange={(event) => setEditOutcomeNotes(event.target.value)} rows={3} maxLength={4000} />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setEditOutcomeNotes((current) => appendVoiceText(current, text))} />}</label>
           <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} defaultChecked={(task.reminderLeads ?? []).includes(lead)} /><span>{lead}</span></label>)}</fieldset>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => setEditing(false)}>Cancel</button><button className="primary-button" type="submit">Save task</button></div>
         </form>
       ) : (
         <>
           <div className="task-detail-status"><StatusBadge value={task.status} /><StatusBadge value={`${task.priority} priority`} />{isOverdue(task) && <StaticStatusBadge value="Overdue" />}{canEdit && <button className="secondary-button task-edit-button" type="button" onClick={openEditor}>Edit task</button>}</div>
-          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE}</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}</b></div><div><small>Outcome</small><b>{task.outcomeStatus || "—"}</b></div><div><small>Calendar</small>{task.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(task)}>Download .ics</button> : <b>Set a deadline first</b>}</div></div>
-          <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p>{task.outcomeNotes && <><small>Outcome notes</small><p>{task.outcomeNotes}</p></>}</div>
+          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE}</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}</b></div><div><small>Calendar</small>{task.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(task)}>Download .ics</button> : <b>Set a deadline first</b>}</div></div>
+          <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p></div>
           <section className="attachment-section"><div className="detail-section-head"><h3>Attachments <StaticStatusBadge value={String(attachments.length)} /></h3>{canEdit && <label className="secondary-button attachment-upload">{attachmentUploading ? "Uploading…" : "＋ Upload file"}<input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,image/*" disabled={attachmentUploading} onChange={(event) => void attach(event)} /></label>}</div><div className="attachment-list">{attachments.map((attachment) => <article key={attachment.id}><span><b>{attachment.name}</b><small>{(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB · {attachment.author}</small></span><button className="secondary-button" type="button" onClick={() => void downloadAttachment(attachment)}>Download</button>{(isAdmin || attachment.authorUserId === currentUserId) && <button className="danger-button" type="button" onClick={() => void deleteAttachment(attachment)}>Delete</button>}</article>)}{attachments.length === 0 && <p className="muted-copy">No attachments yet. PDF, Word, Excel, and images up to 20 MB are supported.</p>}</div></section>
           <section className="comment-stream"><div className="detail-section-head"><h3>Comments <StaticStatusBadge value={String(comments.filter((comment) => !comment.isHidden).length)} /></h3></div>{comments.map((comment) => <article key={comment.id} className={comment.isHidden ? "comment-hidden" : ""}><span className="timeline-avatar blue">{comment.author.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><p><b>{comment.author}</b><small>{comment.createdAt} · {CLIENT_TIME_ZONE_LABEL}</small><span>{comment.isHidden ? "Comment hidden by Admin" : comment.text}</span></p>{isAdmin && <button className="text-button" type="button" onClick={() => void setCommentHidden(task.id, comment.id, !comment.isHidden)}>{comment.isHidden ? "Restore" : "Hide"}</button>}</article>)}{comments.length === 0 && <div className="empty-state compact"><b>No comments yet</b><span>The task discussion will appear here.</span></div>}{canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write a clear update for the team" />{AI_INPUTS_ENABLED && <VoiceInputButton disabled={commentSubmitting} onText={(text) => { setCommentDraft((current) => appendVoiceText(current, text)); setCommentRetry(false); }} />}</label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}</section>
           <section className="change-log"><div className="detail-section-head"><h3>Change log</h3><small>{events.length} events</small></div>{events.slice(0, 8).map((event) => <article key={event.id}><span>{event.action}</span><p><b>{event.detail}</b><small>{event.actor} · {event.at} · {CLIENT_TIME_ZONE_LABEL}</small></p></article>)}{events.length === 0 && <p className="muted-copy">No changes recorded for this task.</p>}</section>
@@ -3552,6 +3641,9 @@ function CompanyForm({ statusOptions, companyTypeOptions, defaultOwner, onClose,
 function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompanyId, currentUserEmail, onClose, onSubmit }: { companies: Company[]; sourceOptions: string[]; initiatorOptions: CRMUser[]; initialCompanyId?: string; currentUserEmail: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, photoDataUrl: string) => Promise<boolean> }) {
   const formRef = useRef<HTMLFormElement>(null);
   const cardInputRef = useRef<HTMLInputElement>(null);
+  const initialCompany = companies.find((company) => company.id === initialCompanyId) ?? companies[0];
+  const [companyId, setCompanyId] = useState(initialCompany?.id ?? "");
+  const [companyQuery, setCompanyQuery] = useState(initialCompany?.name ?? "");
   const [source, setSource] = useState("");
   const [photoDataUrl, setPhotoDataUrl] = useState("");
   const [imageProcessing, setImageProcessing] = useState(false);
@@ -3564,6 +3656,12 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
   const [initiatorChoice, setInitiatorChoice] = useState(defaultInitiator);
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
+
+  function selectCompany(value: string) {
+    const match = companyByName(companies, value);
+    setCompanyQuery(value);
+    setCompanyId(match?.id ?? "");
+  }
 
   function fillField(name: string, value?: string) {
     if (!value || !formRef.current) return;
@@ -3583,9 +3681,26 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
     fillField("email", draft.email);
     fillField("linkedin", draft.linkedin);
     if (draft.company) {
-      const match = companies.find((company) => company.name.trim().toLowerCase() === draft.company?.trim().toLowerCase());
-      if (match) fillField("companyId", match.id);
+      const match = companyByName(companies, draft.company);
+      if (match) {
+        setCompanyId(match.id);
+        setCompanyQuery(match.name);
+      }
     }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (imageProcessing || cardScanning) return;
+    if (!companies.some((company) => company.id === companyId)) {
+      setFieldError(event.currentTarget, "companyName", "Select an existing company from the list.");
+      return;
+    }
+    setSubmitting(true);
+    setRetry(false);
+    const saved = await onSubmit(event, photoDataUrl);
+    setRetry(!saved);
+    setSubmitting(false);
   }
 
   async function scanCard(event: React.ChangeEvent<HTMLInputElement>) {
@@ -3612,7 +3727,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
 
   return (
     <Modal title="Add contact manually" eyebrow="Contacts" onClose={onClose}>
-      <form ref={formRef} onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { if (cardScanning) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, photoDataUrl).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); } } }} className="entity-form contact-entry-form">
+      <form ref={formRef} onSubmit={(event) => void submit(event)} className="entity-form contact-entry-form">
         {AI_INPUTS_ENABLED && <section className="ai-capture-panel field-full">
           <div>
             <b>Scan business card</b>
@@ -3628,7 +3743,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
         {AI_INPUTS_ENABLED && <input name="businessCardDataUrl" type="hidden" value={businessCardFile.dataUrl} />}
         {AI_INPUTS_ENABLED && <input name="businessCardFileName" type="hidden" value={businessCardFile.name} />}
         <ImageField label="Contact photo" name="contactPhoto" value={photoDataUrl} onChange={setPhotoDataUrl} onProcessingChange={setImageProcessing} />
-        <label className="field field-full"><span>Company *</span><select name="companyId" required defaultValue={initialCompanyId ?? companies[0]?.id}>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
+        <CompanyCombobox inputId="contact-create-company" label="Company *" companies={companies} value={companyQuery} onChange={selectCompany} required />
         <label className="field"><span>First name *</span><input name="firstName" required minLength={2} maxLength={100} autoFocus /></label>
         <label className="field"><span>Last name</span><input name="lastName" maxLength={100} /></label>
         <label className="field"><span>Position</span><input name="position" maxLength={150} placeholder="External Relations Director" /></label>
@@ -3649,7 +3764,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
   );
 }
 
-function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions, reminderLeadOptions, managerOptions, defaultOwner, initiatorOptions, currentUserEmail, initialCompanyId, canAddContact, onAddContact, onClose, onSubmit }: { companies: Company[]; contacts: Contact[]; taskStatusOptions: string[]; outcomeStatusOptions: string[]; reminderLeadOptions: string[]; managerOptions: string[]; defaultOwner: string; initiatorOptions: CRMUser[]; currentUserEmail: string; initialCompanyId?: string; canAddContact: boolean; onAddContact: (draft: ContactDraft) => Promise<ContactCreationResult>; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean> }) {
+function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions, managerOptions, defaultOwner, initiatorOptions, currentUserEmail, initialCompanyId, canAddContact, onAddContact, onClose, onSubmit }: { companies: Company[]; contacts: Contact[]; taskStatusOptions: string[]; reminderLeadOptions: string[]; managerOptions: string[]; defaultOwner: string; initiatorOptions: CRMUser[]; currentUserEmail: string; initialCompanyId?: string; canAddContact: boolean; onAddContact: (draft: ContactDraft) => Promise<ContactCreationResult>; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean> }) {
   const [companyId, setCompanyId] = useState(initialCompanyId ?? companies[0]?.id ?? "");
   const [contactPersonId, setContactPersonId] = useState("");
   const [quickContactOpen, setQuickContactOpen] = useState(false);
@@ -3662,7 +3777,6 @@ function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions
   const [quickInitiatorChoice, setQuickInitiatorChoice] = useState(defaultQuickInitiator);
   const [quickInitiatorName, setQuickInitiatorName] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
-  const [outcomeNotesDraft, setOutcomeNotesDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
   const companyContacts = contacts.filter((contact) => contact.companyId === companyId);
@@ -3721,10 +3835,8 @@ function TaskForm({ companies, contacts, taskStatusOptions, outcomeStatusOptions
         <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required defaultValue={todayUser()} /></label>
         <label className="field"><span>Deadline · {CLIENT_TIME_ZONE}</span><input name="deadline" type="datetime-local" /></label>
         <label className="field"><span>Responsible manager *</span><select name="owner" required defaultValue={defaultOwner}>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
-        <label className="field"><span>Status *</span><select name="status" defaultValue="Not Started">{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-        <label className="field"><span>Outcome status</span><select name="outcomeStatus"><option value="">Not specified</option>{outcomeStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label className="field"><span>Status *</span><select name="status" defaultValue={taskStatusOptions[0] ?? ""}>{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
         <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setNoteDraft((current) => appendVoiceText(current, text))} />}</label>
-        <label className="field field-full"><span>Outcome notes</span><textarea name="outcomeNotes" value={outcomeNotesDraft} onChange={(event) => setOutcomeNotesDraft(event.target.value)} rows={3} maxLength={4000} />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setOutcomeNotesDraft((current) => appendVoiceText(current, text))} />}</label>
         <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} /><span>{lead}</span></label>)}</fieldset>
         <div className="reminder-note field-full"><span>◷</span><p><b>Calendar and email reminders</b><small>The CRM provides an .ics file. Scheduled email delivery requires an active User linked to the selected CJN Manager.</small></p></div>
         {retry && <div className="form-error field-full" role="alert">The task was not saved. Your entries are preserved; try again when the connection is available.</div>}
