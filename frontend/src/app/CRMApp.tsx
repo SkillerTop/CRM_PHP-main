@@ -5,6 +5,7 @@ import { ApiError, apiDownload, apiMessage, apiRequest, setCsrfToken } from "../
 import { Avatar, EntityLogo } from "../shared/components/identity";
 import { useUrlStringState } from "../shared/hooks/use-url-string-state";
 import { DEFAULT_TIME_ZONE, formatDateTime, formatUserDateTime, formatUserDateTimeInput, getBrowserTimeZone, isLocalDateTimePast, localDateTimeToUtc, todayUser, userGreeting, userWeekQuarter } from "../shared/utils/dates";
+import { loadReadNotificationIds, saveReadNotificationIds, updateReadNotificationAccount } from "../shared/utils/notification-storage";
 import { readUrlFilter, urlWithFilter } from "../shared/utils/url-filters.mjs";
 
 type View =
@@ -1319,7 +1320,7 @@ export function CRMApp() {
   const [modalCompanyId, setModalCompanyId] = useState<string | undefined>();
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [readNotificationIdsByAccount, setReadNotificationIdsByAccount] = useState<Record<string, string[]>>({});
+  const [readNotificationIdsByAccount, setReadNotificationIdsByAccount] = useState<Record<string, string[]>>(() => loadReadNotificationIds());
   const [preferencesByAccount, setPreferencesByAccount] = useState<Record<string, Preferences>>({});
   const [toast, setToast] = useState<ToastState | null>(null);
   const [identity, setIdentity] = useState<AuthIdentity | null>(null);
@@ -1328,7 +1329,8 @@ export function CRMApp() {
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
   const notificationAccountKey = identity?.accountEmail.toLowerCase() ?? "";
-  const readNotificationIds = readNotificationIdsByAccount[notificationAccountKey] ?? [];
+  const notificationReadAccountKey = identity?.id ? `user:${identity.id}` : (notificationAccountKey ? `email:${notificationAccountKey}` : "");
+  const readNotificationIds = readNotificationIdsByAccount[notificationReadAccountKey] ?? [];
   const preferences = preferencesByAccount[notificationAccountKey] ?? DEFAULT_PREFERENCES;
 
   async function loadWorkspace() {
@@ -1436,11 +1438,11 @@ export function CRMApp() {
   ));
 
   function updateReadNotificationIds(update: string[] | ((current: string[]) => string[])) {
-    if (!notificationAccountKey) return;
+    if (!notificationReadAccountKey) return;
     setReadNotificationIdsByAccount((current) => {
-      const previous = current[notificationAccountKey] ?? [];
+      const previous = current[notificationReadAccountKey] ?? [];
       const next = typeof update === "function" ? update(previous) : update;
-      return { ...current, [notificationAccountKey]: next };
+      return updateReadNotificationAccount(current, notificationReadAccountKey, next);
     });
   }
   const toastTimer = useRef<number | null>(null);
@@ -1551,6 +1553,10 @@ export function CRMApp() {
   useEffect(() => () => {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
   }, []);
+
+  useEffect(() => {
+    saveReadNotificationIds(readNotificationIdsByAccount);
+  }, [readNotificationIdsByAccount]);
 
   useEffect(() => {
     if (!notificationsOpen && !profileOpen && !globalSearch && !sidebarOpen) return;

@@ -722,9 +722,11 @@ test("tracks record creators and scopes notifications to records connected to th
   assert.match(notifications, /title: "My activity summary"/);
   assert.match(notifications, /relatedCompanies\.length[\s\S]*?relatedContacts\.length[\s\S]*?relatedOpenTasks\.length/);
   assert.doesNotMatch(notifications, /\blive(?:Companies|Contacts|Tasks)\.length\b/, "Notification counts must not expose global workspace totals");
-  assert.match(app, /readNotificationIdsByAccount\[notificationAccountKey\] \?\? \[\]/);
+  assert.match(app, /const notificationReadAccountKey = identity\?\.id \? `user:\$\{identity\.id\}`/);
+  assert.match(app, /readNotificationIdsByAccount\[notificationReadAccountKey\] \?\? \[\]/);
   assert.match(app, /preferencesByAccount\[notificationAccountKey\] \?\? DEFAULT_PREFERENCES/);
-  assert.match(app, /\[notificationAccountKey\]: next/);
+  assert.match(app, /updateReadNotificationAccount\(current, notificationReadAccountKey, next\)/);
+  assert.match(app, /saveReadNotificationIds\(readNotificationIdsByAccount\)/);
   assert.match(app, /updateReadNotificationIds\(\(current\) => current\.includes\(item\.id\) \? current : \[\.\.\.current, item\.id\]\)/);
   assert.match(app, /updateReadNotificationIds\(\(current\) => Array\.from\(new Set\(\[\.\.\.current, \.\.\.notifications\.map\(\(item\) => item\.id\)\]\)\)\)/);
   assert.match(app, /setPreferencesByAccount\(\(current\) => \(\{ \.\.\.current, \[notificationAccountKey\]: nextPreferences \}\)\)/);
@@ -895,6 +897,13 @@ test("reloads persisted contact photos from the paginated API", async () => {
   const controller = await readFile(new URL("../backend/src/Controller/ContactController.php", root), "utf8");
   const listSelections = controller.match(/k\.manager_lookup_id, k\.initiated_by_text, k\.photo_data_url/g) ?? [];
   assert.equal(listSelections.length, 2, "Both contact list queries must return the persisted photo_data_url column");
+});
+
+test("reloads persisted company logos from the paginated API", async () => {
+  const controller = await readFile(new URL("../backend/src/Controller/CompanyController.php", root), "utf8");
+  const mapper = await readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8");
+  assert.match(controller, /c\.manager_lookup_id, c\.last_contact_date, c\.website, c\.linkedin, c\.logo_data_url, c\.description/);
+  assert.match(mapper, /'logo_data_url' => \$row\['logo_data_url'\] \?\? null/);
 });
 
 test("uses a three-column contact information grid and combines source with its detail", async () => {

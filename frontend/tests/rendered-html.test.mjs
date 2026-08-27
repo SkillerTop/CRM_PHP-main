@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { access, readFile, readdir } from "node:fs/promises";
 import test from "node:test";
+import { loadReadNotificationIds, READ_NOTIFICATIONS_STORAGE_KEY, saveReadNotificationIds, updateReadNotificationAccount } from "../src/shared/utils/notification-storage.ts";
 import { readUrlFilter, urlWithFilter } from "../src/shared/utils/url-filters.mjs";
 
 const root = new URL("../", import.meta.url);
@@ -93,4 +94,27 @@ test("keeps list filters in shareable URL parameters", async () => {
   assert.match(urlHook, /window\.addEventListener\("popstate", restoreFromUrl\)/);
   assert.match(urlHook, /window\.history\.replaceState/);
   assert.match(component, /window\.history\.pushState/);
+});
+
+test("persists read notification ids per account across page reloads", async () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const initial = updateReadNotificationAccount({}, "user:17", ["audit:E-42", "audit:E-42", "deadline:T-7:2026-08-27"]);
+  saveReadNotificationIds(initial, storage);
+
+  assert.equal(values.has(READ_NOTIFICATIONS_STORAGE_KEY), true);
+  assert.deepEqual(loadReadNotificationIds(storage), {
+    "user:17": ["audit:E-42", "deadline:T-7:2026-08-27"],
+  });
+
+  values.set(READ_NOTIFICATIONS_STORAGE_KEY, "invalid json");
+  assert.deepEqual(loadReadNotificationIds(storage), {});
+
+  const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
+  assert.match(component, /useState<Record<string, string\[\]>>\(\(\) => loadReadNotificationIds\(\)\)/);
+  assert.match(component, /const notificationReadAccountKey = identity\?\.id \? `user:\$\{identity\.id\}`/);
+  assert.match(component, /saveReadNotificationIds\(readNotificationIdsByAccount\)/);
 });

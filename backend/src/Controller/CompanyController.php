@@ -63,7 +63,7 @@ final class CompanyController
         $sort = $sorts[(string) ($request->query['sort'] ?? 'name')] ?? 'c.name';
         $direction = strtolower((string) ($request->query['dir'] ?? 'asc')) === 'desc' ? 'DESC' : 'ASC';
         $sql = "SELECT c.id, c.name, c.type_lookup_id, c.country, c.city, c.status_lookup_id,
-                       c.manager_lookup_id, c.last_contact_date, c.website, c.linkedin, c.description,
+                       c.manager_lookup_id, c.last_contact_date, c.website, c.linkedin, c.logo_data_url, c.description,
                        c.is_archived, c.created_at, c.updated_at, c.created_by, c.updated_by,
                        ct.value AS type_value, cs.value AS status_value,
                        mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
