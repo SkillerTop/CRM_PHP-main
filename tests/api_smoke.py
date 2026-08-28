@@ -335,6 +335,29 @@ def main() -> None:
     _, company_log = admin.request("GET", f"/companies/{company['id']}/log")
     assert any(event["field_name"] == "Last Contact Date" for event in company_log["data"])
 
+    transfer_payload = task_payload | {
+        "company_id": stable_company["id"],
+        "contact_person_id": None,
+        "updated_at": task["updated_at"],
+    }
+    _, transferred_body = admin.request("PUT", f"/tasks/{task['id']}", transfer_payload)
+    transferred_task = transferred_body["data"]
+    assert transferred_task["company_id"] == stable_company["id"]
+    _, old_company_after_transfer = admin.request("GET", f"/companies/{company['id']}")
+    _, new_company_after_transfer = admin.request("GET", f"/companies/{stable_company['id']}")
+    assert old_company_after_transfer["data"]["last_contact_date"] is None
+    assert new_company_after_transfer["data"]["last_contact_date"] == "2026-08-07"
+    _, transfer_log = admin.request("GET", f"/tasks/{task['id']}/log")
+    assert any(event["field_name"] == "Company" for event in transfer_log["data"])
+
+    transfer_back_payload = task_payload | {
+        "company_id": company["id"],
+        "contact_person_id": contact["id"],
+        "updated_at": transferred_task["updated_at"],
+    }
+    _, transferred_back_body = admin.request("PUT", f"/tasks/{task['id']}", transfer_back_payload)
+    task = transferred_back_body["data"]
+
     default_date_payload = task_payload | {
         "name": "Default contact date",
         "contact_person_id": None,

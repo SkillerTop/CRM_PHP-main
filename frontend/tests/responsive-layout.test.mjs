@@ -451,7 +451,7 @@ test("keeps Activity contact creation permissioned and selects quick-created con
   assert.match(taskForm, /onSubmit=\{\(event\) => \{ if \(quickContactOpen\)[\s\S]*?void onSubmit\(event\)\.then/);
   assert.match(taskForm, /type="submit" disabled=\{quickContactOpen \|\| submitting\}/);
   assert.match(taskForm, /onClick=\{resetQuickContact\}>Cancel/);
-  assert.match(taskForm, /onChange=\{\(event\) => \{ setCompanyId\(event\.target\.value\); setContactPersonId\(""\); resetQuickContact\(\); \}\}/);
+  assert.match(taskForm, /function selectCompany\(value: string\) \{[\s\S]*?setCompanyQuery\(value\);[\s\S]*?setCompanyId\(match\?\.id \?\? ""\);[\s\S]*?setContactPersonId\(""\);[\s\S]*?resetQuickContact\(\)/);
   assert.match(app, /canAddContact=\{hasPermission\(currentRole, "contact\.create"\)\}[\s\S]*?onAddContact=\{createContact\}/);
   assert.match(app, /<TaskForm[\s\S]*?initiatorOptions=\{users\.filter\(\(user\) => user\.state === "Active"\)\}[\s\S]*?currentUserEmail=\{identity\.accountEmail\}/);
   assert.match(app, /if \(firstName\.length < 2\) return \{ field: "firstName", error: "Enter at least 2 characters for the first name\." \}/);
@@ -516,6 +516,8 @@ test("removes outcome controls and keeps the searchable company list inside the 
   assert.doesNotMatch(component, /<datalist/);
   assert.match(contactForm, /<CompanyCombobox inputId="contact-create-company"[\s\S]*?onChange=\{selectCompany\} required/);
   assert.match(contactDetail, /<CompanyCombobox inputId="contact-edit-company"[\s\S]*?onChange=\{selectCompany\} required/);
+  assert.match(taskForm, /<CompanyCombobox inputId="task-create-company"[\s\S]*?onChange=\{selectCompany\} required/);
+  assert.match(taskDetail, /<CompanyCombobox inputId="task-edit-company"[\s\S]*?onChange=\{selectCompany\} required/);
   assert.match(companyCombobox, /role="combobox"[\s\S]*?aria-autocomplete="list"[\s\S]*?aria-expanded=\{open\}/);
   assert.match(companyCombobox, /event\.key === "ArrowDown"[\s\S]*?event\.key === "ArrowUp"[\s\S]*?event\.key === "Enter"[\s\S]*?event\.key === "Escape"/);
   assert.match(companyCombobox, /className="company-combobox-toggle"[\s\S]*?<span className="company-combobox-chevron" aria-hidden="true" \/>/);
@@ -524,6 +526,12 @@ test("removes outcome controls and keeps the searchable company list inside the 
   assert.match(blockAfter(css, ".company-combobox-options {"), /position:\s*absolute[\s\S]*?right:\s*0[\s\S]*?left:\s*0[\s\S]*?overflow-y:\s*auto/);
   assert.match(contactForm, /Select an existing company from the list\./);
   assert.match(contactDetail, /Select an existing company from the list\./);
+  assert.match(taskForm, /Select an existing company from the list\./);
+  assert.match(taskDetail, /Select an existing company from the list\./);
+  assert.match(taskForm, /name="priority" defaultValue="Normal"[\s\S]*?TASK_PRIORITIES\.map/);
+  assert.match(taskDetail, /name="priority" defaultValue=\{task\.priority\}[\s\S]*?TASK_PRIORITIES\.map/);
+  assert.match(taskDetail, /const editCompanyContacts = contacts\.filter\(\(contact\) => contact\.companyId === editCompanyId\)/);
+  assert.match(taskDetail, /setEditContactPersonId\(""\)/);
 });
 
 test("validates, processes, previews, and wires profile and entity images", async () => {

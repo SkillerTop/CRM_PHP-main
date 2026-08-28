@@ -156,25 +156,25 @@ final class TaskController
             RecordGuard::optimistic($before, Arr::string($input, 'updated_at'));
             $oldLeads = $this->leadIds($id);
             $data = $this->validated($input, $before, $oldLeads);
-            if ((int) $before['company_id'] !== (int) $data['record']['company_id']) {
-                throw new ApiException(400, 'company_change_forbidden', 'Перенос задачи в другую компанию не поддерживается.');
-            }
             $stmt = $this->db->prepare(
-                'UPDATE tasks SET name = :name, contact_date = :contact_date, manager_lookup_id = :manager_id,
+                'UPDATE tasks SET company_id = :company_id, name = :name, contact_date = :contact_date, manager_lookup_id = :manager_id,
                     contact_person_id = :contact_person_id, description = :description, status_lookup_id = :status_id, priority = :priority,
                     outcome_status_lookup_id = :outcome_status_id, outcome_notes = :outcome_notes, deadline = :deadline,
                     updated_by = :user_id, updated_at = :now WHERE id = :id'
             );
-            $updateRecord = $data['record'];
-            unset($updateRecord['company_id']);
-            $stmt->execute($updateRecord + ['user_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $id]);
+            $stmt->execute($data['record'] + ['user_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $id]);
             $after = $this->findForUpdate($id);
             $this->audit->logDiff('Task', $id, (string) $data['record']['name'], $before, $after, [
-                'name' => 'Task title', 'contact_date' => 'Contact Date', 'status_lookup_id' => 'Status',
+                'company_id' => 'Company', 'name' => 'Task title', 'contact_date' => 'Contact Date', 'status_lookup_id' => 'Status',
                 'outcome_status_lookup_id' => 'Outcome status', 'deadline' => 'Deadline',
                 'manager_lookup_id' => 'CJN Manager', 'contact_person_id' => 'Contact Person',
                 'description' => 'Description', 'priority' => 'Priority', 'outcome_notes' => 'Outcome notes',
             ], function (string $field, mixed $value): string {
+                if ($field === 'company_id') {
+                    $stmt = $this->db->prepare('SELECT name FROM companies WHERE id = :id');
+                    $stmt->execute(['id' => $value]);
+                    return (string) ($stmt->fetchColumn() ?: '—');
+                }
                 if (str_ends_with($field, '_lookup_id')) {
                     return $this->lookups->label($value === null ? null : (int) $value);
                 }
@@ -194,6 +194,9 @@ final class TaskController
             }
             $this->reminders->syncTask($id, $data['reminder_lead_ids']);
             $this->recalculateLastContact((int) $before['company_id']);
+            if ((int) $before['company_id'] !== (int) $data['record']['company_id']) {
+                $this->recalculateLastContact((int) $data['record']['company_id']);
+            }
             $this->db->commit();
         } catch (Throwable $error) {
             if ($this->db->inTransaction()) {

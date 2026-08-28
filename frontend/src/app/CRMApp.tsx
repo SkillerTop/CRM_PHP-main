@@ -103,6 +103,8 @@ type Task = {
   changeCount?: number;
 };
 
+const TASK_PRIORITIES: Task["priority"][] = ["Normal", "Medium", "High"];
+
 type TaskComment = {
   id: string;
   taskId: string;
@@ -1971,6 +1973,7 @@ export function CRMApp() {
     if (!companies.some((company) => company.id === task.companyId)) return setFieldError(form, "companyId", "Select an existing company.");
     if (!managerOptions.includes(task.owner)) return setFieldError(form, "owner", "Select an active CJN Manager.");
     if (!taskStatusOptions.includes(task.status)) return setFieldError(form, "status", "Select a valid task status.");
+    if (!TASK_PRIORITIES.includes(task.priority)) return setFieldError(form, "priority", "Select a valid priority.");
     if ((task.reminderLeads ?? []).some((lead) => !reminderLeadOptions.includes(lead))) return setFieldError(form, "reminderLeads", "Select valid reminder notice times.");
     if (!task.contactDate) return setFieldError(form, "contactDate", "Choose the contact date.");
     if (task.contactPersonId && !contacts.some((contact) => contact.id === task.contactPersonId && contact.companyId === task.companyId)) return setFieldError(form, "contactPersonId", "Select a contact from this company.");
@@ -2097,6 +2100,14 @@ export function CRMApp() {
     }
     if (!taskStatusOptions.includes(updated.status)) {
       notify("Select a valid task status.", "warning");
+      return false;
+    }
+    if (!TASK_PRIORITIES.includes(updated.priority)) {
+      notify("Select a valid priority.", "warning");
+      return false;
+    }
+    if (!companies.some((company) => company.id === updated.companyId)) {
+      notify("Select an existing company.", "warning");
       return false;
     }
     if (!allManagerOptions.includes(updated.owner) || (existing.owner !== updated.owner && !managerOptions.includes(updated.owner))) {
@@ -2711,7 +2722,8 @@ export function CRMApp() {
           key={`${selectedTask.id}-${currentRole}`}
           task={tasks.find((task) => task.id === selectedTask.id) ?? selectedTask}
           company={companyName(companies, selectedTask.companyId)}
-          contacts={contacts.filter((contact) => contact.companyId === selectedTask.companyId && !archivedContactIds.includes(contact.id))}
+          companies={liveCompanies}
+          contacts={liveContacts}
           comments={taskComments.filter((comment) => comment.taskId === selectedTask.id)}
           attachments={taskAttachments.filter((attachment) => attachment.taskId === selectedTask.id)}
           events={audit.filter((event) => event.entity === `Task · ${selectedTask.id}`)}
@@ -3512,9 +3524,10 @@ function UserDetail({ user, onClose, updateUser, rejectUser, lastActiveAdmin }: 
   );
 }
 
-function TaskDetail({ task, company, contacts, comments, attachments, events, onClose, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, reminderLeadOptions, managerOptions }: {
+function TaskDetail({ task, company, companies, contacts, comments, attachments, events, onClose, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, reminderLeadOptions, managerOptions }: {
   task: Task;
   company: string;
+  companies: Company[];
   contacts: Contact[];
   comments: TaskComment[];
   attachments: TaskAttachment[];
@@ -3541,9 +3554,20 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
   const [editing, setEditing] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
   const [editNote, setEditNote] = useState(task.note);
+  const [editCompanyId, setEditCompanyId] = useState(task.companyId);
+  const [editCompanyName, setEditCompanyName] = useState(company);
+  const [editContactPersonId, setEditContactPersonId] = useState(task.contactPersonId ?? "");
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [commentRetry, setCommentRetry] = useState(false);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const editCompanyContacts = contacts.filter((contact) => contact.companyId === editCompanyId);
+
+  function selectCompany(value: string) {
+    const match = companyByName(companies, value);
+    setEditCompanyName(value);
+    setEditCompanyId(match?.id ?? "");
+    setEditContactPersonId("");
+  }
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3554,14 +3578,17 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
     const deadline = String(data.get("deadline") ?? "");
     if (title.length < 3) return void setFieldError(form, "title", "Enter at least 3 characters.");
     if (!contactDate) return void setFieldError(form, "contactDate", "Choose the contact date.");
+    if (!companies.some((item) => item.id === editCompanyId)) return void setFieldError(form, "companyName", "Select an existing company from the list.");
     const updated: Task = {
       ...task,
+      companyId: editCompanyId,
       title,
       contactDate,
       deadline,
       owner: String(data.get("owner") ?? task.owner),
-      contactPersonId: String(data.get("contactPersonId") ?? ""),
+      contactPersonId: editContactPersonId,
       status: String(data.get("status") ?? task.status),
+      priority: String(data.get("priority") ?? task.priority) as Task["priority"],
       note: String(data.get("note") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
     };
@@ -3587,6 +3614,9 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
 
   function openEditor() {
     setEditNote(task.note);
+    setEditCompanyId(task.companyId);
+    setEditCompanyName(company);
+    setEditContactPersonId(task.contactPersonId ?? "");
     setEditing(true);
   }
 
@@ -3595,11 +3625,13 @@ function TaskDetail({ task, company, contacts, comments, attachments, events, on
       {editing ? (
         <form className="entity-form detail-edit-form" onSubmit={save}>
           <label className="field field-full"><span>Task title *</span><input name="title" defaultValue={task.title} required minLength={3} maxLength={255} autoFocus /></label>
+          <CompanyCombobox inputId="task-edit-company" label="Company *" companies={companies} value={editCompanyName} onChange={selectCompany} required />
           <label className="field"><span>Contact date *</span><input name="contactDate" type="date" defaultValue={task.contactDate ?? task.deadline.slice(0, 10)} required /></label>
           <label className="field"><span>Deadline · {CLIENT_TIME_ZONE}</span><input name="deadline" type="datetime-local" defaultValue={task.deadline} /></label>
           <label className="field"><span>Responsible manager</span><select name="owner" defaultValue={task.owner}>{Array.from(new Set([...managerOptions, task.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
-          <label className="field"><span>Contact person</span><select name="contactPersonId" defaultValue={task.contactPersonId ?? ""}><option value="">Not specified</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
+          <label className="field"><span>Contact person</span><select name="contactPersonId" value={editContactPersonId} onChange={(event) => setEditContactPersonId(event.target.value)}><option value="">Not specified</option>{editCompanyContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
           <label className="field"><span>Status</span><select name="status" defaultValue={task.status}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>
+          <label className="field"><span>Priority</span><select name="priority" defaultValue={task.priority}>{TASK_PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
           <label className="field field-full"><span>Description</span><textarea name="note" value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={4} maxLength={4000} />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setEditNote((current) => appendVoiceText(current, text))} />}</label>
           <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} defaultChecked={(task.reminderLeads ?? []).includes(lead)} /><span>{lead}</span></label>)}</fieldset>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => setEditing(false)}>Cancel</button><button className="primary-button" type="submit">Save task</button></div>
@@ -3771,7 +3803,9 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
 }
 
 function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions, managerOptions, defaultOwner, initiatorOptions, currentUserEmail, initialCompanyId, canAddContact, onAddContact, onClose, onSubmit }: { companies: Company[]; contacts: Contact[]; taskStatusOptions: string[]; reminderLeadOptions: string[]; managerOptions: string[]; defaultOwner: string; initiatorOptions: CRMUser[]; currentUserEmail: string; initialCompanyId?: string; canAddContact: boolean; onAddContact: (draft: ContactDraft) => Promise<ContactCreationResult>; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean> }) {
-  const [companyId, setCompanyId] = useState(initialCompanyId ?? companies[0]?.id ?? "");
+  const initialCompany = companies.find((company) => company.id === initialCompanyId) ?? companies[0];
+  const [companyId, setCompanyId] = useState(initialCompany?.id ?? "");
+  const [companyQuery, setCompanyQuery] = useState(initialCompany?.name ?? "");
   const [contactPersonId, setContactPersonId] = useState("");
   const [quickContactOpen, setQuickContactOpen] = useState(false);
   const [quickContact, setQuickContact] = useState({ firstName: "", lastName: "", position: "", email: "", phone: "" });
@@ -3786,6 +3820,14 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
   const companyContacts = contacts.filter((contact) => contact.companyId === companyId);
+
+  function selectCompany(value: string) {
+    const match = companyByName(companies, value);
+    setCompanyQuery(value);
+    setCompanyId(match?.id ?? "");
+    setContactPersonId("");
+    resetQuickContact();
+  }
 
   function resetQuickContact() {
     setQuickContact({ firstName: "", lastName: "", position: "", email: "", phone: "" });
@@ -3816,9 +3858,9 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
 
   return (
     <Modal title="New task" eyebrow="Activity" onClose={onClose}>
-      <form onSubmit={(event) => { if (quickContactOpen) { event.preventDefault(); setQuickError("Save or cancel the quick contact before creating the task."); } else { setSubmitting(true); setRetry(false); void onSubmit(event).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); } }} className="entity-form">
+      <form onSubmit={(event) => { if (quickContactOpen) { event.preventDefault(); setQuickError("Save or cancel the quick contact before creating the task."); } else if (!companies.some((company) => company.id === companyId)) { event.preventDefault(); setFieldError(event.currentTarget, "companyName", "Select an existing company from the list."); } else { setSubmitting(true); setRetry(false); void onSubmit(event).then((saved) => setRetry(!saved)).finally(() => setSubmitting(false)); } }} className="entity-form">
         <label className="field field-full"><span>Task title *</span><input name="title" required minLength={3} maxLength={255} autoFocus placeholder="What needs to be done?" /></label>
-        <label className="field"><span>Company *</span><select name="companyId" required value={companyId} onChange={(event) => { setCompanyId(event.target.value); setContactPersonId(""); resetQuickContact(); }}>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></label>
+        <CompanyCombobox inputId="task-create-company" label="Company *" companies={companies} value={companyQuery} onChange={selectCompany} required />
         <div className="contact-field-with-action">
           <label className="field"><span>Contact person</span><select name="contactPersonId" value={contactPersonId} onChange={(event) => setContactPersonId(event.target.value)}><option value="">Not specified</option>{companyContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
           {canAddContact && <button className="secondary-button" type="button" aria-expanded={quickContactOpen} aria-controls="quick-contact-panel" onClick={() => { setQuickContactOpen((open) => !open); setQuickError(""); }}>＋ Add contact</button>}
@@ -3842,6 +3884,7 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
         <label className="field"><span>Deadline · {CLIENT_TIME_ZONE}</span><input name="deadline" type="datetime-local" /></label>
         <label className="field"><span>Responsible manager *</span><select name="owner" required defaultValue={defaultOwner}>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
         <label className="field"><span>Status *</span><select name="status" defaultValue={taskStatusOptions[0] ?? ""}>{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label className="field"><span>Priority *</span><select name="priority" defaultValue="Normal">{TASK_PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
         <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" />{AI_INPUTS_ENABLED && <VoiceInputButton onText={(text) => setNoteDraft((current) => appendVoiceText(current, text))} />}</label>
         <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} /><span>{lead}</span></label>)}</fieldset>
         <div className="reminder-note field-full"><span>◷</span><p><b>Calendar and email reminders</b><small>The CRM provides an .ics file. Scheduled email delivery requires an active User linked to the selected CJN Manager.</small></p></div>
