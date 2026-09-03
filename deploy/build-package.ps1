@@ -6,16 +6,41 @@ param(
 $ErrorActionPreference = 'Stop'
 $project = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $backend = Join-Path $project 'backend'
+$frontend = Join-Path $project 'frontend'
+$frontController = Join-Path $project 'deploy\mirohost-public\index.php'
 if (-not (Test-Path -LiteralPath (Join-Path $backend 'public\index.php'))) {
     throw "Backend entry point was not found under $backend."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $frontend 'package.json'))) {
+    throw "Frontend package was not found under $frontend."
+}
+if (-not (Test-Path -LiteralPath $frontController)) {
+    throw "Mirohost public front controller was not found under $frontController."
+}
+
+Push-Location $frontend
+try {
+    & npm run build
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frontend build failed with exit code $LASTEXITCODE."
+    }
+}
+finally {
+    Pop-Location
+}
+$dist = Join-Path $frontend 'dist'
+foreach ($required in @('index.html', '.htaccess', 'assets')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $dist $required))) {
+        throw "Required frontend artifact is missing: $required"
+    }
 }
 
 $staging = Join-Path $env:TEMP ('crm-package-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging | Out-Null
 
 try {
-    # This archive is the PHP runtime package. Frontend deployment is handled by
-    # its own Vinext/hosting pipeline and is intentionally not mixed into it.
+    # Copy the private PHP application first. Runtime secrets and user data stay
+    # on the server and are intentionally excluded.
     Get-ChildItem -LiteralPath $backend -Recurse -Force -File | ForEach-Object {
         $relativeToBackend = $_.FullName.Substring($backend.Length).TrimStart('\', '/')
         $normalized = $relativeToBackend.Replace('\', '/')
@@ -34,6 +59,17 @@ try {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
         Copy-Item -LiteralPath $_.FullName -Destination $destination
     }
+
+    # The production document root is backend/public. Merge the Vite output
+    # there and install the nginx-compatible SPA/API front controller.
+    $public = Join-Path $staging 'backend\public'
+    Get-ChildItem -LiteralPath $dist -Recurse -Force -File | ForEach-Object {
+        $relative = $_.FullName.Substring($dist.Length).TrimStart('\', '/')
+        $destination = Join-Path $public $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+        Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+    }
+    Copy-Item -LiteralPath $frontController -Destination (Join-Path $public 'index.php') -Force
 
     if (Test-Path -LiteralPath $Output) { Remove-Item -LiteralPath $Output -Force }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Output) | Out-Null

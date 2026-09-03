@@ -108,8 +108,8 @@ final class EnvironmentValidator
             ['WHISPER_MAX_REQUESTS_PER_HOUR', 1, 1000, 10], ['UPLOAD_MAX_REQUESTS_PER_HOUR', 1, 10000, 100],
             ['UPLOAD_MAX_BYTES', 1024, 104857600, 20971520], ['UPLOAD_STORAGE_MAX_BYTES', 1048576, PHP_INT_MAX, 10737418240],
             ['OCR_MAX_FILE_MB', 1, 100, 8], ['WHISPER_MAX_FILE_MB', 1, 500, 25],
-            ['OCR_TIMEOUT_SECONDS', 1, 300, 45], ['WHISPER_TIMEOUT_SECONDS', 1, 900, 180],
-            ['AI_MAX_TIMEOUT_SECONDS', 1, 900, 300], ['AI_MAX_OUTPUT_BYTES', 1024, 10485760, 1048576],
+            ['OCR_TIMEOUT_SECONDS', 1, 300, 45], ['WHISPER_TIMEOUT_SECONDS', 1, 900, 900],
+            ['AI_MAX_TIMEOUT_SECONDS', 1, 900, 900], ['AI_MAX_OUTPUT_BYTES', 1024, 10485760, 1048576],
         ] as [$key, $minimum, $maximum, $default]) {
             self::integer($errors, $key, $minimum, $maximum, $default);
         }

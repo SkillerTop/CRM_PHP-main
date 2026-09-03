@@ -43,7 +43,7 @@
 | GET | `/tasks/{id}/reminder.ics` | Outlook-compatible event |
 | POST | `/tasks/{id}/attachments` | multipart, поле `file`, до 20 МБ |
 | GET/DELETE | `/tasks/{id}/attachments/{attachmentId}` | delete: автор или Admin |
-| POST | `/speech/transcribe` | multipart `file`; Whisper CLI, возвращает распознанный текст для вставки в поле |
+| POST | `/speech/transcribe` | multipart `file`; локальная библиотека OpenAI Whisper, возвращает распознанный текст для вставки в поле; браузер записывает не более 60 секунд за один запрос |
 
 `state` для задач: `actual` (по умолчанию), `overdue`, `completed`, `deferred`, `canceled`, `all`.
 

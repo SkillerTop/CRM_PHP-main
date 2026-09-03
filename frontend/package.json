@@ -10,11 +10,15 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/responsive-layout.test.mjs tests/timezone-dates.test.mjs",
-    "test:unit": "node --test tests/rendered-html.test.mjs tests/responsive-layout.test.mjs tests/timezone-dates.test.mjs",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/responsive-layout.test.mjs tests/timezone-dates.test.mjs tests/voice-input.test.mjs tests/form-draft.test.mjs",
+    "test:unit": "node --test tests/rendered-html.test.mjs tests/responsive-layout.test.mjs tests/timezone-dates.test.mjs tests/voice-input.test.mjs tests/form-draft.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern work"
   },
   "dependencies": {
+    "dictionary-en": "^4.0.0",
+    "dictionary-ru": "^3.0.0",
+    "dictionary-uk": "^4.0.0",
+    "nspell": "^2.1.5",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },

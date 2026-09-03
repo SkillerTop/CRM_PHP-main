@@ -15,16 +15,17 @@ export function setCsrfToken(token: string) {
   csrfToken = token;
 }
 
-export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function apiRequest<T>(path: string, init: RequestInit = {}, baseUrl = ""): Promise<T> {
   const headers = new Headers(init.headers);
   const isForm = init.body instanceof FormData;
   if (init.body && !isForm && !headers.has("content-type")) headers.set("content-type", "application/json");
   if (csrfToken && init.method && !["GET", "HEAD"].includes(init.method.toUpperCase())) headers.set("x-csrf-token", csrfToken);
 
-  const response = await fetch(`/api${path.startsWith("/") ? path : `/${path}`}`, {
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+  const response = await fetch(`${normalizedBaseUrl}/api${path.startsWith("/") ? path : `/${path}`}`, {
     ...init,
     headers,
-    credentials: "same-origin",
+    credentials: normalizedBaseUrl === "" ? "same-origin" : "include",
     cache: "no-store",
   });
   if (response.status === 204) return undefined as T;

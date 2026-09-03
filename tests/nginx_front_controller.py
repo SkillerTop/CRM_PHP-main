@@ -51,6 +51,8 @@ class NginxFrontControllerTest(unittest.TestCase):
         )
         (assets / "app-ABC123.js").write_text("window.CRM_READY = true;", encoding="utf-8")
         (assets / "app-ABC123.css").write_text("body { color: #123; }", encoding="utf-8")
+        (assets / "dictionary-ABC123.aff").write_text("SET UTF-8", encoding="utf-8")
+        (assets / "dictionary-ABC123.dic").write_text("1\nслово", encoding="utf-8")
         (cls.backend / "bootstrap.php").write_text(
             """<?php
 return new class {
@@ -132,6 +134,12 @@ return new class {
         self.assertEqual(status, 200)
         self.assertEqual(body, b"")
         self.assertEqual(int(headers["content-length"]), len(b"window.CRM_READY = true;"))
+
+        for path in ["/assets/dictionary-ABC123.aff", "/assets/dictionary-ABC123.dic"]:
+            status, headers, body = self.request("GET", path)
+            self.assertEqual(status, 200)
+            self.assertTrue(headers["content-type"].startswith("text/plain"))
+            self.assertGreater(len(body), 0)
 
     def test_preserves_api_request_for_backend(self) -> None:
         status, headers, body = self.request("GET", "/api/health")

@@ -154,11 +154,30 @@ final class App
     private function securityHeaders(): void
     {
         header_remove('X-Powered-By');
+        $this->developmentCors();
         header('X-Frame-Options: DENY');
         header('Referrer-Policy: same-origin');
         header('Permissions-Policy: camera=(self), microphone=(self), geolocation=()');
         header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
         header('Cache-Control: no-store');
+    }
+
+    private function developmentCors(): void
+    {
+        if (strtolower((string) Config::get('APP_ENV', '')) !== 'development') {
+            return;
+        }
+
+        $origin = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+        if (!in_array($origin, ['http://localhost:5173', 'http://127.0.0.1:5173'], true)) {
+            return;
+        }
+
+        header('Access-Control-Allow-Origin: ' . $origin);
+        header('Access-Control-Allow-Credentials: true');
+        header('Access-Control-Allow-Headers: Content-Type, X-CSRF-Token');
+        header('Access-Control-Allow-Methods: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
+        header('Vary: Origin', false);
     }
 
     private function writeError(Throwable $error): void

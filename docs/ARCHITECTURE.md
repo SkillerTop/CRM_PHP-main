@@ -20,7 +20,7 @@
 - `frontend/src/shared/api/api-client.ts` — единый HTTP-клиент фронтенда.
 - `frontend/src/shared/utils` — чистые функции дат, URL-фильтров и других общих преобразований.
 - `frontend/app/globals.css` — подключаемая общая дизайн-система и адаптивные правила.
-- `frontend/public/.htaccess` — same-origin маршрутизация `/api/*` в PHP и SPA fallback.
+- `frontend/public/.htaccess` — правила для DocumentRoot `backend/public`: same-origin маршрутизация `/api/*` в соседний `index.php`, статические assets и SPA fallback.
 - `frontend/src/features` — целевые границы для постепенного выноса крупных CRM-разделов из `CRMApp.tsx`.
 - `frontend/tests` — проверки поведения и responsive-ограничений.
 

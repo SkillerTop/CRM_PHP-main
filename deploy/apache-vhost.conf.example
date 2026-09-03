@@ -6,7 +6,7 @@
 <IfModule mod_ssl.c>
 <VirtualHost *:443>
     ServerName crm.example.com
-    DocumentRoot /var/www/client-data-crm/frontend/dist
+    DocumentRoot /var/www/client-data-crm/backend/public
 
     SSLEngine on
     SSLCertificateFile /etc/letsencrypt/live/crm.example.com/fullchain.pem
@@ -23,23 +23,17 @@
         Require all denied
     </Directory>
 
-    <Directory /var/www/client-data-crm/frontend/dist>
+    <Directory /var/www/client-data-crm/backend/public>
         AllowOverride None
         Options -Indexes +FollowSymLinks
         DirectoryIndex index.html
         Require all granted
     </Directory>
 
-    <Directory /var/www/client-data-crm/backend/public>
-        AllowOverride None
-        Options -Indexes +FollowSymLinks
-        Require all granted
-    </Directory>
-
     RewriteEngine On
 
     # Route same-origin API requests to the only public PHP entry point.
-    RewriteRule ^/?api(?:/.*)?$ /var/www/client-data-crm/backend/public/index.php [QSA,END]
+    RewriteRule ^/?api(?:/.*)?$ /index.php [QSA,END]
 
     # Serve existing generated assets directly, then fall back to the SPA shell.
     RewriteCond %{REQUEST_FILENAME} -f [OR]

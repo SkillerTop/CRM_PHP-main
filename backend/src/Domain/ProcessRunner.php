@@ -10,8 +10,11 @@ use Throwable;
 
 final class ProcessRunner
 {
-    /** @param list<string> $command */
-    public function run(array $command, int $timeoutSeconds = 60): ProcessResult
+    /**
+     * @param list<string> $command
+     * @param array<string, string> $environment
+     */
+    public function run(array $command, int $timeoutSeconds = 60, array $environment = []): ProcessResult
     {
         if ($command === [] || trim($command[0]) === '') {
             throw new ApiException(503, 'ai_engine_not_configured', 'AI-движок не настроен на сервере.');
@@ -30,7 +33,24 @@ final class ProcessRunner
         }
         $descriptor = [0 => ['pipe', 'r'], 1 => $stdoutFile, 2 => $stderrFile];
         $options = PHP_OS_FAMILY === 'Windows' ? ['create_process_group' => true, 'create_new_console' => false] : [];
-        $process = @proc_open($command, $descriptor, $pipes, null, null, $options);
+        $processEnvironment = null;
+        if ($environment !== []) {
+            $inheritedEnvironment = getenv();
+            $processEnvironment = is_array($inheritedEnvironment) ? $inheritedEnvironment : [];
+            foreach ($environment as $key => $value) {
+                // Windows environment names are case-insensitive, while PHP
+                // arrays are not. Remove inherited aliases such as `Path`
+                // before setting `PATH`, otherwise CreateProcess may expose
+                // the stale value and child tools (notably FFmpeg) disappear.
+                foreach (array_keys($processEnvironment) as $inheritedKey) {
+                    if (strcasecmp($inheritedKey, $key) === 0) {
+                        unset($processEnvironment[$inheritedKey]);
+                    }
+                }
+                $processEnvironment[$key] = $value;
+            }
+        }
+        $process = @proc_open($command, $descriptor, $pipes, null, $processEnvironment, $options);
         if (!is_resource($process)) {
             fclose($stdoutFile);
             fclose($stderrFile);
@@ -42,7 +62,7 @@ final class ProcessRunner
         $stdout = '';
         $stderr = '';
         $startedAt = hrtime(true);
-        $timeoutSeconds = max(1, min($timeoutSeconds, Config::int('AI_MAX_TIMEOUT_SECONDS', 300)));
+        $timeoutSeconds = max(1, min($timeoutSeconds, Config::int('AI_MAX_TIMEOUT_SECONDS', 900)));
         $maximumOutput = max(1024, Config::int('AI_MAX_OUTPUT_BYTES', 1024 * 1024));
         $exitCode = 0;
         $failure = null;

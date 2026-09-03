@@ -44,7 +44,9 @@ $sendFrontendError = static function (int $status, string $code, string $message
 };
 
 $mimeTypes = [
+    'aff' => 'text/plain; charset=utf-8',
     'css' => 'text/css; charset=utf-8',
+    'dic' => 'text/plain; charset=utf-8',
     'gif' => 'image/gif',
     'html' => 'text/html; charset=utf-8',
     'ico' => 'image/x-icon',

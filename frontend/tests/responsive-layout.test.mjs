@@ -387,7 +387,7 @@ test("keeps seeded statuses while allowing Admin to manage the workflow", async 
   const lookups = sectionBetween(component, "function Lookups(", "function Users(");
   assert.doesNotMatch(lookups, /fixedRelationshipWorkflow|Five-status workflow/);
   assert.match(lookups, /Rename, reorder, add, or deactivate options/);
-  assert.match(lookups, /<form className="lookup-add-form"/);
+  assert.match(lookups, /<form[^>]*className="lookup-add-form"/);
   assert.match(lookups, /\{item\.active \? "Deactivate" : "Activate"\}/);
   assert.match(component, /if \(type === "client-status"\) \{[\s\S]*?setCompanyStatus\(\(current\) => current === existing\.value \? clean : current\)/);
 
@@ -439,13 +439,13 @@ test("keeps Activity contact creation permissioned and selects quick-created con
   assert.match(taskForm, /initiatorOptions: CRMUser\[\]/);
   assert.match(taskForm, /currentUserEmail: string/);
   assert.match(taskForm, /const defaultQuickInitiator = initiatorOptions\.some\(\(user\) => user\.email\.toLowerCase\(\) === normalizedCurrentUserEmail\) \? normalizedCurrentUserEmail : "manual"/);
-  assert.match(taskForm, /const \[quickInitiatorChoice, setQuickInitiatorChoice\] = useState\(defaultQuickInitiator\)/);
-  assert.match(taskForm, /const \[quickInitiatorName, setQuickInitiatorName\] = useState\(""\)/);
+  assert.match(taskForm, /const \[quickInitiatorChoice, setQuickInitiatorChoice\] = useState\(\(\) => taskCreateDraft\.initialValue\("quickInitiatorChoice", defaultQuickInitiator\)\)/);
+  assert.match(taskForm, /const \[quickInitiatorName, setQuickInitiatorName\] = useState\(\(\) => taskCreateDraft\.initialValue\("quickInitiatorName"\)\)/);
   assert.match(taskForm, /function resetQuickContact\(\) \{[\s\S]*?setQuickInitiatorChoice\(defaultQuickInitiator\);[\s\S]*?setQuickInitiatorName\(""\)/);
   assert.match(taskForm, /initiatedBy: quickInitiatorChoice === "manual" \? quickInitiatorName : undefined/);
   assert.match(taskForm, /initiatedByUserEmail: quickInitiatorChoice === "manual" \? undefined : quickInitiatorChoice/);
-  assert.match(taskForm, /<select value=\{quickInitiatorChoice\}[\s\S]*?\{initiatorOptions\.map\(\(user\) => <option key=\{user\.email\} value=\{user\.email\.toLowerCase\(\)\}>\{user\.name\}<\/option>\)\}<option value="manual">Enter a name manually<\/option><\/select>/);
-  assert.match(taskForm, /\{quickInitiatorChoice === "manual" && <label>[\s\S]*?<input value=\{quickInitiatorName\}[\s\S]*?required minLength=\{2\} maxLength=\{120\}/);
+  assert.match(taskForm, /<select name="quickInitiatorChoice" value=\{quickInitiatorChoice\}[\s\S]*?\{initiatorOptions\.map\(\(user\) => <option key=\{user\.email\} value=\{user\.email\.toLowerCase\(\)\}>\{user\.name\}<\/option>\)\}<option value="manual">Enter a name manually<\/option><\/select>/);
+  assert.match(taskForm, /\{quickInitiatorChoice === "manual" && <label>[\s\S]*?<input name="quickInitiatorName" value=\{quickInitiatorName\}[\s\S]*?required minLength=\{2\} maxLength=\{120\}/);
   assert.match(taskForm, /setContactPersonId\(result\.contact\.id\);\s*resetQuickContact\(\)/);
   assert.match(taskForm, /<span>First name \*<\/span><input[\s\S]*?required minLength=\{2\}[\s\S]*?<\/label>/);
   assert.match(taskForm, /onSubmit=\{\(event\) => \{ if \(quickContactOpen\)[\s\S]*?void onSubmit\(event\)\.then/);
