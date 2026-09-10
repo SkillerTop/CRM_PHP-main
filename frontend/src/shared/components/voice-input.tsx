@@ -271,7 +271,7 @@ export function VoiceTextTools({ value, onChange, maxLength, disabled = false, d
           : `${spellcheckIssues.length} possible spelling ${spellcheckIssues.length === 1 ? "error" : "errors"}.`;
 
   return (
-    <div className="voice-text-tools">
+    <div className="voice-text-tools voice-text-tools-hidden">
       <VoiceInputButton disabled={disabled} onText={(text) => onChange(appendVoiceText(value, text, maxLength))} />
       <div className={`spellcheck-panel ${spellcheckIssues.length > 0 ? "has-issues" : ""}`} aria-label="Spelling corrections" aria-live="polite">
         <div className="spellcheck-summary"><small>Spelling</small><span>{spellcheckSummary}</span></div>

@@ -53,7 +53,6 @@
 |---|---|---|
 | GET | `/dashboard` | auth |
 | GET | `/app/bootstrap` | auth; компактный начальный снимок для frontend: CSRF, identity, связанный `current_manager`, справочники, роли и аудит. Записи загружаются отдельными страницами по 50, детали комментариев и вложений — при открытии задачи |
-| GET | `/pipeline` | auth |
 | GET | `/search?q=` | auth; не более 25 результатов каждого типа |
 | GET | `/lookups` | auth, активные значения всех типов |
 | GET | `/lookups/{type}` | auth; `include_inactive=1` только Admin |
@@ -70,6 +69,8 @@
 | GET/PUT | `/settings` | Admin; адрес системных уведомлений, уведомление о регистрациях, разрешённые email-домены |
 
 Типы справочников: `company_type`, `client_status`, `task_status`, `outcome_status`, `contact_source`, `reminder_lead_time`, `cjn_manager`.
+
+Поле компании `nda_status` принимает одно из значений: `Not Signed`, `Company-wide`, `Project-specific`, `Expired`.
 
 Деактивированное значение нельзя назначить новой записи. Существующая запись, которая уже ссылается на такое значение, продолжает читаться и может быть отредактирована без принудительной замены исторического значения.
 

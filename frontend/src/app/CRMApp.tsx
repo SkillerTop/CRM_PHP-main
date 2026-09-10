@@ -7,7 +7,7 @@ import { VoiceTextTools } from "../shared/components/voice-input";
 import { useCookieDraft } from "../shared/hooks/use-cookie-draft";
 import { DraftScopeContext, useFormDraft } from "../shared/hooks/use-form-draft";
 import { useUrlStringState } from "../shared/hooks/use-url-string-state";
-import { DEFAULT_TIME_ZONE, formatDateTime, formatUserDateTime, formatUserDateTimeInput, getBrowserTimeZone, isLocalDateTimePast, localDateTimeToUtc, todayUser, userGreeting, userWeekQuarter } from "../shared/utils/dates";
+import { DEFAULT_TIME_ZONE, formatDateTime, formatUserDateTime, formatUserDateTimeInput, getBrowserTimeZone, isLocalDateTimePast, localDateTimeToUtc, timeZoneCityLabel, todayUser, userGreeting, userWeekQuarter } from "../shared/utils/dates";
 import { clearAccountDrafts, clearFormDraft, clearOtherAccountDrafts, draftScopeForAccount, readFormDraft, writeFormDraft } from "../shared/utils/form-draft";
 import { clearAllSecureVoiceDrafts, clearAllVoiceDrafts, clearOtherSecureVoiceDrafts } from "../shared/utils/voice-draft";
 import { loadReadNotificationIds, saveReadNotificationIds, updateReadNotificationAccount } from "../shared/utils/notification-storage";
@@ -15,7 +15,6 @@ import { readUrlFilter, urlWithFilter } from "../shared/utils/url-filters.mjs";
 
 type View =
   | "dashboard"
-  | "pipeline"
   | "companies"
   | "contacts"
   | "activity"
@@ -23,7 +22,7 @@ type View =
   | "users"
   | "audit";
 
-const ALL_VIEWS: readonly View[] = ["dashboard", "pipeline", "companies", "contacts", "activity", "lookups", "users", "audit"];
+const ALL_VIEWS: readonly View[] = ["dashboard", "companies", "contacts", "activity", "lookups", "users", "audit"];
 const CONTACT_LINKEDIN_VALUES = ["Any LinkedIn", "Has LinkedIn", "No LinkedIn"] as const;
 
 type Company = {
@@ -41,6 +40,7 @@ type Company = {
   createdByUserEmail?: string;
   website: string;
   linkedin?: string;
+  ndaStatus?: NdaStatus;
   logoDataUrl?: string;
   description: string;
   typeId?: number;
@@ -91,7 +91,7 @@ type Task = {
   contactPersonId?: string;
   status: string;
   isClosed?: boolean;
-  priority: "High" | "Medium" | "Normal";
+  priority: "High" | "Medium" | "Low";
   note: string;
   outcomeStatus?: string;
   outcomeNotes?: string;
@@ -108,7 +108,10 @@ type Task = {
   changeCount?: number;
 };
 
-const TASK_PRIORITIES: Task["priority"][] = ["Normal", "Medium", "High"];
+const NDA_STATUSES = ["Not Signed", "Company-wide", "Project-specific", "Expired"] as const;
+type NdaStatus = typeof NDA_STATUSES[number];
+
+const TASK_PRIORITIES: Task["priority"][] = ["Low", "Medium", "High"];
 
 type TaskComment = {
   id: string;
@@ -239,7 +242,7 @@ const DEFAULT_PREFERENCES: Preferences = { deadlineReminders: true, overdueNotif
 const OCR_INPUT_ENABLED = false;
 const CLIENT_TIME_ZONE = getBrowserTimeZone();
 const CLIENT_TIME_ZONE_IS_DEFAULT = CLIENT_TIME_ZONE === DEFAULT_TIME_ZONE;
-const CLIENT_TIME_ZONE_LABEL = CLIENT_TIME_ZONE_IS_DEFAULT ? "Kyiv" : CLIENT_TIME_ZONE;
+const CLIENT_TIME_ZONE_LABEL = timeZoneCityLabel(CLIENT_TIME_ZONE);
 
 const ROLE_ORDER: Role[] = ["Admin", "Manager", "Editor", "Read-only"];
 
@@ -285,11 +288,11 @@ const CJN_MANAGER_VALUES = [
 ];
 
 const RELATIONSHIP_STATUSES = [
-  "New Organization",
-  "Follow-up Active",
-  "Awaiting Response",
-  "Active Relationship",
-  "Inactive",
+  "New Lead",
+  "Quotation Sent",
+  "Active Client",
+  "On Hold",
+  "Lost / Declined",
 ] as const;
 
 const LOOKUP_SEED: LookupGroup[] = [
@@ -329,7 +332,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Ship design",
     country: "South Korea",
     city: "Jinju-si",
-    status: "Awaiting Response",
+    status: "Quotation Sent",
     contacts: 2,
     lastContact: "2026-07-24",
     owner: "Vitalii Vyshnevskyi",
@@ -343,7 +346,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Shipyard",
     country: "USA",
     city: "Brownsville",
-    status: "Inactive",
+    status: "Lost / Declined",
     contacts: 1,
     lastContact: "2026-06-18",
     owner: "Andrey Zherebetsky",
@@ -357,7 +360,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Shipyard",
     country: "USA",
     city: "Morgan City",
-    status: "Active Relationship",
+    status: "Active Client",
     contacts: 3,
     lastContact: "2026-07-29",
     owner: "Mikhail Bardin",
@@ -371,7 +374,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Shipyard",
     country: "USA",
     city: "Houma",
-    status: "Follow-up Active",
+    status: "New Lead",
     contacts: 2,
     lastContact: "2026-07-28",
     owner: "Mikhail Bardin",
@@ -385,7 +388,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Shipyard",
     country: "USA",
     city: "Panama City",
-    status: "Follow-up Active",
+    status: "New Lead",
     contacts: 2,
     lastContact: "2026-07-21",
     owner: "Mikhail Bardin",
@@ -399,7 +402,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Shipyard",
     country: "USA",
     city: "Green Bay",
-    status: "Follow-up Active",
+    status: "New Lead",
     contacts: 2,
     lastContact: "2026-07-30",
     owner: "Vitalii Vyshnevskyi",
@@ -413,7 +416,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Ship design",
     country: "United Kingdom",
     city: "London",
-    status: "New Organization",
+    status: "New Lead",
     contacts: 2,
     lastContact: "2026-07-25",
     owner: "Olga Kalnauz",
@@ -427,7 +430,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Equipment",
     country: "Finland",
     city: "Helsinki",
-    status: "Follow-up Active",
+    status: "New Lead",
     contacts: 2,
     lastContact: "2026-07-27",
     owner: "Olga Kalnauz",
@@ -441,7 +444,7 @@ const INITIAL_COMPANIES: Company[] = [
     kind: "Shipyard",
     country: "Estonia",
     city: "Nasva",
-    status: "Active Relationship",
+    status: "Active Client",
     contacts: 3,
     lastContact: "2026-07-30",
     owner: "Vitalii Vyshnevskyi",
@@ -468,9 +471,9 @@ const INITIAL_TASKS: Task[] = [
   { id: "T-0002", companyId: "C-0004", title: "Review technical scope before call", deadline: "2026-08-01T15:30", owner: "Mikhail Bardin", status: "Started", priority: "High", note: "Prepare three delivery scenarios and clarify vessel class requirements." },
   { id: "T-0003", companyId: "C-0006", title: "Follow up with engineering director", deadline: "2026-07-28T10:00", owner: "Vitalii Vyshnevskyi", status: "Not Started", priority: "High", note: "Previous contact changed role; re-establish the engineering relationship." },
   { id: "T-0004", companyId: "C-0005", title: "Solution brief feedback", deadline: "2026-08-04T11:00", owner: "Mikhail Bardin", status: "Not Started", priority: "Medium", note: "Ask whether the delivery scope, responsibilities and timing assumptions are clear." },
-  { id: "T-0005", companyId: "C-0007", title: "Send mutual NDA", deadline: "2026-08-07T12:00", owner: "Olga Kalnauz", status: "Not Started", priority: "Normal", note: "Use the approved 2026 NDA template." },
+  { id: "T-0005", companyId: "C-0007", title: "Send mutual NDA", deadline: "2026-08-07T12:00", owner: "Olga Kalnauz", status: "Not Started", priority: "Low", note: "Use the approved 2026 NDA template." },
   { id: "T-0006", companyId: "C-0008", title: "Rotor Sail integration workshop", deadline: "2026-08-10T09:00", owner: "Olga Kalnauz", status: "Started", priority: "Medium", note: "Align available CAD formats and engineering work packages." },
-  { id: "T-0007", companyId: "C-0003", title: "Monthly delivery check-in", deadline: "2026-07-30T16:00", owner: "Mikhail Bardin", status: "Completed", priority: "Normal", note: "Meeting held, action points circulated." },
+  { id: "T-0007", companyId: "C-0003", title: "Monthly delivery check-in", deadline: "2026-07-30T16:00", owner: "Mikhail Bardin", status: "Completed", priority: "Low", note: "Meeting held, action points circulated." },
   { id: "T-0008", companyId: "C-0009", title: "Prepare repeat-client engagement plan", deadline: "2026-08-02T14:00", owner: "Vitalii Vyshnevskyi", status: "Started", priority: "High", note: "Include the agreed delivery approach and relevant prior-project context." },
 ];
 
@@ -543,6 +546,7 @@ function mapCompany(record: ApiRecord): Company {
     createdBy: apiString(record, "created_by_name"), ownerUserEmail: apiString(record, "manager_email").toLowerCase() || undefined,
     createdByUserEmail: apiString(record, "created_by_email").toLowerCase() || undefined,
     website: apiString(record, "website"), linkedin: apiString(record, "linkedin") || undefined,
+    ndaStatus: (NDA_STATUSES.includes(apiString(record, "nda_status") as NdaStatus) ? apiString(record, "nda_status") : "Not Signed") as NdaStatus,
     logoDataUrl: apiString(record, "logo_data_url") || undefined, description: apiString(record, "description"),
     typeId: apiNumber(record, "type_id"), statusId: apiNumber(record, "status_id"), managerId: apiNumber(record, "manager_id"),
     updatedAt: apiString(record, "updated_at"), isArchived: apiBoolean(record, "is_archived"),
@@ -573,7 +577,7 @@ function mapTask(record: ApiRecord): Task {
     createdByUserEmail: apiString(record, "created_by_email").toLowerCase() || undefined,
     contactPersonId: apiString(record, "contact_person_id") || undefined, status: apiString(record, "status"),
     isClosed: record.is_closed == null ? undefined : apiBoolean(record, "is_closed"),
-    priority: (apiString(record, "priority") || "Normal") as Task["priority"], note: apiString(record, "description"),
+    priority: (apiString(record, "priority") || "Low") as Task["priority"], note: apiString(record, "description"),
     outcomeStatus: apiString(record, "outcome_status"), outcomeNotes: apiString(record, "outcome_notes"),
     reminderLeads: rawLeads.map((lead) => apiString(lead, "value")), reminderLeadIds: rawLeads.map((lead) => Number(lead.id)),
     managerId: apiNumber(record, "manager_id"), statusId: apiNumber(record, "status_id"), outcomeStatusId: apiNumber(record, "outcome_status_id"),
@@ -616,7 +620,6 @@ function mapAuditEvent(event: ApiRecord): AuditEvent {
 
 const VIEW_META: Record<View, { label: string; eyebrow: string; icon: string }> = {
   dashboard: { label: "Dashboard", eyebrow: "Team overview", icon: "⌂" },
-  pipeline: { label: "Relationship Board", eyebrow: "Client workflow", icon: "◇" },
   companies: { label: "Companies", eyebrow: "Client database", icon: "▦" },
   contacts: { label: "Contacts", eyebrow: "Contact directory", icon: "◎" },
   activity: { label: "Activity", eyebrow: "Tasks & deadlines", icon: "✓" },
@@ -677,8 +680,12 @@ function normalizeUrl(value: string) {
   }
 }
 
-function normalizePersonName(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
+const COMPANY_WEBSITE_LABEL_LIMIT = 28;
+
+function companyWebsiteLabel(value: string) {
+  return value.length > COMPANY_WEBSITE_LABEL_LIMIT
+    ? `${value.slice(0, COMPANY_WEBSITE_LABEL_LIMIT)}…`
+    : value;
 }
 
 function contactCount(contacts: Contact[], companyId: string) {
@@ -923,7 +930,7 @@ const INFO_TEXT: Record<string, string> = {
   "Read-only": "Can view data without editing.",
   "High priority": "High priority: this task needs immediate attention.",
   "Medium priority": "Medium priority: complete this task within the current plan.",
-  "Normal priority": "Normal priority with no urgent escalation.",
+  "Low priority": "Low priority with no urgent escalation.",
 };
 
 function StatusBadge({ value }: { value: string }) {
@@ -1261,7 +1268,7 @@ export function CRMApp() {
   const [preferencesByAccount, setPreferencesByAccount] = useState<Record<string, Preferences>>({});
   const [toast, setToast] = useState<ToastState | null>(null);
   const [identity, setIdentity] = useState<AuthIdentity | null>(null);
-  const [currentManagerName, setCurrentManagerName] = useState("");
+  const [currentManagerId, setCurrentManagerId] = useState<number | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
@@ -1340,7 +1347,7 @@ export function CRMApp() {
     setTaskComments([]);
     setTaskAttachments([]);
     setLookups(lookupGroups);
-    setCurrentManagerName(payload.current_manager ? apiString(payload.current_manager, "value") : "");
+    setCurrentManagerId(payload.current_manager ? apiNumber(payload.current_manager, "id") ?? null : null);
     setUsers(mappedUsers);
     if (typeof window !== "undefined" && readUrlFilter(window.location.search, "view", "dashboard", ALL_VIEWS) === "users") {
       const requestedUserId = Number(new URLSearchParams(window.location.search).get("user") ?? 0);
@@ -1451,14 +1458,13 @@ export function CRMApp() {
   const companyTypeOptions = lookupValues("company-type");
   const managerOptions = lookupValues("cjn-manager");
   const allManagerOptions = lookupValues("cjn-manager", false);
-  const normalizedIdentityName = normalizePersonName(identity?.name ?? "");
-  const defaultManager = managerOptions.find((owner) => owner === currentManagerName)
-    ?? managerOptions.find((owner) => normalizedIdentityName !== "" && normalizePersonName(owner) === normalizedIdentityName)
+  const activeManagerLookups = lookups.find((group) => group.type === "cjn-manager")?.items.filter((item) => item.active) ?? [];
+  const defaultManager = activeManagerLookups.find((manager) => Number(manager.id) === currentManagerId)?.value
     ?? managerOptions[0]
     ?? "";
   const userEmailForName = (name: string) => users.find((user) => user.name === name)?.email.toLowerCase();
   const lookupId = (type: string, value?: string) => Number(lookups.find((group) => group.type === type)?.items.find((item) => item.value === value)?.id || 0) || null;
-  const companyPayload = (company: Company) => ({ name: company.name, type_id: lookupId("company-type", company.kind), country: company.country, city: company.city || null, status_id: lookupId("client-status", company.status), manager_id: lookupId("cjn-manager", company.owner), website: company.website || null, linkedin: company.linkedin || null, logo_data_url: company.logoDataUrl || null, description: company.description || null, updated_at: company.updatedAt });
+  const companyPayload = (company: Company) => ({ name: company.name, type_id: lookupId("company-type", company.kind), country: company.country, city: company.city || null, status_id: lookupId("client-status", company.status), manager_id: lookupId("cjn-manager", company.owner), website: company.website || null, linkedin: company.linkedin || null, nda_status: company.ndaStatus ?? NDA_STATUSES[0], logo_data_url: company.logoDataUrl || null, description: company.description || null, updated_at: company.updatedAt });
   const contactPayload = (contact: Contact) => {
     const names = contact.firstName ? [contact.firstName, contact.lastName ?? ""] : contact.name.trim().split(/\s+/, 2);
     const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
@@ -1683,7 +1689,7 @@ export function CRMApp() {
     setCsrfToken("");
     setPasswordChangeRequired(false);
     setIdentity(null);
-    setCurrentManagerName("");
+    setCurrentManagerId(null);
     setProfileOpen(false);
     setNotificationsOpen(false);
     setSelectedCompany(null);
@@ -1705,6 +1711,13 @@ export function CRMApp() {
     setSidebarOpen(false);
     setNotificationsOpen(false);
     setProfileOpen(false);
+  }
+
+  function resetUrlFilters(names: string[]) {
+    const url = new URL(window.location.href);
+    names.forEach((name) => url.searchParams.delete(name));
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
   }
 
   function openGlobalResult(result: { type: string; id: string }) {
@@ -1768,6 +1781,7 @@ export function CRMApp() {
     const linkedin = normalizeUrl(linkedinInput);
     const owner = String(data.get("owner") ?? "Andrey Zherebetsky");
     const status = String(data.get("status") ?? RELATIONSHIP_STATUSES[0]);
+    const ndaStatus = String(data.get("ndaStatus") ?? NDA_STATUSES[0]) as NdaStatus;
     if (name.length < 2) return setFieldError(form, "name", "Enter at least 2 characters.");
     if (!country) return setFieldError(form, "country", "Country is required.");
     if (websiteInput && !website) return setFieldError(form, "website", "Enter a valid website address.");
@@ -1775,6 +1789,7 @@ export function CRMApp() {
     if (!companyTypeOptions.includes(String(data.get("kind") ?? ""))) return setFieldError(form, "kind", "Select a valid company type.");
     if (!activeClientStatuses.includes(status)) return setFieldError(form, "status", "Select a valid client status.");
     if (!managerOptions.includes(owner)) return setFieldError(form, "owner", "Select an active CJN Manager.");
+    if (!NDA_STATUSES.includes(ndaStatus)) return setFieldError(form, "ndaStatus", "Select a valid NDA status.");
     const company: Company = {
       id: "",
       name,
@@ -1790,6 +1805,7 @@ export function CRMApp() {
       createdByUserEmail: identity?.accountEmail.toLowerCase(),
       website,
       linkedin,
+      ndaStatus,
       logoDataUrl: logoDataUrl || undefined,
       description: String(data.get("description") ?? "").trim(),
     };
@@ -1945,7 +1961,7 @@ export function CRMApp() {
       createdByUserEmail: identity?.accountEmail.toLowerCase(),
       contactPersonId: String(data.get("contactPersonId") ?? ""),
       status: String(data.get("status") ?? taskStatusOptions[0] ?? "") as Task["status"],
-      priority: String(data.get("priority") ?? "Normal") as Task["priority"],
+      priority: String(data.get("priority") ?? "Low") as Task["priority"],
       note: String(data.get("note") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
     };
@@ -2445,7 +2461,7 @@ export function CRMApp() {
   if (identity && passwordChangeRequired) return <PasswordChangeScreen identity={identity} onChange={changeRequiredPassword} onSignOut={signOut} />;
   if (!identity) return <AuthScreen onLogin={authenticate} onRegister={registerAccount} onRecover={recoverAccount} />;
 
-  const navPrimary: View[] = ["dashboard", "pipeline", "companies", "contacts", "activity"];
+  const navPrimary: View[] = ["dashboard", "companies", "contacts", "activity"];
   const navAdmin: View[] = [
     ...(hasPermission(currentRole, "lookup.manage") ? ["lookups" as View] : []),
     ...(hasPermission(currentRole, "user.manage") ? ["users" as View] : []),
@@ -2568,7 +2584,7 @@ export function CRMApp() {
           </nav>
           <div className="sidebar-foot">
             <span className="sync-dot" />
-            <div><b>Workspace ready</b><small>{CLIENT_TIME_ZONE_IS_DEFAULT ? "Europe/Kyiv · Session data" : `${CLIENT_TIME_ZONE} · Local session`}</small></div>
+            <div><b>Workspace ready</b><small>{CLIENT_TIME_ZONE_LABEL}</small></div>
           </div>
         </aside>
         {sidebarOpen && <button className="sidebar-scrim" type="button" tabIndex={-1} onClick={() => setSidebarOpen(false)} aria-label="Close menu" />}
@@ -2594,16 +2610,18 @@ export function CRMApp() {
               audit={audit}
               canViewAudit={canViewAudit}
               identity={identity}
-              navigate={navigate}
               openAuditEntity={openAuditEntity}
-              openCompaniesForStatus={(status) => { setCompanyStatus(status); navigate("companies"); }}
+              openCompanies={() => { setCompanyQuery(""); setCompanyStatus("All statuses"); resetUrlFilters(["company_owner", "company_country", "company_type", "company_priority"]); navigate("companies"); }}
+              openContacts={() => { setContactQuery(""); resetUrlFilters(["contact_source", "contact_initiator", "contact_company", "contact_linkedin"]); navigate("contacts"); }}
+              openTaskList={(filter) => { setTaskManagerFilter("All managers"); setTaskFilter(filter); navigate("activity"); }}
+              openCompaniesForStatus={(status) => { setCompanyQuery(""); setCompanyStatus(status); resetUrlFilters(["company_owner", "company_country", "company_type", "company_priority"]); navigate("companies"); }}
               openTasksForManager={(manager) => { setTaskManagerFilter(manager); setTaskFilter("All"); navigate("activity"); }}
             />
           )}
-          {view === "pipeline" && <Pipeline companies={liveCompanies} contacts={liveContacts} tasks={liveTasks} statusOrder={clientStatusOrder} canMove={hasPermission(currentRole, "pipeline.move")} showInternalIds={currentRole === "Admin"} moveCompany={moveCompany} openCompany={setSelectedCompany} />}
           {view === "companies" && (
             <Companies
               companies={filteredCompanies}
+              tasks={liveTasks}
               query={companyQuery}
               setQuery={setCompanyQuery}
               status={companyStatus}
@@ -2754,7 +2772,7 @@ export function CRMApp() {
   );
 }
 
-function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdueTasks, audit, canViewAudit, identity, navigate, openAuditEntity, openCompaniesForStatus, openTasksForManager }: {
+function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdueTasks, audit, canViewAudit, identity, openCompanies, openContacts, openTaskList, openAuditEntity, openCompaniesForStatus, openTasksForManager }: {
   companies: Company[];
   contacts: Contact[];
   tasks: Task[];
@@ -2764,7 +2782,9 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
   audit: AuditEvent[];
   canViewAudit: boolean;
   identity: AuthIdentity;
-  navigate: (view: View) => void;
+  openCompanies: () => void;
+  openContacts: () => void;
+  openTaskList: (filter: "All" | "Open" | "Overdue") => void;
   openAuditEntity: (event: AuditEvent) => void;
   openCompaniesForStatus: (status: string) => void;
   openTasksForManager: (manager: string) => void;
@@ -2779,30 +2799,30 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
     <>
       <section className="welcome-card">
         <div>
-          <p>{userGreeting()}, {identity.name.split(" ")[0]}{CLIENT_TIME_ZONE_IS_DEFAULT ? "" : ` · ${CLIENT_TIME_ZONE}`}</p>
+          <p>{userGreeting()}, {identity.name.split(" ")[0]}{CLIENT_TIME_ZONE_IS_DEFAULT ? "" : ` · ${CLIENT_TIME_ZONE_LABEL}`}</p>
           <h2>Here is what needs the team&apos;s attention today.</h2>
         </div>
-        <button className="primary-button" type="button" onClick={() => navigate("activity")}>View tasks <span>→</span></button>
+        <button className="primary-button" type="button" onClick={() => openTaskList("All")}>View tasks <span>→</span></button>
       </section>
 
       <section className="kpi-grid" aria-label="Key metrics">
-        <button className="kpi-card" type="button" onClick={() => navigate("companies")}>
+        <button className="kpi-card" type="button" onClick={openCompanies}>
           <span className="kpi-icon blue">▦</span>
           <span><small>Companies</small><b>{companies.length}</b><em>All active CRM records</em></span>
         </button>
-        <button className="kpi-card" type="button" onClick={() => navigate("contacts")}>
+        <button className="kpi-card" type="button" onClick={openContacts}>
           <span className="kpi-icon cyan">◎</span>
           <span><small>Contacts</small><b>{contacts.length}</b><em>Across {companies.filter((company) => contactCount(contacts, company.id) > 0).length} companies</em></span>
         </button>
-        <button className="kpi-card" type="button" onClick={() => navigate("activity")}>
+        <button className="kpi-card" type="button" onClick={() => openTaskList("All")}>
           <span className="kpi-icon green">≡</span>
           <span><small>Tasks total</small><b>{tasks.length}</b><em>{tasks.filter((task) => task.status === "Completed").length} completed</em></span>
         </button>
-        <button className="kpi-card kpi-open" type="button" onClick={() => navigate("activity")}>
+        <button className="kpi-card kpi-open" type="button" onClick={() => openTaskList("Open")}>
           <span className="kpi-icon amber">✓</span>
           <span><small>Open tasks</small><b>{openTasks.length}</b><em>Current work queue</em></span>
         </button>
-        <button className="kpi-card kpi-overdue" type="button" onClick={() => navigate("activity")}>
+        <button className="kpi-card kpi-overdue" type="button" onClick={() => openTaskList("Overdue")}>
           <span className="kpi-icon red">!</span>
           <span><small>Overdue</small><b>{overdueTasks.length}</b><em>{overdueTasks.length ? "Needs attention" : "No overdue tasks"}</em></span>
         </button>
@@ -2819,7 +2839,6 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
       <section className="panel funnel-panel">
         <div className="panel-heading">
           <div><p className="eyebrow">Client workflow</p><h2>Relationship overview</h2></div>
-          <button className="text-button" type="button" onClick={() => navigate("pipeline")}>Open board →</button>
         </div>
         <div className="funnel-list">
           {stageCounts.map((item) => (
@@ -2879,9 +2898,10 @@ function Pipeline({ companies, contacts, tasks, statusOrder, canMove, showIntern
   );
 }
 
-function Companies({ companies, contacts, statusOptions, query, setQuery, status, setStatus, showInternalIds, canCreate, openCompany, add }: {
+function Companies({ companies, contacts, tasks, statusOptions, query, setQuery, status, setStatus, showInternalIds, canCreate, openCompany, add }: {
   companies: Company[];
   contacts: Contact[];
+  tasks: Task[];
   statusOptions: string[];
   query: string;
   setQuery: (value: string) => void;
@@ -2898,13 +2918,25 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
   const [ownerFilter, setOwnerFilter] = useUrlStringState("company_owner", "All owners");
   const [countryFilter, setCountryFilter] = useUrlStringState("company_country", "All countries");
   const [typeFilter, setTypeFilter] = useUrlStringState("company_type", "All types");
+  const [priorityFilter, setPriorityFilter] = useUrlStringState("company_priority", "All priorities", ["All priorities", ...TASK_PRIORITIES]);
   const [page, setPage] = useState(1);
   const [sortField, setSortField] = useState<"name" | "kind" | "country" | "status" | "lastContact">("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const latestTaskByCompany = useMemo(() => {
+    const result = new Map<string, Task>();
+    tasks.forEach((task) => {
+      const current = result.get(task.companyId);
+      const taskDate = task.contactDate ?? "";
+      const currentDate = current?.contactDate ?? "";
+      if (!current || taskDate > currentDate || (taskDate === currentDate && task.id > current.id)) result.set(task.companyId, task);
+    });
+    return result;
+  }, [tasks]);
   const filtered = companies.filter((company) =>
     (ownerFilter === "All owners" || company.owner === ownerFilter) &&
     (countryFilter === "All countries" || company.country === countryFilter) &&
-    (typeFilter === "All types" || company.kind === typeFilter),
+    (typeFilter === "All types" || company.kind === typeFilter) &&
+    (priorityFilter === "All priorities" || latestTaskByCompany.get(company.id)?.priority === priorityFilter),
   ).sort((a, b) => String(a[sortField]).localeCompare(String(b[sortField])) * (sortDirection === "asc" ? 1 : -1));
   const pageSize = 50;
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -2952,27 +2984,29 @@ function Companies({ companies, contacts, statusOptions, query, setQuery, status
           <label><span>Owner</span><select value={ownerFilter} onChange={(event) => { setOwnerFilter(event.target.value); setPage(1); }}><option>All owners</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           <label><span>Country</span><select value={countryFilter} onChange={(event) => { setCountryFilter(event.target.value); setPage(1); }}><option>All countries</option>{countries.map((country) => <option key={country}>{country}</option>)}</select></label>
           <label><span>Company type</span><select value={typeFilter} onChange={(event) => { setTypeFilter(event.target.value); setPage(1); }}><option>All types</option>{types.map((type) => <option key={type}>{type}</option>)}</select></label>
-          <button className="secondary-button" type="button" onClick={() => { setOwnerFilter("All owners"); setCountryFilter("All countries"); setTypeFilter("All types"); setPage(1); }}>Reset</button>
+          <label><span>Priority</span><select value={priorityFilter} onChange={(event) => { setPriorityFilter(event.target.value); setPage(1); }}><option>All priorities</option>{TASK_PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
+          <button className="secondary-button" type="button" onClick={() => { setOwnerFilter("All owners"); setCountryFilter("All countries"); setTypeFilter("All types"); setPriorityFilter("All priorities"); setPage(1); }}>Reset</button>
           <button className="primary-button" type="button" onClick={() => setFiltersOpen(false)}>Done</button>
         </div>
       )}
       <div className="table-scroll responsive-card-scroll" role="region" aria-label="Companies table" tabIndex={0}>
         <table className="data-table companies-table responsive-card-table">
-          <thead><tr><th><button className="sort-button" type="button" onClick={() => sortBy("name")}>Company {sortField === "name" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("kind")}>Type {sortField === "kind" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("country")}>Location {sortField === "country" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("status")}>Client status {sortField === "status" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th>Contacts</th><th><button className="sort-button" type="button" onClick={() => sortBy("lastContact")}>Last contact {sortField === "lastContact" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th>Owner</th><th aria-label="Actions" /></tr></thead>
+          <thead><tr><th><button className="sort-button" type="button" onClick={() => sortBy("name")}>Company {sortField === "name" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("kind")}>Type {sortField === "kind" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("country")}>Location {sortField === "country" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("status")}>Client status {sortField === "status" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th>Priority</th><th>Contacts</th><th><button className="sort-button" type="button" onClick={() => sortBy("lastContact")}>Last contact {sortField === "lastContact" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th>Owner</th><th aria-label="Actions" /></tr></thead>
           <tbody>
             {visibleCompanies.map((company) => (
               <tr key={company.id} tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
-                <td data-label="Company"><span className="company-cell"><EntityLogo name={company.name} src={company.logoDataUrl} lazy /><span><b>{company.name}</b>{(showInternalIds || company.website) && <small>{showInternalIds && <>{company.id}{company.website ? " · " : ""}</>}{company.website && <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{company.website}</a>}</small>}</span></span></td>
+                <td data-label="Company"><span className="company-cell"><EntityLogo name={company.name} src={company.logoDataUrl} lazy /><span><b>{company.name}</b>{(showInternalIds || company.website) && <small className="company-meta">{showInternalIds && <span className="company-internal-id">{company.id}</span>}{company.website && <a className="inline-data-link compact company-website-link" href={websiteHref(company.website)} target="_blank" rel="noreferrer" title={company.website} aria-label={`Open ${company.name} website: ${company.website}`} onClick={(event) => event.stopPropagation()}>{companyWebsiteLabel(company.website)}</a>}</small>}</span></span></td>
                 <td data-label="Type"><span className="company-card-value">{company.kind}</span></td>
                 <td data-label="Location"><span className="company-card-value"><b className="normal-weight">{company.city}</b><small className="cell-sub">{company.country}</small></span></td>
                 <td data-label="Client status"><span className="company-card-value"><StatusBadge value={company.status} /></span></td>
+                <td data-label="Priority"><span className="company-card-value">{latestTaskByCompany.has(company.id) ? <StatusBadge value={`${latestTaskByCompany.get(company.id)!.priority} priority`} /> : "—"}</span></td>
                 <td data-label="Contacts"><span className="company-card-value"><CountBadge count={contactCount(contacts, company.id)} label="contacts" detail={`${company.name} has ${contactCount(contacts, company.id)} saved contact people. Open the company profile for details.`} /></span></td>
                 <td data-label="Last contact"><span className="company-card-value">{company.lastContact}</span></td>
                 <td data-label="Owner"><span className="company-card-value"><span className="owner-cell"><span className="mini-avatar">{company.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>{company.owner}</span></span></td>
                 <td data-label="Actions"><button className="row-menu" type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></td>
               </tr>
             ))}
-            {visibleCompanies.length === 0 && <tr className="table-empty-row"><td colSpan={8}>No companies match the current filters.</td></tr>}
+            {visibleCompanies.length === 0 && <tr className="table-empty-row"><td colSpan={9}>No companies match the current filters.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -3075,13 +3109,15 @@ function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFi
   addContact: () => void;
   openTask: (task: Task) => void;
 }) {
-  const filters = [...taskStatusOptions, "Overdue", "All"];
+  const filters = [...taskStatusOptions, "Open", "Overdue", "All"];
   const managers = Array.from(new Set(tasks.map((task) => task.owner))).sort();
   const managerTasks = managerFilter === "All managers" ? tasks : tasks.filter((task) => task.owner === managerFilter);
   const counts = Object.fromEntries(filters.map((item) => [
     item,
     item === "All"
       ? managerTasks.length
+      : item === "Open"
+        ? managerTasks.filter(isOpenTask).length
       : item === "Overdue"
         ? managerTasks.filter(isOverdue).length
         : managerTasks.filter((task) => task.status === item).length,
@@ -3091,7 +3127,7 @@ function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFi
   useEffect(() => {
     if (!filterSignature.split("\u001f").includes(filter)) setFilter("All");
   }, [filter, filterSignature, setFilter]);
-  const visibleTasks = managerTasks.filter((task) => activeFilter === "All" || (activeFilter === "Overdue" ? isOverdue(task) : task.status === activeFilter));
+  const visibleTasks = managerTasks.filter((task) => activeFilter === "All" || (activeFilter === "Open" ? isOpenTask(task) : activeFilter === "Overdue" ? isOverdue(task) : task.status === activeFilter));
   return (
     <>
       <div className="activity-toolbar">
@@ -3322,11 +3358,13 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
     const linkedinInput = String(data.get("linkedin") ?? company.linkedin ?? "").trim();
     const website = normalizeUrl(websiteInput);
     const linkedin = normalizeUrl(linkedinInput);
+    const ndaStatus = String(data.get("ndaStatus") ?? company.ndaStatus ?? NDA_STATUSES[0]) as NdaStatus;
     const status = canMovePipeline ? String(data.get("status") ?? company.status) : company.status;
     if (name.length < 2) return void setFieldError(form, "name", "Enter at least 2 characters.");
     if (!country) return void setFieldError(form, "country", "Country is required.");
     if (websiteInput && !website) return void setFieldError(form, "website", "Enter a valid website address.");
     if (linkedinInput && !linkedin) return void setFieldError(form, "linkedin", "Enter a valid LinkedIn URL.");
+    if (!NDA_STATUSES.includes(ndaStatus)) return void setFieldError(form, "ndaStatus", "Select a valid NDA status.");
     if (!await updateCompany({
       ...company,
       name,
@@ -3337,6 +3375,7 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
       owner: String(data.get("owner") ?? company.owner),
       website,
       linkedin,
+      ndaStatus,
       logoDataUrl: logoDataUrl || undefined,
       description: String(data.get("description") ?? company.description).trim(),
     })) return;
@@ -3357,17 +3396,18 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
           <label className="field"><span>City</span><input name="city" defaultValue={company.city} maxLength={80} /></label>
           <label className="field"><span>Website</span><input name="website" inputMode="url" defaultValue={company.website} maxLength={300} /></label>
           <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" defaultValue={company.linkedin ?? ""} maxLength={300} /></label>
+          <label className="field"><span>NDA</span><select name="ndaStatus" defaultValue={company.ndaStatus ?? NDA_STATUSES[0]}>{NDA_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label>
           <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={2000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={descriptionDraft} onChange={setDescriptionDraft} maxLength={2000} draftRestored={descriptionDraftRestored} /></label>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { companyFormDraft.clear(); clearDescriptionDraft(); setLogoDataUrl(company.logoDataUrl ?? ""); setDescriptionDraft(company.description); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save changes"}</button></div>
         </form>
       ) : (
         <>
-          <div className="company-detail-head"><EntityLogo name={company.name} src={company.logoDataUrl} className="detail-logo" /><div><StatusBadge value={company.status} /><p>{companyLocation(company)}{company.website && <> · <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer">{company.website}</a></>}</p></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
-          <div className="detail-grid"><div><small>Owner</small><b>{company.owner}</b></div><div><small>Open tasks</small><b>{tasks.filter(isOpenTask).length}</b></div><div><small>Last contact</small><b>{company.lastContact}</b></div><div><small>Next activity</small><b>{nextActivityLabel(tasks)}</b></div></div>
+          <div className="company-detail-head"><EntityLogo name={company.name} src={company.logoDataUrl} className="detail-logo" /><div><StatusBadge value={company.status} /><p>{companyLocation(company)}{company.website && <> · <a className="inline-data-link compact" href={websiteHref(company.website)} target="_blank" rel="noreferrer">Website</a></>}{company.linkedin && <> · <a className="inline-data-link compact" href={websiteHref(company.linkedin)} target="_blank" rel="noreferrer">LinkedIn</a></>}</p></div>{canEdit && <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>}</div>
+          <div className="detail-grid company-summary-grid"><div><small>Owner</small><b>{company.owner}</b></div><div><small>Open tasks</small><b>{tasks.filter(isOpenTask).length}</b></div><div><small>Last contact</small><b>{company.lastContact}</b></div><div><small>Next activity</small><b>{nextActivityLabel(tasks)}</b></div><div><small>NDA</small><b>{company.ndaStatus ?? NDA_STATUSES[0]}</b></div></div>
           <div className="detail-description"><small>About company</small><p>{company.description}</p></div>
           <div className="detail-columns">
             <section><div className="detail-section-head"><h3>Contacts <CountBadge count={contacts.length} label="contacts" detail={`Contact people at ${company.name}.`} /></h3>{canAddContact && <button type="button" aria-label="Add contact" onClick={addContact}>＋</button>}</div>{contacts.map((contact) => <button className={`detail-contact${contact.contactStatus === "inactive" ? " inactive-contact" : ""}`} type="button" key={contact.id} onClick={() => openContact(contact)}><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b><small>{contact.position} · {contact.email} · {contact.contactStatus === "inactive" ? "Inactive" : "Active"}</small></span><span className="row-arrow">›</span></button>)}{contacts.length === 0 && <p className="muted-copy">No contacts yet.</p>}</section>
-            <section><div className="detail-section-head"><h3>Activity <CountBadge count={tasks.length} label="tasks" detail={`All tasks linked to ${company.name}.`} /></h3>{canAddTask && <button type="button" aria-label="Add task" onClick={addTask}>＋</button>}</div>{tasks.slice().sort((a, b) => (b.contactDate ?? "").localeCompare(a.contactDate ?? "")).map((task) => <button className="detail-task" type="button" key={task.id} onClick={() => openTask(task)}><span className={`priority-mark ${isOverdue(task) ? "overdue" : ""}`}>{task.status === "Completed" ? "✓" : "!"}</span><span><b>{task.title}</b><small>{task.contactDate || "—"} · {formatDateTime(task.deadline)}</small></span><span>›</span></button>)}{tasks.length === 0 && <p className="muted-copy">No tasks yet.</p>}</section>
+            <section><div className="detail-section-head"><h3>Activity <CountBadge count={tasks.length} label="tasks" detail={`All tasks linked to ${company.name}.`} /></h3>{canAddTask && <button type="button" aria-label="Add task" onClick={addTask}>＋</button>}</div>{tasks.slice().sort((a, b) => (b.contactDate ?? "").localeCompare(a.contactDate ?? "")).map((task) => <button className="detail-task" type="button" key={task.id} onClick={() => openTask(task)}><span className={`priority-mark${task.status === "Completed" ? " completed" : isOverdue(task) ? " overdue" : ""}`}>{task.status === "Completed" ? "✓" : "!"}</span><span><b>{task.title}</b><small>{task.contactDate || "—"} · {formatDateTime(task.deadline)}</small></span><span>›</span></button>)}{tasks.length === 0 && <p className="muted-copy">No tasks yet.</p>}</section>
           </div>
           <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive company</button>}</div>
         </>
@@ -3632,7 +3672,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
           <label className="field field-full"><span>Task title *</span><input name="title" defaultValue={task.title} required minLength={3} maxLength={255} autoFocus /></label>
           <CompanyCombobox inputId="task-edit-company" label="Company *" companies={companies} value={editCompanyName} onChange={selectCompany} required />
           <label className="field"><span>Contact date *</span><input name="contactDate" type="date" defaultValue={task.contactDate ?? task.deadline.slice(0, 10)} required /></label>
-          <label className="field"><span>Deadline · {CLIENT_TIME_ZONE}</span><input name="deadline" type="datetime-local" defaultValue={task.deadline} /></label>
+          <label className="field"><span>Deadline · {CLIENT_TIME_ZONE_LABEL}</span><input name="deadline" type="datetime-local" defaultValue={task.deadline} /></label>
           <label className="field"><span>Responsible manager</span><select name="owner" defaultValue={task.owner}>{Array.from(new Set([...managerOptions, task.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           <label className="field"><span>Contact person</span><select name="contactPersonId" value={editContactPersonId} onChange={(event) => setEditContactPersonId(event.target.value)}><option value="">Not specified</option>{editCompanyContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
           <label className="field"><span>Status</span><select name="status" defaultValue={task.status}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>
@@ -3644,7 +3684,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
       ) : (
         <>
           <div className="task-detail-status"><StatusBadge value={task.status} /><StatusBadge value={`${task.priority} priority`} />{isOverdue(task) && <StaticStatusBadge value="Overdue" />}{canEdit && <button className="secondary-button task-edit-button" type="button" onClick={openEditor}>Edit task</button>}</div>
-          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE}</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}</b></div><div><small>Calendar</small>{task.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(task)}>Download .ics</button> : <b>Set a deadline first</b>}</div></div>
+          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE_LABEL}</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}</b></div><div><small>Calendar</small>{task.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(task)}>Download .ics</button> : <b>Set a deadline first</b>}</div></div>
           <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p></div>
           <section className="attachment-section"><div className="detail-section-head"><h3>Attachments <StaticStatusBadge value={String(attachments.length)} /></h3>{canEdit && <label className="secondary-button attachment-upload">{attachmentUploading ? "Uploading…" : "＋ Upload file"}<input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,image/*" disabled={attachmentUploading} onChange={(event) => void attach(event)} /></label>}</div><div className="attachment-list">{attachments.map((attachment) => <article key={attachment.id}><span><b>{attachment.name}</b><small>{(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB · {attachment.author}</small></span><button className="secondary-button" type="button" onClick={() => void downloadAttachment(attachment)}>Download</button>{(isAdmin || attachment.authorUserId === currentUserId) && <button className="danger-button" type="button" onClick={() => void deleteAttachment(attachment)}>Delete</button>}</article>)}{attachments.length === 0 && <p className="muted-copy">No attachments yet. PDF, Word, Excel, and images up to 20 MB are supported.</p>}</div></section>
           <section className="comment-stream"><div className="detail-section-head"><h3>Comments <StaticStatusBadge value={String(comments.filter((comment) => !comment.isHidden).length)} /></h3></div>{comments.map((comment) => <article key={comment.id} className={comment.isHidden ? "comment-hidden" : ""}><span className="timeline-avatar blue">{comment.author.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><p><b>{comment.author}</b><small>{comment.createdAt} · {CLIENT_TIME_ZONE_LABEL}</small><span>{comment.isHidden ? "Comment hidden by Admin" : comment.text}</span></p>{isAdmin && <button className="text-button" type="button" onClick={() => void setCommentHidden(task.id, comment.id, !comment.isHidden)}>{comment.isHidden ? "Restore" : "Hide"}</button>}</article>)}{comments.length === 0 && <div className="empty-state compact"><b>No comments yet</b><span>The task discussion will appear here.</span></div>}{canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write a clear update for the team" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools disabled={commentSubmitting} value={commentDraft} onChange={(value) => { setCommentDraft(value); setCommentRetry(false); }} maxLength={2000} draftRestored={commentDraftRestored} /></label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}</section>
@@ -3674,6 +3714,7 @@ function CompanyForm({ statusOptions, companyTypeOptions, defaultOwner, onClose,
         <label className="field"><span>City</span><input name="city" maxLength={100} placeholder="Kyiv" /></label>
         <label className="field"><span>Website</span><input name="website" inputMode="url" maxLength={255} placeholder="example.com" /></label>
         <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/company/..." /></label>
+        <label className="field"><span>NDA</span><select name="ndaStatus" defaultValue={NDA_STATUSES[0]}>{NDA_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label>
         <input name="owner" type="hidden" value={defaultOwner} />
         <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Directions, projects, and cooperation context" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={descriptionDraft} onChange={setDescriptionDraft} maxLength={4000} draftRestored={descriptionDraftRestored} /></label>
         {retry && <div className="form-error field-full" role="alert">The company was not saved. Your entries are preserved; try again when the connection is available.</div>}
@@ -3814,7 +3855,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
 function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions, managerOptions, defaultOwner, initiatorOptions, currentUserEmail, initialCompanyId, canAddContact, onAddContact, onClose, onSubmit }: { companies: Company[]; contacts: Contact[]; taskStatusOptions: string[]; reminderLeadOptions: string[]; managerOptions: string[]; defaultOwner: string; initiatorOptions: CRMUser[]; currentUserEmail: string; initialCompanyId?: string; canAddContact: boolean; onAddContact: (draft: ContactDraft) => Promise<ContactCreationResult>; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<boolean> }) {
   const taskCreateDraft = useFormDraft("task-create");
   const restoredCompanyName = taskCreateDraft.initialValue("companyName");
-  const initialCompany = companyByName(companies, restoredCompanyName) ?? companies.find((company) => company.id === initialCompanyId) ?? companies[0];
+  const initialCompany = companies.find((company) => company.id === initialCompanyId) ?? companyByName(companies, restoredCompanyName) ?? companies[0];
   const [companyId, setCompanyId] = useState(initialCompany?.id ?? "");
   const [companyQuery, setCompanyQuery] = useState(initialCompany?.name ?? "");
   const [contactPersonId, setContactPersonId] = useState(() => taskCreateDraft.initialValue("contactPersonId"));
@@ -3895,10 +3936,10 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
           <div className="quick-contact-actions"><button className="secondary-button" type="button" onClick={resetQuickContact}>Cancel</button><button className="primary-button" type="button" disabled={quickPhotoProcessing} onClick={saveQuickContact}>{quickPhotoProcessing ? "Processing image…" : "Save contact"}</button></div>
         </section>}
         <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required defaultValue={todayUser()} /></label>
-        <label className="field"><span>Deadline · {CLIENT_TIME_ZONE}</span><input name="deadline" type="datetime-local" /></label>
+        <label className="field"><span>Deadline · {CLIENT_TIME_ZONE_LABEL}</span><input name="deadline" type="datetime-local" /></label>
         <label className="field"><span>Responsible manager *</span><select name="owner" required defaultValue={defaultOwner}>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
         <label className="field"><span>Status *</span><select name="status" defaultValue={taskStatusOptions[0] ?? ""}>{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-        <label className="field"><span>Priority *</span><select name="priority" defaultValue="Normal">{TASK_PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
+        <label className="field"><span>Priority *</span><select name="priority" defaultValue="Low">{TASK_PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
         <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={noteDraft} onChange={setNoteDraft} maxLength={4000} draftRestored={noteDraftRestored} /></label>
         <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} /><span>{lead}</span></label>)}</fieldset>
         <div className="reminder-note field-full"><span>◷</span><p><b>Calendar and email reminders</b><small>The CRM provides an .ics file. Scheduled email delivery requires an active User linked to the selected CJN Manager.</small></p></div>
@@ -4002,7 +4043,7 @@ function SettingsModal({ preferences, systemSettings, onClose, onSave }: { prefe
     <Modal title="Settings" eyebrow="Workspace preferences" onClose={onClose}>
       <form {...settingsDraft.formProps} className="entity-form" onSubmit={submit}>
         <label className="field"><span>Interface language</span><input value="English" readOnly /></label>
-        <label className="field"><span>Timezone</span><input value={CLIENT_TIME_ZONE} readOnly /></label>
+        <label className="field"><span>Timezone</span><input value={CLIENT_TIME_ZONE_LABEL} readOnly /></label>
         <fieldset className="settings-list field-full"><legend>Notifications</legend><label><input name="deadlineReminders" type="checkbox" defaultChecked={preferences.deadlineReminders} /> <span>My upcoming deadlines</span></label><label><input name="overdueNotifications" type="checkbox" defaultChecked={preferences.overdueNotifications} /> <span>My overdue tasks</span></label><label><input name="workspaceSummary" type="checkbox" defaultChecked={preferences.workspaceSummary} /> <span>My activity summary</span></label></fieldset>
         {systemSettings && <><div className="form-divider field-full"><span>Registration and system email</span></div><label className="field field-full"><span>Allowed registration domains</span><textarea name="registrationAllowedDomains" rows={3} defaultValue={systemSettings.registrationAllowedDomains.join("\n")} placeholder="company.com&#10;subsidiary.com" /></label><label className="field field-full"><span>System notification email</span><input name="systemNotificationEmail" type="email" defaultValue={systemSettings.systemNotificationEmail} placeholder="admin@company.com" /></label><fieldset className="settings-list field-full"><legend>New registrations</legend><label><input name="notifyNewRegistrations" type="checkbox" defaultChecked={systemSettings.notifyNewRegistrations} /><span>Notify the system email when a user registers</span></label></fieldset></>}
         {retry && <div className="form-error field-full" role="alert">Settings were not saved. Your entries are preserved; try again.</div>}

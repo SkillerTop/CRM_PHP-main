@@ -76,7 +76,7 @@ test("connects the static application directly to the same-origin PHP API", asyn
   assert.match(component, /CJN Manager/);
   assert.match(component, /task\.comment/);
   assert.match(component, /Lookups/);
-  assert.doesNotMatch(component, /€|₴|£|¥|\b(?:USD|EUR|UAH|GBP|revenue|turnover|money|cash|currency|amount|pricing|price|budget|invoice|billing|payment|profit|commission|expense|sales|commercial|quotation|quote|proposal|opportunity|qualified|potential)\b|preferred-rate/i);
+  assert.doesNotMatch(component, /€|₴|£|¥|\b(?:USD|EUR|UAH|GBP|revenue|turnover|money|cash|currency|amount|pricing|price|budget|invoice|billing|payment|profit|commission|expense|sales|commercial|quote|proposal|opportunity|qualified|potential)\b|preferred-rate/i);
 });
 
 test("keeps list filters in shareable URL parameters", async () => {

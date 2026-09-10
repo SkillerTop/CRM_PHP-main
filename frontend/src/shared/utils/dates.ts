@@ -18,6 +18,11 @@ export function getBrowserTimeZone() {
   }
 }
 
+export function timeZoneCityLabel(timeZone: string) {
+  const city = timeZone.split("/").at(-1) || timeZone;
+  return city.replaceAll("_", " ");
+}
+
 function userDateTimeParts(value: Date | string) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;

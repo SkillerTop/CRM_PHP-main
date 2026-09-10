@@ -446,7 +446,8 @@ final class TaskController
         $managerId = Arr::int($input, 'manager_id');
         $contactPersonId = Arr::int($input, 'contact_person_id');
         $statusId = Arr::int($input, 'status_id') ?? $this->lookups->idByKey('task_status', 'not_started');
-        $priority = (string) Arr::string($input, 'priority', isset($current['priority']) ? (string) $current['priority'] : 'Normal');
+        $priorityInput = (string) Arr::string($input, 'priority', isset($current['priority']) ? (string) $current['priority'] : 'Low');
+        $priority = $priorityInput === 'Normal' ? 'Low' : $priorityInput;
         $outcomeStatusId = Arr::int($input, 'outcome_status_id');
         $deadlineDate = Clock::parseTimestamp(Arr::string($input, 'deadline'), 'deadline', true);
         $deadline = $deadlineDate ? Clock::db($deadlineDate) : null;
@@ -458,7 +459,7 @@ final class TaskController
             'contact_date' => $contactDate === null ? 'Обязательное поле.' : '',
             'manager_id' => $managerId === null ? 'Обязательное поле.' : '',
             'status_id' => $statusId === null ? 'Обязательное поле.' : '',
-            'priority' => in_array($priority, ['Normal', 'Medium', 'High'], true) ? '' : 'Неизвестный приоритет.',
+            'priority' => in_array($priority, ['Low', 'Medium', 'High'], true) ? '' : 'Неизвестный приоритет.',
         ]);
         $this->assertCompany((int) $companyId);
         $this->lookups->getForAssignment(

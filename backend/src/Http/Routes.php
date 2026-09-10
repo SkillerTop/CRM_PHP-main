@@ -53,7 +53,6 @@ final class Routes
 
         $r->add('GET', '/api/dashboard', fn () => $dashboardController->dashboard());
         $r->add('GET', '/api/app/bootstrap', fn (Request $request) => $appController->bootstrap($request));
-        $r->add('GET', '/api/pipeline', fn () => $dashboardController->pipeline());
         $r->add('GET', '/api/search', fn (Request $request) => $searchController->search($request));
 
         $r->add('POST', '/api/ocr/business-card', fn (Request $request) => $aiInputController->businessCard($request));

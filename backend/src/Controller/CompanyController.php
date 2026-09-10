@@ -63,7 +63,7 @@ final class CompanyController
         $sort = $sorts[(string) ($request->query['sort'] ?? 'name')] ?? 'c.name';
         $direction = strtolower((string) ($request->query['dir'] ?? 'asc')) === 'desc' ? 'DESC' : 'ASC';
         $sql = "SELECT c.id, c.name, c.type_lookup_id, c.country, c.city, c.status_lookup_id,
-                       c.manager_lookup_id, c.last_contact_date, c.website, c.linkedin, c.logo_data_url, c.description,
+                       c.manager_lookup_id, c.last_contact_date, c.website, c.linkedin, c.nda_status, c.logo_data_url, c.description,
                        c.is_archived, c.created_at, c.updated_at, c.created_by, c.updated_by,
                        ct.value AS type_value, cs.value AS status_value,
                        mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
@@ -102,9 +102,9 @@ final class CompanyController
             $now = Clock::dbNow();
             $stmt = $this->db->prepare(
                 'INSERT INTO companies
-                    (name, type_lookup_id, country, city, status_lookup_id, manager_lookup_id, website, linkedin, logo_data_url, description,
+                    (name, type_lookup_id, country, city, status_lookup_id, manager_lookup_id, website, linkedin, nda_status, logo_data_url, description,
                      is_archived, created_by, updated_by, created_at, updated_at)
-                 VALUES (:name, :type_id, :country, :city, :status_id, :manager_id, :website, :linkedin, :logo_data_url, :description,
+                 VALUES (:name, :type_id, :country, :city, :status_id, :manager_id, :website, :linkedin, :nda_status, :logo_data_url, :description,
                          0, :created_by, :updated_by, :created_at, :updated_at)'
             );
             $stmt->execute($data + [
@@ -135,7 +135,7 @@ final class CompanyController
             $this->duplicateGuard($data['name'], $id, Arr::bool($input, 'allow_duplicate'));
             $stmt = $this->db->prepare(
                 'UPDATE companies SET name = :name, type_lookup_id = :type_id, country = :country, city = :city,
-                    status_lookup_id = :status_id, manager_lookup_id = :manager_id, website = :website, linkedin = :linkedin,
+                    status_lookup_id = :status_id, manager_lookup_id = :manager_id, website = :website, linkedin = :linkedin, nda_status = :nda_status,
                     logo_data_url = :logo_data_url, description = :description,
                     updated_by = :user_id, updated_at = :now WHERE id = :id'
             );
@@ -144,7 +144,7 @@ final class CompanyController
             $this->audit->logDiff('Company', $id, $data['name'], $before, $after, [
                 'name' => 'Company Name', 'type_lookup_id' => 'Company Type', 'country' => 'Country',
                 'city' => 'City', 'status_lookup_id' => 'Status', 'manager_lookup_id' => 'CJN Manager', 'website' => 'Website',
-                'linkedin' => 'LinkedIn', 'logo_data_url' => 'Logo', 'description' => 'Description',
+                'linkedin' => 'LinkedIn', 'nda_status' => 'NDA', 'logo_data_url' => 'Logo', 'description' => 'Description',
             ], fn (string $field, mixed $value): string => str_ends_with($field, '_lookup_id') ? $this->lookups->label($value === null ? null : (int) $value) : ($value === null || $value === '' ? '—' : (string) $value));
             $this->db->commit();
         } catch (Throwable $error) {
@@ -213,6 +213,7 @@ final class CompanyController
         $managerId = Arr::int($input, 'manager_id');
         $website = Validator::normalizeUrl(Arr::nullableString($input, 'website'));
         $linkedin = Validator::normalizeUrl(Arr::nullableString($input, 'linkedin'));
+        $ndaStatus = (string) Arr::string($input, 'nda_status', (string) ($current['nda_status'] ?? 'Not Signed'));
         Validator::ensure([
             'name' => Validator::required($name) ?: Validator::max($name, 255),
             'type_id' => $typeId === null ? 'Обязательное поле.' : '',
@@ -222,6 +223,7 @@ final class CompanyController
             'manager_id' => $managerId === null ? 'Обязательное поле.' : '',
             'website' => Validator::url($website),
             'linkedin' => Validator::url($linkedin),
+            'nda_status' => in_array($ndaStatus, ['Not Signed', 'Company-wide', 'Project-specific', 'Expired'], true) ? '' : 'Неизвестный статус NDA.',
         ]);
         $this->lookups->getForAssignment((int) $typeId, 'company_type', isset($current['type_lookup_id']) ? (int) $current['type_lookup_id'] : null);
         $this->lookups->getForAssignment((int) $statusId, 'client_status', isset($current['status_lookup_id']) ? (int) $current['status_lookup_id'] : null);
@@ -235,6 +237,7 @@ final class CompanyController
             'manager_id' => $managerId,
             'website' => $website,
             'linkedin' => $linkedin,
+            'nda_status' => $ndaStatus,
             'logo_data_url' => ImageDataUrl::validate(
                 Arr::nullableString($input, 'logo_data_url'), 5 * 1024 * 1024, ['image/jpeg', 'image/png', 'image/webp'],
                 'invalid_company_logo', 'Логотип должен быть JPG, PNG или WebP размером не более 5 МБ.'

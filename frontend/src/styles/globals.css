@@ -1420,6 +1420,11 @@ button:disabled {
   background: var(--red-soft);
 }
 
+.priority-mark.completed {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
 .timeline small {
   margin-top: 4px;
   color: var(--muted);
@@ -2198,6 +2203,19 @@ button:disabled {
   font-size: inherit;
 }
 
+.company-website-link {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.company-meta {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+}
+
 .company-logo,
 .person-avatar,
 .detail-logo {
@@ -2388,7 +2406,7 @@ button:disabled {
   background: var(--amber-soft);
 }
 
-.status-normal-priority {
+.status-low-priority {
   color: #55707c;
   background: #edf2f4;
 }
@@ -2607,7 +2625,7 @@ button:disabled {
   background: var(--amber-soft);
 }
 
-.priority-normal {
+.priority-low {
   color: #55707c;
   background: #edf2f4;
 }
@@ -2907,12 +2925,12 @@ button:disabled {
 
 .person-detail-avatar {
   display: grid;
-  flex: 0 0 54px;
+  flex: 0 0 88px;
   place-items: center;
-  width: 54px;
-  height: 54px;
+  width: 88px;
+  height: 88px;
   color: var(--navy-700);
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 850;
   background: var(--cyan-100);
   border-radius: 14px;
@@ -2991,11 +3009,15 @@ button:disabled {
 }
 
 .detail-logo {
-  flex-basis: 52px;
-  width: 52px;
-  height: 52px;
-  font-size: 12px;
-  border-radius: 12px;
+  flex-basis: 88px;
+  width: 88px;
+  height: 88px;
+  font-size: 16px;
+  border-radius: 16px;
+}
+
+.company-summary-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .company-detail-head > div:nth-child(2) {
@@ -4597,7 +4619,8 @@ button:disabled {
 
   .responsive-card-table td:nth-child(2),
   .responsive-card-table td:nth-child(4),
-  .responsive-card-table td:nth-child(6) {
+  .responsive-card-table td:nth-child(6),
+  .responsive-card-table td:nth-child(8) {
     border-right: 1px solid #e7edef;
   }
 
@@ -4670,14 +4693,15 @@ button:disabled {
     table-layout: fixed;
   }
 
-  .companies-table th:nth-child(1) { width: 22%; }
-  .companies-table th:nth-child(2) { width: 10%; }
-  .companies-table th:nth-child(3) { width: 11%; }
-  .companies-table th:nth-child(4) { width: 15%; }
-  .companies-table th:nth-child(5) { width: 8%; }
-  .companies-table th:nth-child(6) { width: 11%; }
-  .companies-table th:nth-child(7) { width: 15%; }
-  .companies-table th:nth-child(8) { width: 8%; }
+  .companies-table th:nth-child(1) { width: 20%; }
+  .companies-table th:nth-child(2) { width: 9%; }
+  .companies-table th:nth-child(3) { width: 10%; }
+  .companies-table th:nth-child(4) { width: 11%; }
+  .companies-table th:nth-child(5) { width: 9%; }
+  .companies-table th:nth-child(6) { width: 9%; }
+  .companies-table th:nth-child(7) { width: 9%; }
+  .companies-table th:nth-child(8) { width: 16%; }
+  .companies-table th:nth-child(9) { width: 7%; }
 
   .contacts-table th:nth-child(1) { width: 23%; }
   .contacts-table th:nth-child(2) { width: 15%; }
@@ -4879,7 +4903,8 @@ button:disabled {
 
   .responsive-card-table td:nth-child(2),
   .responsive-card-table td:nth-child(4),
-  .responsive-card-table td:nth-child(6) {
+  .responsive-card-table td:nth-child(6),
+  .responsive-card-table td:nth-child(8) {
     border-right: 0;
   }
 
@@ -5626,6 +5651,11 @@ img.detail-logo {
   max-width: 100%;
   min-width: 0;
   margin-top: 8px;
+}
+
+/* Keep voice transcription and spelling/T9 wired, but hide their controls from the UI. */
+.voice-text-tools.voice-text-tools-hidden {
+  display: none;
 }
 
 .voice-input {

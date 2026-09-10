@@ -138,6 +138,7 @@ test("caps microphone recording at one minute and wires all voice draft fields",
   assert.match(draftHook, /readSecureVoiceDraft\(scope, secureKey\)/);
   assert.match(draftHook, /writeSecureVoiceDraft\(scope, secureKey, draft\.value\)/);
   assert.ok((app.match(/<VoiceTextTools\b/g) ?? []).length >= 5);
+  assert.match(voice, /className="voice-text-tools voice-text-tools-hidden"/);
   assert.doesNotMatch(app, /AI_INPUTS_ENABLED/);
 });
 
@@ -151,6 +152,7 @@ test("keeps voice and spelling controls usable on phone screens", async () => {
   assert.match(voice, /className="spellcheck-source"/);
   assert.match(voice, /className="spellcheck-suggestions"/);
   assert.match(css, /\.voice-text-tools\s*\{[^}]*display:\s*grid[^}]*max-width:\s*100%/s);
+  assert.match(css, /\.voice-text-tools\.voice-text-tools-hidden\s*\{[^}]*display:\s*none/s);
   assert.match(css, /\.voice-input\s*>\s*button\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s);
   assert.match(css, /@media \(max-width:\s*700px\)\s*\{[\s\S]*?\.voice-input\s*>\s*button\s*\{[^}]*width:\s*100%[^}]*min-height:\s*48px/s);
   assert.match(css, /@media \(max-width:\s*700px\)\s*\{[\s\S]*?\.spellcheck-suggestions\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s);

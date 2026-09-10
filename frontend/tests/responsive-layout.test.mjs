@@ -153,7 +153,7 @@ test("contains wide content inside its own responsive scroller", async () => {
   assert.match(mobile, /\.modal-card,[\s\S]*?width:\s*100%[\s\S]*?min-height:\s*100dvh[\s\S]*?border-radius:\s*0/);
 });
 
-test("reflows all eight Companies fields into contained cards below 1280 px", async () => {
+test("reflows all nine Companies fields into contained cards below 1280 px", async () => {
   const [component, css] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
     readFile(new URL("src/styles/globals.css", root), "utf8"),
@@ -163,12 +163,20 @@ test("reflows all eight Companies fields into contained cards below 1280 px", as
   assert.match(companiesView, /className="table-scroll responsive-card-scroll"[^>]*role="region"[^>]*aria-label="Companies table"[^>]*tabIndex=\{0\}[\s\S]*?<table className="data-table companies-table responsive-card-table">/);
   assert.match(companiesView, /<tr key=\{company\.id\} tabIndex=\{0\}[\s\S]*?event\.key === "Enter"[\s\S]*?event\.target === event\.currentTarget/);
 
-  const expectedLabels = ["Company", "Type", "Location", "Client status", "Contacts", "Last contact", "Owner", "Actions"];
+  const expectedLabels = ["Company", "Type", "Location", "Client status", "Priority", "Contacts", "Last contact", "Owner", "Actions"];
   const renderedLabels = [...companiesView.matchAll(/<td\b[^>]*\bdata-label="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(renderedLabels, expectedLabels, "Every desktop column must remain identifiable in card mode");
 
   const tableHead = sectionBetween(companiesView, "<thead>", "</thead>");
-  assert.equal((tableHead.match(/<th\b/g) ?? []).length, expectedLabels.length, "The 1280 px table must retain all eight headers");
+  assert.equal((tableHead.match(/<th\b/g) ?? []).length, expectedLabels.length, "The 1280 px table must retain all nine headers");
+  assert.match(companiesView, /tasks:\s*Task\[\]/);
+  assert.match(companiesView, /const latestTaskByCompany = useMemo/);
+  assert.match(companiesView, /taskDate > currentDate/);
+  assert.match(companiesView, /latestTaskByCompany\.get\(company\.id\)!\.priority/);
+  assert.match(companiesView, /companyWebsiteLabel\(company\.website\)/);
+  assert.match(component, /const COMPANY_WEBSITE_LABEL_LIMIT = 28/);
+  assert.match(companiesView, /className="company-meta"[\s\S]*?className="company-internal-id"[\s\S]*?className="inline-data-link compact company-website-link"/);
+  assert.match(companiesView, /aria-label=\{`Open \$\{company\.name\} website: \$\{company\.website\}`\}/);
   assert.match(companiesView, /data-label="Actions"[\s\S]*?className="row-menu"[\s\S]*?event\.stopPropagation\(\)[\s\S]*?openCompany\(company\)/);
 
   const cardMedia = blocksAfter(css, "@media (max-width: 1279px)").join("\n");
@@ -359,11 +367,11 @@ test("keeps seeded statuses while allowing Admin to manage the workflow", async 
     readFile(new URL("src/styles/globals.css", root), "utf8"),
   ]);
   const expectedStatuses = [
-    "New Organization",
-    "Follow-up Active",
-    "Awaiting Response",
-    "Active Relationship",
-    "Inactive",
+    "New Lead",
+    "Quotation Sent",
+    "Active Client",
+    "On Hold",
+    "Lost / Declined",
   ];
   const statusSeed = sectionBetween(component, "const RELATIONSHIP_STATUSES = [", "] as const;");
   const seededStatuses = [...statusSeed.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
@@ -409,7 +417,8 @@ test("keeps Pipeline status changes explicit and disables card drag-and-drop", a
   assert.doesNotMatch(pipeline, /Drag a company card/);
   assert.match(pipeline, /\{canMove && <select className="pipeline-stage-select" value=\{company\.status\}[\s\S]*?onChange=\{\(event\) => \{ event\.stopPropagation\(\); moveCompany\(company\.id, event\.target\.value\); \}\}/);
   assert.match(pipeline, /\{items\.length === 0 && <div className="kanban-empty">No companies<\/div>\}/);
-  assert.match(app, /<Pipeline[\s\S]*?canMove=\{hasPermission\(currentRole, "pipeline\.move"\)\}[\s\S]*?moveCompany=\{moveCompany\}/);
+  assert.match(component, /function Pipeline\(/);
+  assert.doesNotMatch(app, /<Pipeline|view === "pipeline"/);
 });
 
 test("keeps Activity contact creation permissioned and selects quick-created contacts", async () => {
@@ -489,7 +498,7 @@ test("uses lookup task statuses in manager-scoped Activity filters without sideb
 
   assert.match(app, /const taskStatusOptions = lookupValues\("task-status"\)/);
   assert.match(app, /<Activity[\s\S]*?taskStatusOptions=\{taskStatusOptions\}/);
-  assert.match(activity, /const filters = \[\.\.\.taskStatusOptions, "Overdue", "All"\]/);
+  assert.match(activity, /const filters = \[\.\.\.taskStatusOptions, "Open", "Overdue", "All"\]/);
   assert.match(activity, /const managerTasks = managerFilter === "All managers" \? tasks : tasks\.filter\(\(task\) => task\.owner === managerFilter\)/);
   assert.match(activity, /item === "All"[\s\S]*?managerTasks\.length[\s\S]*?item === "Overdue"[\s\S]*?managerTasks\.filter\(isOverdue\)\.length[\s\S]*?managerTasks\.filter\(\(task\) => task\.status === item\)\.length/);
   assert.doesNotMatch(component, /TASK_FILTER_VALUES/);
@@ -528,10 +537,24 @@ test("removes outcome controls and keeps the searchable company list inside the 
   assert.match(contactDetail, /Select an existing company from the list\./);
   assert.match(taskForm, /Select an existing company from the list\./);
   assert.match(taskDetail, /Select an existing company from the list\./);
-  assert.match(taskForm, /name="priority" defaultValue="Normal"[\s\S]*?TASK_PRIORITIES\.map/);
+  assert.match(taskForm, /name="priority" defaultValue="Low"[\s\S]*?TASK_PRIORITIES\.map/);
   assert.match(taskDetail, /name="priority" defaultValue=\{task\.priority\}[\s\S]*?TASK_PRIORITIES\.map/);
   assert.match(taskDetail, /const editCompanyContacts = contacts\.filter\(\(contact\) => contact\.companyId === editCompanyId\)/);
   assert.match(taskDetail, /setEditContactPersonId\(""\)/);
+});
+
+test("persists Low task priority and migrates legacy Normal values", async () => {
+  const [controller, mapper, migration] = await Promise.all([
+    readFile(new URL("../backend/src/Controller/TaskController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8"),
+    readFile(new URL("../backend/database/migrations/007_task_priority_low.sql", root), "utf8"),
+  ]);
+
+  assert.match(controller, /\$priorityInput === 'Normal' \? 'Low' : \$priorityInput/);
+  assert.match(controller, /in_array\(\$priority, \['Low', 'Medium', 'High'\], true\)/);
+  assert.match(controller, /'priority' => \$priority/);
+  assert.match(mapper, /'priority' => \$row\['priority'\] \?\? 'Low'/);
+  assert.match(migration, /ENUM\('Low', 'Normal', 'Medium', 'High'\)[\s\S]*UPDATE tasks[\s\S]*SET priority = 'Low'[\s\S]*WHERE priority = 'Normal'[\s\S]*ENUM\('Low', 'Medium', 'High'\)/);
 });
 
 test("validates, processes, previews, and wires profile and entity images", async () => {
@@ -892,10 +915,17 @@ test("omits location punctuation when a company city is empty", async () => {
 });
 
 test("selects the signed-in user's linked manager for new records", async () => {
-  const app = await readFile(new URL("../src/app/CRMApp.tsx", import.meta.url), "utf8");
+  const [app, authController, userController] = await Promise.all([
+    readFile(new URL("../src/app/CRMApp.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../../backend/src/Controller/AuthController.php", import.meta.url), "utf8"),
+    readFile(new URL("../../backend/src/Controller/UserController.php", import.meta.url), "utf8"),
+  ]);
   assert.match(app, /current_manager\?: ApiRecord \| null/);
-  assert.match(app, /setCurrentManagerName\(payload\.current_manager \? apiString\(payload\.current_manager, "value"\) : ""\)/);
-  assert.match(app, /const defaultManager = managerOptions\.find\(\(owner\) => owner === currentManagerName\)[\s\S]*?normalizePersonName\(owner\) === normalizedIdentityName/);
+  assert.match(app, /setCurrentManagerId\(payload\.current_manager \? apiNumber\(payload\.current_manager, "id"\) \?\? null : null\)/);
+  assert.match(app, /const defaultManager = activeManagerLookups\.find\(\(manager\) => Number\(manager\.id\) === currentManagerId\)\?\.value/);
+  assert.doesNotMatch(app, /currentManagerName|normalizePersonName/);
+  assert.match(authController, /login\([\s\S]*?managerUsers->ensureForUser\(\(int\) \$user\['id'\]\)/);
+  assert.match(userController, /approve\([\s\S]*?managerUsers->ensureForUser\(\$id\)/);
   assert.match(app, /<CompanyForm[\s\S]*?defaultOwner=\{defaultManager\}/);
   assert.match(app, /<TaskForm[\s\S]*?defaultOwner=\{defaultManager\}/);
   assert.match(app, /<select name="owner" required defaultValue=\{defaultOwner\}>/);
@@ -910,8 +940,38 @@ test("reloads persisted contact photos from the paginated API", async () => {
 test("reloads persisted company logos from the paginated API", async () => {
   const controller = await readFile(new URL("../backend/src/Controller/CompanyController.php", root), "utf8");
   const mapper = await readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8");
-  assert.match(controller, /c\.manager_lookup_id, c\.last_contact_date, c\.website, c\.linkedin, c\.logo_data_url, c\.description/);
+  assert.match(controller, /c\.manager_lookup_id, c\.last_contact_date, c\.website, c\.linkedin, c\.nda_status, c\.logo_data_url, c\.description/);
   assert.match(mapper, /'logo_data_url' => \$row\['logo_data_url'\] \?\? null/);
+});
+
+test("covers the requested company, dashboard, NDA, and linked-record improvements", async () => {
+  const [app, css, controller, mapper, migration] = await Promise.all([
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("../backend/src/Controller/CompanyController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8"),
+    readFile(new URL("../backend/database/migrations/008_requested_crm_updates.sql", root), "utf8"),
+  ]);
+  const dashboard = sectionBetween(app, "function Dashboard(", "function Pipeline(");
+  const companies = sectionBetween(app, "function Companies(", "function Contacts(");
+  const companyDetail = sectionBetween(app, "function CompanyDetail(", "function ContactDetail(");
+  const taskForm = sectionBetween(app, "function TaskForm(", "function UserForm(");
+
+  assert.match(dashboard, /openTaskList\("All"\)/);
+  assert.match(dashboard, /openTaskList\("Open"\)/);
+  assert.match(dashboard, /openTaskList\("Overdue"\)/);
+  assert.match(companies, /company_priority/);
+  assert.match(companies, /latestTaskByCompany\.get\(company\.id\)\?\.priority === priorityFilter/);
+  assert.match(companyDetail, />LinkedIn<\/a>/);
+  assert.match(companyDetail, /NDA_STATUSES\.map/);
+  assert.match(companyDetail, /priority-mark\$\{task\.status === "Completed" \? " completed"/);
+  assert.match(taskForm, /companies\.find\(\(company\) => company\.id === initialCompanyId\) \?\? companyByName/);
+  assert.match(css, /\.priority-mark\.completed\s*\{[^}]*color:\s*var\(--green\)/s);
+  assert.match(css, /\.detail-logo\s*\{[^}]*width:\s*88px[^}]*height:\s*88px/s);
+  assert.match(css, /\.person-detail-avatar\s*\{[^}]*width:\s*88px[^}]*height:\s*88px/s);
+  assert.match(controller, /nda_status = :nda_status/);
+  assert.match(mapper, /'nda_status' => \$row\['nda_status'\]/);
+  assert.match(migration, /WHERE full_name = 'Vitalii Vyshnevskyi'[\s\S]*ADD COLUMN nda_status/);
 });
 
 test("uses a three-column contact information grid and combines source with its detail", async () => {
