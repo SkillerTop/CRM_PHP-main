@@ -56,7 +56,7 @@ final class TaskController
         $dir = strtolower((string) ($request->query['dir'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
         $stmt = $this->db->prepare(
             "SELECT t.*, c.name AS company_name, m.value AS manager_value,
-                    COALESCE(u.email, m.email) AS manager_email, s.value AS status_value,
+                    COALESCE(u.email, m.email) AS manager_email, s.value AS status_value, s.key_code AS status_key,
                     creator.full_name AS created_by_name, creator.email AS created_by_email,
                     s.is_closed AS status_is_closed, o.value AS outcome_status_value,
                     TRIM(CONCAT(COALESCE(k.first_name, ''), ' ', COALESCE(k.last_name, ''))) AS contact_person_name,
@@ -117,14 +117,15 @@ final class TaskController
         try {
             $stmt = $this->db->prepare(
                 'INSERT INTO tasks
-                    (company_id, name, contact_date, manager_lookup_id, contact_person_id, description,
-                     status_lookup_id, priority, outcome_status_lookup_id, outcome_notes, deadline, is_archived,
+                    (company_id, parent_task_id, name, contact_date, manager_lookup_id, contact_person_id, description,
+                     status_lookup_id, priority, outcome_status_lookup_id, outcome_notes, deadline, completed_at, is_archived,
                      created_by, updated_by, created_at, updated_at)
-                 VALUES (:company_id, :name, :contact_date, :manager_id, :contact_person_id, :description,
-                         :status_id, :priority, :outcome_status_id, :outcome_notes, :deadline, 0,
+                 VALUES (:company_id, :parent_task_id, :name, :contact_date, :manager_id, :contact_person_id, :description,
+                         :status_id, :priority, :outcome_status_id, :outcome_notes, :deadline, :completed_at, 0,
                          :created_by, :updated_by, :created_at, :updated_at)'
             );
             $stmt->execute($data['record'] + [
+                'completed_at' => $data['status_key'] === 'completed' ? $now : null,
                 'created_by' => $this->auth->userId(), 'updated_by' => $this->auth->userId(),
                 'created_at' => $now, 'updated_at' => $now,
             ]);
@@ -153,16 +154,26 @@ final class TaskController
         $this->db->beginTransaction();
         try {
             $before = $this->findForUpdate($id);
+            $this->assertTaskEditable($before);
             RecordGuard::optimistic($before, Arr::string($input, 'updated_at'));
             $oldLeads = $this->leadIds($id);
             $data = $this->validated($input, $before, $oldLeads);
+            $this->assertCompanyAllowsTaskEditing((int) $data['record']['company_id']);
+            $now = Clock::dbNow();
+            $completedAt = $data['status_key'] === 'completed'
+                ? (($before['completed_at'] ?? null) ?: $now)
+                : null;
             $stmt = $this->db->prepare(
-                'UPDATE tasks SET company_id = :company_id, name = :name, contact_date = :contact_date, manager_lookup_id = :manager_id,
+                'UPDATE tasks SET company_id = :company_id, parent_task_id = :parent_task_id, name = :name, contact_date = :contact_date, manager_lookup_id = :manager_id,
                     contact_person_id = :contact_person_id, description = :description, status_lookup_id = :status_id, priority = :priority,
                     outcome_status_lookup_id = :outcome_status_id, outcome_notes = :outcome_notes, deadline = :deadline,
+                    completed_at = :completed_at,
                     updated_by = :user_id, updated_at = :now WHERE id = :id'
             );
-            $stmt->execute($data['record'] + ['user_id' => $this->auth->userId(), 'now' => Clock::dbNow(), 'id' => $id]);
+            $stmt->execute($data['record'] + [
+                'completed_at' => $completedAt,
+                'user_id' => $this->auth->userId(), 'now' => $now, 'id' => $id,
+            ]);
             $after = $this->findForUpdate($id);
             $this->audit->logDiff('Task', $id, (string) $data['record']['name'], $before, $after, [
                 'company_id' => 'Company', 'name' => 'Task title', 'contact_date' => 'Contact Date', 'status_lookup_id' => 'Status',
@@ -257,6 +268,7 @@ final class TaskController
     {
         $this->auth->requireWrite();
         $task = $this->find($taskId, false);
+        $this->assertTaskEditable($task);
         $text = (string) Arr::string($request->json(), 'text', '');
         Validator::ensure(['text' => Validator::required($text) ?: Validator::max($text, 10000)]);
         $this->db->beginTransaction();
@@ -289,6 +301,7 @@ final class TaskController
     {
         $this->auth->requireAdmin();
         $task = $this->find($taskId, true);
+        $this->assertTaskEditable($task);
         $hidden = Arr::bool($request->json(), 'hidden', true);
         $this->db->beginTransaction();
         try {
@@ -306,6 +319,40 @@ final class TaskController
             throw $error;
         }
         Response::json(['data' => ['id' => $commentId, 'hidden' => $hidden]]);
+    }
+
+    public function updateComment(Request $request, int $taskId, int $commentId): never
+    {
+        $this->auth->requireWrite();
+        $task = $this->find($taskId, false);
+        $this->assertTaskEditable($task);
+        $comment = $this->db->prepare('SELECT * FROM task_comments WHERE id = :id AND task_id = :task_id');
+        $comment->execute(['id' => $commentId, 'task_id' => $taskId]);
+        $before = $comment->fetch();
+        if (!$before) {
+            throw new ApiException(404, 'comment_not_found', 'Комментарий не найден.');
+        }
+        if ($this->auth->user()['role'] !== 'admin' && (int) $before['author_user_id'] !== $this->auth->userId()) {
+            throw new ApiException(403, 'forbidden', 'Редактировать комментарий может только его автор или Admin.');
+        }
+        $text = (string) Arr::string($request->json(), 'text', '');
+        Validator::ensure(['text' => Validator::required($text) ?: Validator::max($text, 10000)]);
+        $now = Clock::dbNow();
+        $this->db->beginTransaction();
+        try {
+            $stmt = $this->db->prepare('UPDATE task_comments SET text = :text, updated_by = :user_id, updated_at = :now WHERE id = :id AND task_id = :task_id');
+            $stmt->execute(['text' => $text, 'user_id' => $this->auth->userId(), 'now' => $now, 'id' => $commentId, 'task_id' => $taskId]);
+            $this->audit->log('FIELD CHANGE', 'Task', $taskId, (string) $task['name'], 'Comment', (string) $before['text'], $text, ['comment_id' => $commentId]);
+            $this->db->commit();
+        } catch (Throwable $error) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $error;
+        }
+        $saved = $this->db->prepare('SELECT * FROM task_comments WHERE id = :id');
+        $saved->execute(['id' => $commentId]);
+        Response::json(['data' => $this->mapComment($saved->fetch())]);
     }
 
     public function log(Request $request, int $taskId): never
@@ -341,6 +388,7 @@ final class TaskController
     {
         $this->auth->requireWrite();
         $task = $this->find($taskId, false);
+        $this->assertTaskEditable($task);
         $file = $request->file('file');
         if ($file === null || (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
             throw new ApiException(400, 'upload_failed', 'Файл не получен или загрузка завершилась ошибкой.');
@@ -410,6 +458,7 @@ final class TaskController
     {
         $this->auth->requireWrite();
         $task = $this->find($taskId, $this->canViewArchived());
+        $this->assertTaskEditable($task);
         $attachment = $this->attachmentRow($attachmentId, $taskId);
         if ($this->auth->user()['role'] !== 'admin' && (int) $attachment['author_user_id'] !== $this->auth->userId()) {
             throw new ApiException(403, 'forbidden', 'Удалить вложение может только его автор или Admin.');
@@ -436,6 +485,9 @@ final class TaskController
     private function validated(array $input, ?array $current = null, array $currentLeadIds = []): array
     {
         $companyId = Arr::int($input, 'company_id');
+        $parentTaskId = array_key_exists('parent_task_id', $input)
+            ? Arr::int($input, 'parent_task_id')
+            : (isset($current['parent_task_id']) ? (int) $current['parent_task_id'] : null);
         $name = (string) Arr::string($input, 'name', '');
         $contactDateInput = Arr::string(
             $input,
@@ -462,12 +514,60 @@ final class TaskController
             'priority' => in_array($priority, ['Low', 'Medium', 'High'], true) ? '' : 'Неизвестный приоритет.',
         ]);
         $this->assertCompany((int) $companyId);
+        if ($this->isBlacklistedCompany((int) $companyId)) {
+            $priority = isset($current['priority']) ? (string) $current['priority'] : 'Low';
+        }
+        if ($current === null) {
+            if ($parentTaskId !== null) {
+                throw new ApiException(400, 'task_threads_removed', 'Задачи компании создаются последовательно, без родительской задачи.');
+            }
+            $previousTask = $this->db->prepare(
+                'SELECT s.key_code AS status_key FROM tasks t
+                 JOIN lookups s ON s.id = t.status_lookup_id
+                 WHERE t.company_id = :company_id AND t.is_archived = 0
+                 ORDER BY t.id DESC LIMIT 1'
+            );
+            $previousTask->execute(['company_id' => $companyId]);
+            $previous = $previousTask->fetch();
+            if ($previous && (string) $previous['status_key'] !== 'completed') {
+                throw new ApiException(409, 'previous_task_not_completed', 'Перед созданием новой задачи завершите предыдущую задачу этой компании.');
+            }
+        }
+        if ($parentTaskId !== null) {
+            if ($current !== null && (int) $current['id'] === $parentTaskId) {
+                throw new ApiException(400, 'invalid_parent_task', 'Задача не может быть собственной веткой.');
+            }
+            $parent = $this->db->prepare(
+                'SELECT t.*, s.key_code AS status_key FROM tasks t JOIN lookups s ON s.id = t.status_lookup_id
+                 WHERE t.id = :id AND t.is_archived = 0'
+            );
+            $parent->execute(['id' => $parentTaskId]);
+            $parentRecord = $parent->fetch();
+            if (!$parentRecord || (int) $parentRecord['company_id'] !== (int) $companyId) {
+                throw new ApiException(400, 'invalid_parent_task', 'Основная задача должна принадлежать выбранной компании.');
+            }
+            if ($parentRecord['parent_task_id'] !== null) {
+                throw new ApiException(400, 'nested_task_branch', 'Ветку можно создать только у основной задачи.');
+            }
+            if ($current === null) {
+                $previousBranch = $this->db->prepare(
+                    'SELECT s.key_code AS status_key FROM tasks t JOIN lookups s ON s.id = t.status_lookup_id
+                     WHERE t.parent_task_id = :parent_task_id AND t.is_archived = 0
+                     ORDER BY t.id DESC LIMIT 1'
+                );
+                $previousBranch->execute(['parent_task_id' => $parentTaskId]);
+                $previous = $previousBranch->fetch() ?: $parentRecord;
+                if ((string) $previous['status_key'] !== 'completed') {
+                    throw new ApiException(409, 'previous_branch_not_completed', 'Перед созданием новой ветки завершите предыдущую задачу.');
+                }
+            }
+        }
         $this->lookups->getForAssignment(
             (int) $managerId,
             'cjn_manager',
             isset($current['manager_lookup_id']) ? (int) $current['manager_lookup_id'] : null
         );
-        $this->lookups->getForAssignment(
+        $statusLookup = $this->lookups->getForAssignment(
             (int) $statusId,
             'task_status',
             isset($current['status_lookup_id']) ? (int) $current['status_lookup_id'] : null
@@ -495,13 +595,14 @@ final class TaskController
         }
         return [
             'record' => [
-                'company_id' => $companyId, 'name' => $name, 'contact_date' => $contactDate,
+                'company_id' => $companyId, 'parent_task_id' => $parentTaskId, 'name' => $name, 'contact_date' => $contactDate,
                 'manager_id' => $managerId, 'contact_person_id' => $contactPersonId,
                 'description' => Arr::nullableString($input, 'description'), 'status_id' => $statusId, 'priority' => $priority,
                 'outcome_status_id' => $outcomeStatusId, 'outcome_notes' => Arr::nullableString($input, 'outcome_notes'),
                 'deadline' => $deadline,
             ],
             'reminder_lead_ids' => $leadIds,
+            'status_key' => (string) $statusLookup['key'],
             'deadline_in_past' => $deadlineDate !== null && $deadlineDate->setTimezone(new \DateTimeZone('UTC')) < Clock::utcNow(),
         ];
     }
@@ -533,7 +634,7 @@ final class TaskController
 
     private function baseSelect(): string
     {
-        return "SELECT t.*, c.name AS company_name, m.value AS manager_value, COALESCE(u.email, m.email) AS manager_email, s.value AS status_value,
+        return "SELECT t.*, c.name AS company_name, m.value AS manager_value, COALESCE(u.email, m.email) AS manager_email, s.value AS status_value, s.key_code AS status_key,
                        creator.full_name AS created_by_name, creator.email AS created_by_email,
                        s.is_closed AS status_is_closed, o.value AS outcome_status_value,
                        TRIM(CONCAT(COALESCE(k.first_name, ''), ' ', COALESCE(k.last_name, ''))) AS contact_person_name,
@@ -625,6 +726,40 @@ final class TaskController
         return $row;
     }
 
+    /** @param array<string, mixed> $task */
+    private function assertTaskEditable(array $task): void
+    {
+        $this->assertCompanyAllowsTaskEditing((int) $task['company_id']);
+        $statusKey = isset($task['status_key'])
+            ? (string) $task['status_key']
+            : $this->taskStatusKey((int) $task['status_lookup_id']);
+        if ($statusKey !== 'completed') {
+            return;
+        }
+        $completedAt = (string) (($task['completed_at'] ?? null) ?: ($task['updated_at'] ?? ''));
+        if ($completedAt === '') {
+            throw new ApiException(409, 'task_locked', 'Завершённая задача больше недоступна для редактирования.');
+        }
+        $lockAt = (new \DateTimeImmutable($completedAt, new \DateTimeZone('UTC')))->modify('+7 days');
+        if (Clock::utcNow() >= $lockAt) {
+            throw new ApiException(409, 'task_locked', 'Прошло 7 дней после завершения задачи. Редактирование заблокировано.');
+        }
+    }
+
+    private function assertCompanyAllowsTaskEditing(int $companyId): void
+    {
+        if ($this->isBlacklistedCompany($companyId)) {
+            throw new ApiException(409, 'blacklisted_task_locked', 'Задачи компаний из Black List доступны только для просмотра.');
+        }
+    }
+
+    private function taskStatusKey(int $statusId): string
+    {
+        $stmt = $this->db->prepare("SELECT key_code FROM lookups WHERE id = :id AND type = 'task_status'");
+        $stmt->execute(['id' => $statusId]);
+        return (string) ($stmt->fetchColumn() ?: '');
+    }
+
     private function assertCompany(int $id): void
     {
         $stmt = $this->db->prepare('SELECT id FROM companies WHERE id = :id AND is_archived = 0');
@@ -632,6 +767,16 @@ final class TaskController
         if ($stmt->fetchColumn() === false) {
             throw new ApiException(400, 'invalid_company', 'Компания не найдена или заархивирована.');
         }
+    }
+
+    private function isBlacklistedCompany(int $id): bool
+    {
+        $stmt = $this->db->prepare(
+            "SELECT s.key_code FROM companies c JOIN lookups s ON s.id = c.status_lookup_id
+             WHERE c.id = :id AND s.type = 'client_status'"
+        );
+        $stmt->execute(['id' => $id]);
+        return (string) ($stmt->fetchColumn() ?: '') === 'black_list';
     }
 
     private function recalculateLastContact(int $companyId): void
@@ -706,6 +851,7 @@ final class TaskController
             'text' => $hidden && !$admin ? null : (string) $row['text'],
             'is_hidden' => $hidden,
             'created_at' => Clock::api((string) $row['created_at']),
+            'updated_at' => Clock::api((string) $row['updated_at']),
         ];
     }
 

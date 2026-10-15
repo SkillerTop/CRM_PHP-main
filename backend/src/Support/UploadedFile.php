@@ -29,11 +29,13 @@ final class UploadedFile
             'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
             'xls' => ['application/vnd.ms-excel', 'application/octet-stream'],
             'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+            'msg' => ['application/vnd.ms-outlook', 'application/vnd.ms-office', 'application/CDFV2', 'application/x-ole-storage', 'application/octet-stream'],
+            'eml' => ['message/rfc822', 'text/plain', 'application/octet-stream'],
             'jpg' => ['image/jpeg'], 'jpeg' => ['image/jpeg'], 'png' => ['image/png'],
             'gif' => ['image/gif'], 'webp' => ['image/webp'],
         ];
         if (!isset($allowed[$extension])) {
-            throw new ApiException(400, 'file_type_not_allowed', 'Разрешены PDF, DOC/DOCX, XLS/XLSX и изображения.');
+            throw new ApiException(400, 'file_type_not_allowed', 'Разрешены PDF, DOC/DOCX, XLS/XLSX, MSG/EML и изображения.');
         }
 
         $valid = in_array($mime, $allowed[$extension], true);

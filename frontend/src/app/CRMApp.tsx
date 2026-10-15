@@ -81,6 +81,7 @@ type Contact = {
 type Task = {
   id: string;
   companyId: string;
+  parentTaskId?: string;
   title: string;
   contactDate?: string;
   deadline: string;
@@ -90,6 +91,8 @@ type Task = {
   createdByUserEmail?: string;
   contactPersonId?: string;
   status: string;
+  statusKey?: string;
+  completedAt?: string;
   isClosed?: boolean;
   priority: "High" | "Medium" | "Low";
   note: string;
@@ -118,6 +121,7 @@ type TaskComment = {
   taskId: string;
   author: string;
   createdAt: string;
+  updatedAt?: string;
   text: string;
   authorUserId?: number;
   isHidden?: boolean;
@@ -235,6 +239,7 @@ type ContactCreationResult = {
 
 type ToastState = { message: string; tone: "success" | "warning" };
 type GlobalSearchResult = { type: "Company" | "Contact" | "Task"; label: string; meta: string; id: string };
+const GLOBAL_SEARCH_PAGE_SIZE = 10;
 type OcrDraft = { first_name?: string; last_name?: string; position?: string; phone?: string; email?: string; linkedin?: string; website?: string; company?: string };
 type OcrResult = { raw_text: string; draft: OcrDraft; confidence: "low" | "medium" | "high" };
 
@@ -293,6 +298,7 @@ const RELATIONSHIP_STATUSES = [
   "Active Client",
   "On Hold",
   "Lost / Declined",
+  "Black List",
 ] as const;
 
 const LOOKUP_SEED: LookupGroup[] = [
@@ -511,6 +517,7 @@ type WorkspacePayload = {
   lookups: Record<string, ApiRecord[]>;
   users: ApiRecord[];
   audit: ApiRecord[];
+  countries?: string[];
 };
 
 type PagedRecords = { data: ApiRecord[]; meta: ApiMeta };
@@ -572,10 +579,12 @@ function mapTask(record: ApiRecord): Task {
   const rawLeads = Array.isArray(record.reminder_leads) ? record.reminder_leads as ApiRecord[] : [];
   return {
     id: apiString(record, "id"), companyId: apiString(record, "company_id"), title: apiString(record, "name"),
+    parentTaskId: apiString(record, "parent_task_id") || undefined,
     contactDate: apiString(record, "contact_date"), deadline: formatUserDateTimeInput(apiString(record, "deadline")), owner: apiString(record, "manager"),
     createdBy: apiString(record, "created_by_name"), ownerUserEmail: apiString(record, "manager_email").toLowerCase() || undefined,
     createdByUserEmail: apiString(record, "created_by_email").toLowerCase() || undefined,
     contactPersonId: apiString(record, "contact_person_id") || undefined, status: apiString(record, "status"),
+    statusKey: apiString(record, "status_key") || undefined, completedAt: apiString(record, "completed_at") || undefined,
     isClosed: record.is_closed == null ? undefined : apiBoolean(record, "is_closed"),
     priority: (apiString(record, "priority") || "Low") as Task["priority"], note: apiString(record, "description"),
     outcomeStatus: apiString(record, "outcome_status"), outcomeNotes: apiString(record, "outcome_notes"),
@@ -637,6 +646,27 @@ function companyByName(companies: Company[], value: string) {
   return companies.find((company) => company.name.trim().toLocaleLowerCase() === normalized);
 }
 
+function companySearchWords(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLocaleLowerCase()
+    .split(/[^\p{L}]+/u)
+    .map((word) => word.replace(/[^\p{L}]/gu, ""))
+    .filter(Boolean);
+}
+
+function companySearchSyllables(value: string) {
+  return companySearchWords(value);
+}
+
+function searchTextMatches(text: string, query: string) {
+  const syllables = companySearchSyllables(query);
+  if (syllables.length === 0) return true;
+  const words = companySearchWords(text);
+  return syllables.every((syllable) => words.some((word) => word.includes(syllable)));
+}
+
 function companyLocation(company: Pick<Company, "city" | "country">) {
   return [company.city, company.country].filter((value) => value.trim() !== "").join(", ");
 }
@@ -655,6 +685,17 @@ function useMediaQuery(query: string) {
   return matches;
 }
 
+function useDebouncedValue<T>(value: T, delay: number) {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [delay, value]);
+
+  return debounced;
+}
+
 function isOverdue(task: Task) {
   return isOpenTask(task) && isLocalDateTimePast(task.deadline);
 }
@@ -664,9 +705,185 @@ function isOpenTask(task: Task) {
   return !["Completed", "Canceled", "Deferred", "Not interested"].includes(task.status);
 }
 
+const COMPLETED_EDIT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function isCompletedTask(task: Task) {
+  return task.statusKey === "completed" || task.status === "Completed";
+}
+
+function taskCompletionTime(task: Task) {
+  const value = task.completedAt || task.updatedAt;
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function isTaskEditLocked(task: Task, now = Date.now()) {
+  if (!isCompletedTask(task)) return false;
+  const completedAt = taskCompletionTime(task);
+  return completedAt === null || now >= completedAt + COMPLETED_EDIT_WINDOW_MS;
+}
+
+function taskCompletionEditLabel(task: Task, now = Date.now()) {
+  if (!isCompletedTask(task)) return "";
+  const completedAt = taskCompletionTime(task);
+  if (completedAt === null || now >= completedAt + COMPLETED_EDIT_WINDOW_MS) return "Completed · editing locked";
+  const days = Math.max(1, Math.ceil((completedAt + COMPLETED_EDIT_WINDOW_MS - now) / (24 * 60 * 60 * 1000)));
+  return `Completed · editable for ${days} more ${days === 1 ? "day" : "days"}`;
+}
+
+function latestCompanyTask(tasks: Task[], companyId: string) {
+  return tasks
+    .filter((task) => task.companyId === companyId)
+    .sort((a, b) => Number(b.id) - Number(a.id))[0];
+}
+
+function companyTaskSequence(tasks: Task[]) {
+  return [...tasks].sort((a, b) => {
+    const activeDifference = Number(!isCompletedTask(b)) - Number(!isCompletedTask(a));
+    if (activeDifference !== 0) return activeDifference;
+    return Number(b.id) - Number(a.id);
+  });
+}
+
+type TaskDeadlinePreset = "week" | "two-weeks" | "month";
+
+function taskDeadlineFromContactDate(contactDate: string, preset: TaskDeadlinePreset = "month") {
+  const [year, month, day] = contactDate.split("-").map(Number);
+  const date = year && month && day ? new Date(year, month - 1, day, 14, 0, 0, 0) : new Date();
+  if (!year || !month || !day) date.setHours(14, 0, 0, 0);
+  if (preset === "week") date.setDate(date.getDate() + 7);
+  else if (preset === "two-weeks") date.setDate(date.getDate() + 14);
+  else date.setMonth(date.getMonth() + 1);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T14:00`;
+}
+
+function normalizeTaskDeadline(value: string) {
+  if (!value) return value;
+  const [datePart, timePart = "14:00"] = value.split("T");
+  const [hour = "14", minute = "00"] = timePart.split(":");
+  return `${datePart}T${hour.padStart(2, "0")}:${Number(minute) < 30 ? "00" : "30"}`;
+}
+
+const TASK_DEADLINE_HOURS = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0"));
+
+function taskDeadlineParts(value: string) {
+  const normalized = normalizeTaskDeadline(value || `${todayUser()}T14:00`);
+  const [date = todayUser(), time = "14:00"] = normalized.split("T");
+  const [hour = "14", minute = "00"] = time.split(":");
+  return { date, hour, minute: minute === "30" ? "30" : "00" };
+}
+
+function taskDeadlineDraftValue(initialValue: (name: string, fallback?: string) => string, fallback: string) {
+  const fallbackParts = taskDeadlineParts(initialValue("deadline", fallback));
+  const date = initialValue("deadlineDate", fallbackParts.date);
+  const hour = initialValue("deadlineHour", fallbackParts.hour);
+  const minute = initialValue("deadlineMinute", fallbackParts.minute) === "30" ? "30" : "00";
+  return `${date}T${TASK_DEADLINE_HOURS.includes(hour) ? hour : "14"}:${minute}`;
+}
+
+function TaskDeadlineInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const { date, hour, minute } = taskDeadlineParts(value);
+  const update = (nextDate: string, nextHour: string, nextMinute: string) => onChange(`${nextDate}T${nextHour}:${nextMinute}`);
+  return <label className="task-deadline-control"><span>Deadline · {CLIENT_TIME_ZONE_LABEL}</span><div className="task-deadline-input"><input name="deadline" type="hidden" value={`${date}T${hour}:${minute}`} /><input name="deadlineDate" type="date" value={date} required aria-label="Deadline date" onChange={(event) => update(event.target.value, hour, minute)} /><select name="deadlineHour" value={hour} aria-label="Deadline hour" onChange={(event) => update(date, event.target.value, minute)}>{TASK_DEADLINE_HOURS.map((option) => <option key={option} value={option}>{option}</option>)}</select><span aria-hidden="true">:</span><select name="deadlineMinute" value={minute} aria-label="Deadline minutes" onChange={(event) => update(date, hour, event.target.value)}><option value="00">00</option><option value="30">30</option></select></div></label>;
+}
+
+function TranslateToEnglishButton({ text, onChange }: { text: string; onChange: (value: string) => void }) {
+  const [translating, setTranslating] = useState(false);
+  const [translationError, setTranslationError] = useState("");
+
+  async function translate() {
+    if (!text.trim() || translating) return;
+    setTranslating(true);
+    setTranslationError("");
+    try {
+      const response = await apiRequest<{ data: { text: string } }>("/translate", {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      onChange(response.data.text);
+    } catch (error) {
+      setTranslationError(apiMessage(error));
+    } finally {
+      setTranslating(false);
+    }
+  }
+
+  return <span className="translate-control"><button className="text-button translate-button" type="button" disabled={!text.trim() || translating} title="Translate the entered text to English in this field" onClick={() => void translate()}>{translating ? "Translating…" : "Translate to English"}</button>{translationError && <small className="translate-error" role="alert">{translationError}</small>}</span>;
+}
+
+function priorityToneClass(priority: Task["priority"] | string) {
+  return `priority-${priority.toLowerCase()}`;
+}
+
+function commentParagraphs(text: string) {
+  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  if (!normalized) return [];
+  const enteredParagraphs = normalized.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  if (enteredParagraphs.length > 1 || normalized.includes("\n")) {
+    return enteredParagraphs.flatMap((paragraph) => paragraph.split(/\n+/).map((line) => line.trim()).filter(Boolean));
+  }
+  if (normalized.length < 320) return [normalized];
+  const sentences = normalized.match(/[^.!?]+(?:[.!?]+|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) ?? [normalized];
+  const paragraphs: string[] = [];
+  let current = "";
+  sentences.forEach((sentence) => {
+    if (current && `${current} ${sentence}`.length > 280) {
+      paragraphs.push(current);
+      current = sentence;
+    } else {
+      current = current ? `${current} ${sentence}` : sentence;
+    }
+  });
+  if (current) paragraphs.push(current);
+  return paragraphs;
+}
+
 function websiteHref(value: string) {
   if (!value) return "#";
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+function contactMailto(contact: Contact, company: string) {
+  const firstName = contact.name.trim().split(/\s+/)[0] || contact.name;
+  return `mailto:${encodeURIComponent(contact.email)}?subject=${encodeURIComponent(`${company} — ${contact.name}`)}&body=${encodeURIComponent(`Hello ${firstName},\n\n`)}`;
+}
+
+function vCardValue(value: string | undefined) {
+  return (value ?? "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/;/g, "\\;").replace(/,/g, "\\,");
+}
+
+function exportContactToOutlook(contact: Contact, company: string) {
+  const names = contact.name.trim().split(/\s+/);
+  const firstName = contact.firstName || names[0] || "";
+  const lastName = contact.lastName || names.slice(1).join(" ");
+  const notes = [
+    contact.source && `Source: ${contact.source}`,
+    contact.sourceDetail && `Source detail: ${contact.sourceDetail}`,
+    contact.referredBy && `Referred by: ${contact.referredBy}`,
+    contact.initiatedBy && `Initiated by: ${contact.initiatedBy}`,
+    contact.owner && `CJN Manager: ${contact.owner}`,
+  ].filter(Boolean).join(" · ");
+  const card = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    `N:${vCardValue(lastName)};${vCardValue(firstName)};;;`,
+    `FN:${vCardValue(contact.name)}`,
+    company && `ORG:${vCardValue(company)}`,
+    contact.position && `TITLE:${vCardValue(contact.position)}`,
+    contact.phone && contact.phone !== "—" && `TEL;TYPE=WORK:${vCardValue(contact.phone)}`,
+    contact.email && `EMAIL;TYPE=INTERNET,WORK:${vCardValue(contact.email)}`,
+    contact.linkedin && `URL;TYPE=LinkedIn:${vCardValue(websiteHref(contact.linkedin))}`,
+    notes && `NOTE:${vCardValue(notes)}`,
+    "END:VCARD",
+  ].filter(Boolean).join("\r\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([card], { type: "text/vcard;charset=utf-8" }));
+  link.download = `${contact.name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "contact"}.vcf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(link.href), 0);
 }
 
 function normalizeUrl(value: string) {
@@ -864,7 +1081,7 @@ function CompanyCombobox({ inputId, label, companies, value, onChange, required 
           spellCheck={false}
           required={required}
         />
-        <button className="company-combobox-toggle" type="button" aria-label={open ? "Close company list" : "Open company list"} aria-expanded={open} onMouseDown={(event) => event.preventDefault()} onClick={() => { setOpen((current) => !current); setActiveIndex(0); }}><span className="company-combobox-chevron" aria-hidden="true" /></button>
+        <button className="company-combobox-toggle" type="button" aria-label={open ? "Close company list" : "Open company list"} aria-expanded={open} onMouseDown={(event) => event.preventDefault()} onClick={() => { setOpen((current) => !current); setActiveIndex(0); }}><span aria-hidden="true">•••</span></button>
         <input name="companyId" type="hidden" value={selectedCompany?.id ?? ""} />
         {open && <div className="company-combobox-options" id={listId} role="listbox" aria-label="Companies">
           {matches.length > 0 ? matches.map((company, index) => <button id={`${listId}-${company.id}`} className={index === visibleActiveIndex ? "active" : ""} key={company.id} type="button" role="option" aria-selected={company.id === selectedCompany?.id} onMouseEnter={() => setActiveIndex(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{companyLocation(company) || "Location not specified"}</small></span>{company.id === selectedCompany?.id && <span className="company-combobox-check" aria-hidden="true">✓</span>}</button>) : <div className="company-combobox-empty">No companies found</div>}
@@ -969,7 +1186,7 @@ function CountBadge({ count, label, detail }: { count: number; label: string; de
   );
 }
 
-function Modal({ title, eyebrow, onClose, children, wide = false }: { title: string; eyebrow?: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll = "top" }: { title: string; eyebrow?: string; onClose: () => void; children: ReactNode; wide?: boolean; initialScroll?: "top" | "bottom" }) {
   const dialogRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
 
@@ -1017,6 +1234,14 @@ function Modal({ title, eyebrow, onClose, children, wide = false }: { title: str
       });
     };
   }, []);
+
+  useEffect(() => {
+    const initialScrollFrame = window.requestAnimationFrame(() => {
+      if (!dialogRef.current) return;
+      dialogRef.current.scrollTop = initialScroll === "bottom" ? dialogRef.current.scrollHeight : 0;
+    });
+    return () => window.cancelAnimationFrame(initialScrollFrame);
+  }, [initialScroll]);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -1171,10 +1396,11 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-function PasswordChangeScreen({ identity, onChange, onSignOut }: {
+function PasswordChangeScreen({ identity, onChange, onSignOut, signingOut }: {
   identity: AuthIdentity;
   onChange: (currentPassword: string, newPassword: string) => Promise<string | null>;
-  onSignOut: () => void;
+  onSignOut: () => Promise<void>;
+  signingOut: boolean;
 }) {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -1198,7 +1424,7 @@ function PasswordChangeScreen({ identity, onChange, onSignOut }: {
     <main className="auth-page">
       <section className="auth-shell" aria-label="Required password change">
         <div className="auth-intro"><div className="auth-brand"><span className="brand-mark">C</span><span><b>Client Data</b><small>CRM workspace</small></span></div><div className="auth-intro-copy"><p className="eyebrow">Account security</p><h1>Create your permanent password.</h1><p>The temporary password must be replaced before CRM data becomes available.</p></div></div>
-        <div className="auth-card-wrap"><div className="auth-card"><header><p className="eyebrow">Signed in as {identity.email}</p><h2>Change password</h2><p>This one-time step protects your new account.</p></header><form className="auth-form" onSubmit={submit}><label><span>Temporary password</span><input name="currentPassword" type="password" autoComplete="current-password" required /></label><label><span>New password</span><input name="newPassword" type="password" autoComplete="new-password" minLength={8} required /></label><label><span>Confirm new password</span><input name="confirmation" type="password" autoComplete="new-password" minLength={8} required /></label><button className="primary-button auth-submit" type="submit" disabled={submitting}>{submitting ? "Saving…" : "Save password and continue"}<span>→</span></button><button className="text-button" type="button" onClick={onSignOut}>Sign out</button></form>{error && <div className="auth-message auth-error" role="alert">{error}</div>}</div></div>
+        <div className="auth-card-wrap"><div className="auth-card"><header><p className="eyebrow">Signed in as {identity.email}</p><h2>Change password</h2><p>This one-time step protects your new account.</p></header><form className="auth-form" onSubmit={submit}><label><span>Temporary password</span><input name="currentPassword" type="password" autoComplete="current-password" required /></label><label><span>New password</span><input name="newPassword" type="password" autoComplete="new-password" minLength={8} required /></label><label><span>Confirm new password</span><input name="confirmation" type="password" autoComplete="new-password" minLength={8} required /></label><button className="primary-button auth-submit" type="submit" disabled={submitting || signingOut}>{submitting ? "Saving…" : "Save password and continue"}<span>→</span></button><button className="text-button" type="button" onClick={() => { void onSignOut(); }} disabled={signingOut}>{signingOut ? "Signing out…" : "Sign out"}</button></form>{error && <div className="auth-message auth-error" role="alert">{error}</div>}</div></div>
       </section>
     </main>
   );
@@ -1245,13 +1471,16 @@ export function CRMApp() {
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [users, setUsers] = useState<CRMUser[]>([]);
   const [lookups, setLookups] = useState<LookupGroup[]>([]);
+  const [countries, setCountries] = useState<string[]>([]);
   const [archivedCompanyIds, setArchivedCompanyIds] = useState<string[]>([]);
   const [archivedContactIds, setArchivedContactIds] = useState<string[]>([]);
   const [archivedTaskIds, setArchivedTaskIds] = useState<string[]>([]);
   const [globalSearch, setGlobalSearch] = useState("");
   const [globalSearchIndex, setGlobalSearchIndex] = useState(-1);
+  const [globalSearchPage, setGlobalSearchPage] = useState(1);
   const [globalResults, setGlobalResults] = useState<GlobalSearchResult[]>([]);
   const [companyQuery, setCompanyQuery] = useUrlStringState("company_q", "");
+  const debouncedCompanyQuery = useDebouncedValue(companyQuery, 200);
   const [companyStatus, setCompanyStatus] = useUrlStringState("company_status", "All statuses");
   const [contactQuery, setContactQuery] = useUrlStringState("contact_q", "");
   const [taskFilter, setTaskFilter] = useUrlStringState("task_state", "All");
@@ -1262,6 +1491,7 @@ export function CRMApp() {
   const [selectedUser, setSelectedUser] = useState<CRMUser | null>(null);
   const [modal, setModal] = useState<"company" | "contact" | "task" | "user" | "profile" | "settings" | null>(null);
   const [modalCompanyId, setModalCompanyId] = useState<string | undefined>();
+  const [modalParentTaskId, setModalParentTaskId] = useState<string | undefined>();
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [readNotificationIdsByAccount, setReadNotificationIdsByAccount] = useState<Record<string, string[]>>(() => loadReadNotificationIds());
@@ -1270,8 +1500,10 @@ export function CRMApp() {
   const [identity, setIdentity] = useState<AuthIdentity | null>(null);
   const [currentManagerId, setCurrentManagerId] = useState<number | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
+  const [signingOut, setSigningOut] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
+  const signingOutRef = useRef(false);
   const restoredDraftWindowScopeRef = useRef("");
   const skipNextDraftWindowWriteRef = useRef(false);
   const notificationAccountKey = identity?.accountEmail.toLowerCase() ?? "";
@@ -1293,10 +1525,12 @@ export function CRMApp() {
     const kind = draft?.kind?.[0] ?? "";
     const id = draft?.id?.[0] ?? "";
     const companyId = draft?.companyId?.[0] || undefined;
+    const parentTaskId = draft?.parentTaskId?.[0] || undefined;
     skipNextDraftWindowWriteRef.current = true;
     queueMicrotask(() => {
       if (["company", "contact", "task", "user", "profile", "settings"].includes(kind)) {
         setModalCompanyId(companyId);
+        setModalParentTaskId(parentTaskId);
         setModal(kind as typeof modal);
       } else if (kind === "company-detail") setSelectedCompany(companies.find((company) => company.id === id) ?? null);
       else if (kind === "contact-detail") setSelectedContact(contacts.find((contact) => contact.id === id) ?? null);
@@ -1311,13 +1545,13 @@ export function CRMApp() {
       skipNextDraftWindowWriteRef.current = false;
       return;
     }
-    if (modal) writeFormDraft(draftScope, "open-window", { kind: [modal], companyId: modalCompanyId ? [modalCompanyId] : [] });
+    if (modal) writeFormDraft(draftScope, "open-window", { kind: [modal], companyId: modalCompanyId ? [modalCompanyId] : [], parentTaskId: modalParentTaskId ? [modalParentTaskId] : [] });
     else if (selectedCompany) writeFormDraft(draftScope, "open-window", { kind: ["company-detail"], id: [selectedCompany.id] });
     else if (selectedContact) writeFormDraft(draftScope, "open-window", { kind: ["contact-detail"], id: [selectedContact.id] });
     else if (selectedTask) writeFormDraft(draftScope, "open-window", { kind: ["task-detail"], id: [selectedTask.id] });
     else if (selectedUser) writeFormDraft(draftScope, "open-window", { kind: ["user-detail"], id: [String(selectedUser.id ?? selectedUser.email.toLowerCase())] });
     else clearFormDraft(draftScope, "open-window");
-  }, [draftScope, modal, modalCompanyId, selectedCompany, selectedContact, selectedTask, selectedUser]);
+  }, [draftScope, modal, modalCompanyId, modalParentTaskId, selectedCompany, selectedContact, selectedTask, selectedUser]);
 
   async function loadWorkspace() {
     const response = await apiRequest<{ data: WorkspacePayload }>("/app/bootstrap?include_records=0");
@@ -1347,6 +1581,7 @@ export function CRMApp() {
     setTaskComments([]);
     setTaskAttachments([]);
     setLookups(lookupGroups);
+    setCountries(payload.countries ?? []);
     setCurrentManagerId(payload.current_manager ? apiNumber(payload.current_manager, "id") ?? null : null);
     setUsers(mappedUsers);
     if (typeof window !== "undefined" && readUrlFilter(window.location.search, "view", "dashboard", ALL_VIEWS) === "users") {
@@ -1376,16 +1611,17 @@ export function CRMApp() {
   }
 
   async function openTaskDetail(task: Task) {
-    setSelectedTask(task);
+    const targetTask = task;
+    setSelectedTask(targetTask);
     try {
-      const response = await apiRequest<{ data: ApiRecord }>(`/tasks/${task.id}`);
+      const response = await apiRequest<{ data: ApiRecord }>(`/tasks/${targetTask.id}`);
       const detail = response.data;
       const mapped = mapTask(detail);
       setTasks((current) => current.map((item) => item.id === mapped.id ? mapped : item));
       setTaskComments((detail.comments as ApiRecord[] | undefined ?? []).map((comment) => ({
         id: apiString(comment, "id"), taskId: apiString(comment, "task_id"), author: apiString(comment, "author_name"),
         createdAt: formatUserDateTime(apiString(comment, "created_at")), text: apiString(comment, "text"),
-        authorUserId: apiNumber(comment, "author_user_id"), isHidden: apiBoolean(comment, "is_hidden"),
+        updatedAt: formatUserDateTime(apiString(comment, "updated_at")), authorUserId: apiNumber(comment, "author_user_id"), isHidden: apiBoolean(comment, "is_hidden"),
       })));
       setTaskAttachments((detail.attachments as ApiRecord[] | undefined ?? []).map((attachment) => ({
         id: Number(attachment.id), taskId: apiString(attachment, "task_id"), name: apiString(attachment, "original_name"),
@@ -1470,7 +1706,7 @@ export function CRMApp() {
     const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
     return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, status: contact.contactStatus ?? "active", manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), photo_data_url: contact.photoDataUrl || null, business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, updated_at: contact.updatedAt };
   };
-  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatusId ?? (task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null), outcome_notes: task.outcomeNotes || null, deadline: localDateTimeToUtc(task.deadline), reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
+  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), parent_task_id: null, name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatusId ?? (task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null), outcome_notes: task.outcomeNotes || null, deadline: localDateTimeToUtc(task.deadline), reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
   const reportServerError = (error: unknown) => { notify(apiMessage(error), "warning"); void loadWorkspace().catch(() => undefined); };
 
   const notifications = useMemo<AppNotification[]>(() => {
@@ -1598,13 +1834,12 @@ export function CRMApp() {
   }, [overlayOpen]);
 
   const filteredCompanies = useMemo(() => {
-    const query = companyQuery.trim().toLowerCase();
     return liveCompanies.filter((company) => {
-      const matchesQuery = !query || [company.name, company.country, company.city, company.owner, company.kind, company.website, company.linkedin ?? "", company.description].some((value) => value.toLowerCase().includes(query));
+      const matchesQuery = searchTextMatches(company.name, debouncedCompanyQuery);
       const matchesStatus = companyStatus === "All statuses" || company.status === companyStatus;
       return matchesQuery && matchesStatus;
     });
-  }, [liveCompanies, companyQuery, companyStatus]);
+  }, [liveCompanies, debouncedCompanyQuery, companyStatus]);
 
   const filteredContacts = useMemo(() => {
     const query = contactQuery.trim().toLowerCase();
@@ -1615,24 +1850,32 @@ export function CRMApp() {
 
   useEffect(() => {
     const query = globalSearch.trim();
-    if (query.length < 2) {
-      return;
-    }
-    const controller = new AbortController();
+    if (companySearchSyllables(query).length < 1) return;
     const timer = window.setTimeout(() => {
-      void apiRequest<{ data: { companies: ApiRecord[]; contacts: ApiRecord[]; tasks: ApiRecord[] } }>(`/search?q=${encodeURIComponent(query)}`, { signal: controller.signal })
-        .then(({ data }) => setGlobalResults([
-          ...data.companies.map((item): GlobalSearchResult => ({ type: "Company", id: apiString(item, "id"), label: apiString(item, "name"), meta: [apiString(item, "city"), apiString(item, "country")].filter(Boolean).join(", ") })),
-          ...data.contacts.map((item): GlobalSearchResult => ({ type: "Contact", id: apiString(item, "id"), label: [apiString(item, "first_name"), apiString(item, "last_name")].filter(Boolean).join(" "), meta: apiString(item, "company") })),
-          ...data.tasks.map((item): GlobalSearchResult => ({ type: "Task", id: apiString(item, "id"), label: apiString(item, "name"), meta: apiString(item, "company") })),
-        ]))
-        .catch((error) => { if (!(error instanceof DOMException && error.name === "AbortError")) setGlobalResults([]); });
-    }, 180);
-    return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [globalSearch]);
-  const globalSearchOpen = globalSearch.trim().length >= 2;
-
-  const activeGlobalSearchIndex = globalResults.length > 0 ? Math.min(Math.max(globalSearchIndex, 0), globalResults.length - 1) : -1;
+      const companyResults = companies
+        .filter((company) => !archivedCompanyIds.includes(company.id) && searchTextMatches(company.name, query))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((company): GlobalSearchResult => ({ type: "Company", id: company.id, label: company.name, meta: companyLocation(company) }));
+      const contactResults = contacts
+        .filter((contact) => !archivedContactIds.includes(contact.id) && searchTextMatches(contact.name, query))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((contact): GlobalSearchResult => ({ type: "Contact", id: contact.id, label: contact.name, meta: [companyName(companies, contact.companyId), contact.position, contact.email].filter(Boolean).join(" · ") }));
+      const taskResults = tasks
+        .filter((task) => !archivedTaskIds.includes(task.id) && searchTextMatches(task.title, query))
+        .sort((a, b) => a.title.localeCompare(b.title))
+        .map((task): GlobalSearchResult => ({ type: "Task", id: task.id, label: task.title, meta: [companyName(companies, task.companyId), task.contactPerson].filter(Boolean).join(" · ") }));
+      setGlobalResults([...companyResults, ...contactResults, ...taskResults]);
+      setGlobalSearchIndex(-1);
+      setGlobalSearchPage(1);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [archivedCompanyIds, archivedContactIds, archivedTaskIds, companies, contacts, globalSearch, tasks]);
+  const globalSearchOpen = companySearchSyllables(globalSearch).length >= 1;
+  const globalSearchPageCount = Math.max(1, Math.ceil(globalResults.length / GLOBAL_SEARCH_PAGE_SIZE));
+  const currentGlobalSearchPage = Math.min(globalSearchPage, globalSearchPageCount);
+  const globalSearchPageStart = (currentGlobalSearchPage - 1) * GLOBAL_SEARCH_PAGE_SIZE;
+  const visibleGlobalResults = globalResults.slice(globalSearchPageStart, globalSearchPageStart + GLOBAL_SEARCH_PAGE_SIZE);
+  const activeGlobalSearchIndex = globalSearchIndex >= globalSearchPageStart && globalSearchIndex < globalSearchPageStart + visibleGlobalResults.length ? globalSearchIndex : -1;
 
   function notify(message: string, tone: ToastState["tone"] = "success") {
     setToast({ message, tone });
@@ -1681,16 +1924,26 @@ export function CRMApp() {
     return false;
   }
 
-  function signOut() {
-    clearAccountDrafts(draftScope);
-    clearAllVoiceDrafts();
-    clearAllSecureVoiceDrafts();
-    void apiRequest("/auth/logout", { method: "POST" }).catch(() => undefined);
-    setCsrfToken("");
-    setPasswordChangeRequired(false);
-    setIdentity(null);
-    setCurrentManagerId(null);
-    setProfileOpen(false);
+  async function signOut() {
+    if (signingOutRef.current) return;
+    signingOutRef.current = true;
+    setSigningOut(true);
+    try {
+      await apiRequest("/auth/logout", { method: "POST" });
+    } catch (error) {
+      notify(`${apiMessage(error)} Local session data was cleared.`, "warning");
+    } finally {
+      clearAccountDrafts(draftScope);
+      clearAllVoiceDrafts();
+      clearAllSecureVoiceDrafts();
+      setCsrfToken("");
+      setPasswordChangeRequired(false);
+      setIdentity(null);
+      setCurrentManagerId(null);
+      setProfileOpen(false);
+      signingOutRef.current = false;
+      setSigningOut(false);
+    }
     setNotificationsOpen(false);
     setSelectedCompany(null);
     setSelectedContact(null);
@@ -1720,6 +1973,14 @@ export function CRMApp() {
     window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
   }
 
+  function openCompanyInCompanies(company: Company) {
+    setCompanyQuery("");
+    setCompanyStatus("All statuses");
+    resetUrlFilters(["company_owner", "company_country", "company_type", "company_priority"]);
+    navigate("companies");
+    setSelectedCompany(company);
+  }
+
   function openGlobalResult(result: { type: string; id: string }) {
     if (result.type === "Company") {
       setSelectedCompany(companies.find((company) => company.id === result.id) ?? null);
@@ -1735,14 +1996,12 @@ export function CRMApp() {
     if (!globalSearchOpen) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      if (globalResults.length > 0) setGlobalSearchIndex((current) => (current + 1 + globalResults.length) % globalResults.length);
+      if (visibleGlobalResults.length > 0) setGlobalSearchIndex((current) => current < globalSearchPageStart ? globalSearchPageStart : globalSearchPageStart + ((current - globalSearchPageStart + 1) % visibleGlobalResults.length));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      if (globalResults.length > 0) setGlobalSearchIndex((current) => (current - 1 + globalResults.length) % globalResults.length);
-    } else if (event.key === "Enter" && activeGlobalSearchIndex >= 0) {
+      if (visibleGlobalResults.length > 0) setGlobalSearchIndex((current) => current < globalSearchPageStart ? globalSearchPageStart + visibleGlobalResults.length - 1 : globalSearchPageStart + ((current - globalSearchPageStart - 1 + visibleGlobalResults.length) % visibleGlobalResults.length));
+    } else if (event.key === "Enter") {
       event.preventDefault();
-      const result = globalResults[activeGlobalSearchIndex];
-      if (result) openGlobalResult(result);
     } else if (event.key === "Escape") {
       event.preventDefault();
       setGlobalSearch("");
@@ -1952,6 +2211,7 @@ export function CRMApp() {
     const task: Task = {
       id: "",
       companyId: String(data.get("companyId") ?? companies[0]?.id),
+      parentTaskId: undefined,
       title: String(data.get("title") ?? "").trim(),
       contactDate: String(data.get("contactDate") ?? todayUser()),
       deadline: String(data.get("deadline") ?? ""),
@@ -1973,6 +2233,8 @@ export function CRMApp() {
     if ((task.reminderLeads ?? []).some((lead) => !reminderLeadOptions.includes(lead))) return setFieldError(form, "reminderLeads", "Select valid reminder notice times.");
     if (!task.contactDate) return setFieldError(form, "contactDate", "Choose the contact date.");
     if (task.contactPersonId && !contacts.some((contact) => contact.id === task.contactPersonId && contact.companyId === task.companyId)) return setFieldError(form, "contactPersonId", "Select a contact from this company.");
+    const previousTask = latestCompanyTask(liveTasks, task.companyId);
+    if (previousTask && !isCompletedTask(previousTask)) return setFieldError(form, "companyName", `Complete “${previousTask.title}” before creating the next task for this company.`);
     try {
       const response = await apiRequest<{ data: ApiRecord }>("/tasks", { method: "POST", body: JSON.stringify(taskPayload(task)) });
       const mapped = mapTask(response.data);
@@ -1980,6 +2242,8 @@ export function CRMApp() {
       setTasks(nextTasks);
       recalculateLastContact(mapped.companyId, nextTasks);
       setModal(null);
+      setModalCompanyId(undefined);
+      setModalParentTaskId(undefined);
       const past = isLocalDateTimePast(mapped.deadline);
       notify(past ? "Task saved. Its past deadline will not generate reminders." : "Task saved. Calendar download is available.", past ? "warning" : "success");
       return true;
@@ -2050,7 +2314,7 @@ export function CRMApp() {
         if (!(error instanceof ApiError) || error.code !== "possible_duplicate" || !window.confirm(`${error.message}\n\nSave these changes anyway?`)) throw error;
         response = await apiRequest(`/companies/${updated.id}`, { method: "PUT", body: JSON.stringify({ ...payload, allow_duplicate: true }) });
       }
-      const mapped = mapCompany(response.data); setCompanies((current) => current.map((item) => item.id === mapped.id ? mapped : item)); setSelectedCompany(mapped); notify("Company profile updated"); return true;
+      const mapped = mapCompany(response.data); setCompanies((current) => current.map((item) => item.id === mapped.id ? mapped : item)); setSelectedCompany((current) => current?.id === mapped.id ? mapped : current); notify("Company profile updated"); return true;
     } catch (error) { notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false; }
   }
 
@@ -2082,7 +2346,7 @@ export function CRMApp() {
         if (!(error instanceof ApiError) || error.code !== "possible_duplicate" || !window.confirm(`${error.message}\n\nSave these changes anyway?`)) throw error;
         response = await apiRequest(`/contacts/${updated.id}`, { method: "PUT", body: JSON.stringify({ ...payload, allow_duplicate: true }) });
       }
-      const mapped = mapContact(response.data); setContacts((current) => current.map((item) => item.id === mapped.id ? mapped : item)); setSelectedContact(mapped); notify("Contact updated"); return true;
+      const mapped = mapContact(response.data); setContacts((current) => current.map((item) => item.id === mapped.id ? mapped : item)); setSelectedContact((current) => current?.id === mapped.id ? mapped : current); notify("Contact updated"); return true;
     } catch (error) { notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false; }
   }
 
@@ -2090,6 +2354,12 @@ export function CRMApp() {
     if (!requirePermission("task.edit", "edit tasks")) return false;
     const existing = tasks.find((task) => task.id === updated.id);
     if (!existing) return false;
+    const existingCompany = companies.find((company) => company.id === existing.companyId);
+    const destinationCompany = companies.find((company) => company.id === updated.companyId);
+    if (existingCompany?.status === "Black List" || destinationCompany?.status === "Black List") {
+      notify("Tasks for Black List companies are read-only.", "warning");
+      return false;
+    }
     if (updated.title.trim().length < 3 || !updated.contactDate) {
       notify("Complete the task title and contact date.", "warning");
       return false;
@@ -2121,7 +2391,7 @@ export function CRMApp() {
     const normalized = { ...updated, ownerUserEmail: existing.owner === updated.owner ? existing.ownerUserEmail : userEmailForName(updated.owner) };
     try {
       const { data: saved } = await apiRequest<{ data: ApiRecord }>(`/tasks/${updated.id}`, { method: "PUT", body: JSON.stringify(taskPayload(normalized)) });
-      const mapped = mapTask(saved); const nextTasks = tasks.map((item) => item.id === mapped.id ? mapped : item); setTasks(nextTasks); setSelectedTask(mapped); recalculateLastContact(existing.companyId, nextTasks); if (mapped.companyId !== existing.companyId) recalculateLastContact(mapped.companyId, nextTasks); notify("Task updated"); return true;
+      const mapped = mapTask(saved); const nextTasks = tasks.map((item) => item.id === mapped.id ? mapped : item); setTasks(nextTasks); setSelectedTask((current) => current?.id === mapped.id ? mapped : current); recalculateLastContact(existing.companyId, nextTasks); if (mapped.companyId !== existing.companyId) recalculateLastContact(mapped.companyId, nextTasks); notify("Task updated"); return true;
     } catch (error) { notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false; }
   }
 
@@ -2134,7 +2404,7 @@ export function CRMApp() {
     }
     try {
       const { data: saved } = await apiRequest<{ data: ApiRecord }>(`/tasks/${taskId}/comments`, { method: "POST", body: JSON.stringify({ text: body }) });
-      const mapped: TaskComment = { id: apiString(saved, "id"), taskId: apiString(saved, "task_id"), author: apiString(saved, "author_name"), authorUserId: apiNumber(saved, "author_user_id"), createdAt: formatUserDateTime(apiString(saved, "created_at")), text: apiString(saved, "text"), isHidden: apiBoolean(saved, "is_hidden") };
+      const mapped: TaskComment = { id: apiString(saved, "id"), taskId: apiString(saved, "task_id"), author: apiString(saved, "author_name"), authorUserId: apiNumber(saved, "author_user_id"), createdAt: formatUserDateTime(apiString(saved, "created_at")), updatedAt: formatUserDateTime(apiString(saved, "updated_at")), text: apiString(saved, "text"), isHidden: apiBoolean(saved, "is_hidden") };
       setTaskComments((current) => [...current, mapped]);
       setTasks((current) => current.map((task) => task.id === taskId ? { ...task, commentCount: (task.commentCount ?? current.filter((item) => item.id === taskId).length) + 1 } : task));
       notify("Comment posted");
@@ -2151,6 +2421,20 @@ export function CRMApp() {
       setTaskComments((current) => current.map((comment) => comment.id === commentId ? { ...comment, isHidden: hidden } : comment));
       notify(hidden ? "Comment hidden" : "Comment restored");
     } catch (error) { notify(apiMessage(error), "warning"); }
+  }
+
+  async function updateTaskComment(taskId: string, commentId: string, text: string): Promise<boolean> {
+    const body = text.trim();
+    if (!body || body.length > 2000) return false;
+    try {
+      const { data: saved } = await apiRequest<{ data: ApiRecord }>(`/tasks/${taskId}/comments/${commentId}`, { method: "PUT", body: JSON.stringify({ text: body }) });
+      setTaskComments((current) => current.map((comment) => comment.id === commentId ? { ...comment, text: apiString(saved, "text"), updatedAt: formatUserDateTime(apiString(saved, "updated_at")) } : comment));
+      notify("Comment updated");
+      return true;
+    } catch (error) {
+      notify(apiMessage(error), "warning");
+      return false;
+    }
   }
 
   async function uploadTaskAttachment(taskId: string, file: File): Promise<boolean> {
@@ -2374,7 +2658,13 @@ export function CRMApp() {
 
   function openTaskForm(companyId?: string) {
     if (!requirePermission("task.create", "create tasks")) return;
+    const previousTask = companyId ? latestCompanyTask(liveTasks, companyId) : undefined;
+    if (previousTask && !isCompletedTask(previousTask)) {
+      notify(`Complete “${previousTask.title}” before creating the next task for this company.`, "warning");
+      return;
+    }
     setModalCompanyId(companyId);
+    setModalParentTaskId(undefined);
     setModal("task");
   }
 
@@ -2391,6 +2681,10 @@ export function CRMApp() {
 
   function updateTaskStatus(task: Task, nextStatus: Task["status"]) {
     if (!requirePermission("task.edit", "update task status")) return;
+    if (companies.find((company) => company.id === task.companyId)?.status === "Black List") {
+      notify("Tasks for Black List companies are read-only.", "warning");
+      return;
+    }
     if (!taskStatusOptions.includes(nextStatus)) return notify("Select a valid task status.", "warning");
     if (task.status === nextStatus) return;
     const updated = { ...task, status: nextStatus };
@@ -2458,7 +2752,7 @@ export function CRMApp() {
 
   if (passwordResetToken && typeof window !== "undefined" && window.location.pathname === "/reset-password") return <PasswordResetScreen token={passwordResetToken} />;
   if (sessionLoading) return <main className="auth-page"><div className="auth-message" role="status">Connecting to CRM…</div></main>;
-  if (identity && passwordChangeRequired) return <PasswordChangeScreen identity={identity} onChange={changeRequiredPassword} onSignOut={signOut} />;
+  if (identity && passwordChangeRequired) return <PasswordChangeScreen identity={identity} onChange={changeRequiredPassword} onSignOut={signOut} signingOut={signingOut} />;
   if (!identity) return <AuthScreen onLogin={authenticate} onRegister={registerAccount} onRecover={recoverAccount} />;
 
   const navPrimary: View[] = ["dashboard", "companies", "contacts", "activity"];
@@ -2481,9 +2775,9 @@ export function CRMApp() {
           <span aria-hidden="true">⌕</span>
           <input
             value={globalSearch}
-            onChange={(event) => { const value = event.target.value; setGlobalSearch(value); if (value.trim().length < 2) setGlobalResults([]); setGlobalSearchIndex(0); }}
+            onChange={(event) => { const value = event.target.value; setGlobalSearch(value); setGlobalResults([]); setGlobalSearchIndex(-1); setGlobalSearchPage(1); }}
             onKeyDown={handleGlobalSearchKeyDown}
-            placeholder="Search companies, contacts, tasks…"
+            placeholder="Search companies, contacts, activities…"
             aria-label="Global search"
             role="combobox"
             aria-autocomplete="list"
@@ -2496,9 +2790,10 @@ export function CRMApp() {
               <p id="global-search-label">Search results · {globalResults.length}</p>
               <div id="global-search-results" role="listbox" aria-labelledby="global-search-label">
               {(["Company", "Contact", "Task"] as const).map((type) => {
-                const matches = globalResults.filter((result) => result.type === type);
+                const matches = visibleGlobalResults.filter((result) => result.type === type);
                 if (matches.length === 0) return null;
-                return <section className="search-result-group" key={type} aria-label={`${type} results`}><h3>{type === "Company" ? "Companies" : `${type}s`} <span>{matches.length}</span></h3>{matches.map((result) => {
+                const totalMatches = globalResults.filter((result) => result.type === type).length;
+                return <section className="search-result-group" key={type} aria-label={`${type} results`}><h3>{type === "Company" ? "Companies" : `${type}s`} <span>{totalMatches}</span></h3>{matches.map((result) => {
                   const index = globalResults.indexOf(result);
                   return <button id={`global-search-option-${index}`} key={`${result.type}-${result.id}`} type="button" role="option" tabIndex={-1} aria-selected={activeGlobalSearchIndex === index} onMouseEnter={() => setGlobalSearchIndex(index)} onClick={() => openGlobalResult(result)}>
                     <span className="result-type">{result.type.slice(0, 1)}</span>
@@ -2508,6 +2803,7 @@ export function CRMApp() {
               })}
               {globalResults.length === 0 && <button type="button" role="option" aria-selected="false" disabled>No matches found</button>}
               </div>
+              {globalResults.length > GLOBAL_SEARCH_PAGE_SIZE && <nav className="search-pagination" aria-label="Search result pages"><button type="button" aria-label="Previous search page" disabled={currentGlobalSearchPage === 1} onClick={() => { setGlobalSearchPage((page) => Math.max(1, page - 1)); setGlobalSearchIndex(-1); }}>‹</button>{Array.from({ length: globalSearchPageCount }, (_, index) => index + 1).map((page) => <button className={page === currentGlobalSearchPage ? "active" : ""} type="button" key={page} aria-current={page === currentGlobalSearchPage ? "page" : undefined} onClick={() => { setGlobalSearchPage(page); setGlobalSearchIndex(-1); }}>{page}</button>)}<button type="button" aria-label="Next search page" disabled={currentGlobalSearchPage === globalSearchPageCount} onClick={() => { setGlobalSearchPage((page) => Math.min(globalSearchPageCount, page + 1)); setGlobalSearchIndex(-1); }}>›</button></nav>}
             </div>
           )}
         </div>
@@ -2532,7 +2828,6 @@ export function CRMApp() {
           >
             <Avatar name={identity.name} src={identity.photoDataUrl} />
             <span className="profile-copy"><b>{identity.name}</b><small>{identity.role} · email</small></span>
-            <span aria-hidden="true">⌄</span>
           </button>
           {notificationsOpen && (
             <div className="topbar-popover notifications-popover" id="notifications-popover" role="dialog" aria-label="Notifications">
@@ -2554,7 +2849,7 @@ export function CRMApp() {
               <button type="button" onClick={() => { setProfileOpen(false); setModal("profile"); }}><span>◎</span><span><b>My profile</b><small>Contact details and role</small></span></button>
               <button type="button" onClick={() => { setProfileOpen(false); void openSettings(); }}><span>⚙</span><span><b>Settings</b><small>Notifications{currentRole === "Admin" ? ", registration, and email" : ""}</small></span></button>
               {canViewAudit && <button type="button" onClick={() => { setProfileOpen(false); navigate("audit"); }}><span>↻</span><span><b>My activity</b><small>Recent changes in the Audit Log</small></span></button>}
-              <button className="profile-signout" type="button" onClick={signOut}><span>↪</span><span><b>Sign out</b><small>Return to the sign-in screen</small></span></button>
+              <button className="profile-signout" type="button" onClick={() => { void signOut(); }} disabled={signingOut}><span>↪</span><span><b>{signingOut ? "Signing out…" : "Sign out"}</b><small>{signingOut ? "Closing the server session" : "Return to the sign-in screen"}</small></span></button>
             </div>
           )}
         </div>
@@ -2630,6 +2925,17 @@ export function CRMApp() {
               statusOptions={clientStatusOrder}
               showInternalIds={currentRole === "Admin"}
               canCreate={hasPermission(currentRole, "company.create")}
+              canEdit={hasPermission(currentRole, "company.edit")}
+              managerOptions={managerOptions}
+              updateCompany={updateCompany}
+              updateTask={updateTask}
+              openCompanyContacts={(companyId) => {
+                setContactQuery("");
+                const nextUrl = urlWithFilter(window.location.href, "contact_company", companyId, "All companies");
+                window.history.replaceState(window.history.state, "", nextUrl);
+                navigate("contacts");
+                window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
+              }}
               openCompany={setSelectedCompany}
               add={() => { if (requirePermission("company.create", "create companies")) setModal("company"); }}
             />
@@ -2662,6 +2968,7 @@ export function CRMApp() {
               add={() => openTaskForm()}
               addContact={() => openContactForm()}
               openTask={openTaskDetail}
+              openCompany={openCompanyInCompanies}
             />
           )}
           {view === "lookups" && hasPermission(currentRole, "lookup.manage") && <Lookups groups={administrationLookups} archivedRecords={[
@@ -2727,9 +3034,11 @@ export function CRMApp() {
           attachments={taskAttachments.filter((attachment) => attachment.taskId === selectedTask.id)}
           events={audit.filter((event) => event.entity === `Task · ${selectedTask.id}`)}
           onClose={() => setSelectedTask(null)}
+          openContact={(contact) => { setSelectedTask(null); setSelectedContact(contact); }}
           updateStatus={updateTaskStatus}
           updateTask={updateTask}
           addComment={addTaskComment}
+          updateComment={updateTaskComment}
           setCommentHidden={setCommentHidden}
           uploadAttachment={uploadTaskAttachment}
           downloadAttachment={downloadTaskAttachment}
@@ -2757,7 +3066,7 @@ export function CRMApp() {
         />
       )}
 
-      {modal === "company" && <CompanyForm statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} onClose={() => setModal(null)} onSubmit={addCompany} />}
+      {modal === "company" && <CompanyForm companies={liveCompanies} countries={countries} statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} openExistingCompany={(company) => { setModal(null); setSelectedCompany(company); }} onClose={() => setModal(null)} onSubmit={addCompany} />}
       {modal === "contact" && <ContactForm companies={liveCompanies} sourceOptions={contactSourceOptions} initiatorOptions={users.filter((user) => user.state === "Active")} initialCompanyId={modalCompanyId} currentUserEmail={identity.accountEmail} onClose={() => setModal(null)} onSubmit={addContact} />}
       {modal === "task" && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} defaultOwner={defaultManager} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
       {modal === "user" && <UserForm onClose={() => setModal(null)} onSubmit={inviteUser} />}
@@ -2898,7 +3207,7 @@ function Pipeline({ companies, contacts, tasks, statusOrder, canMove, showIntern
   );
 }
 
-function Companies({ companies, contacts, tasks, statusOptions, query, setQuery, status, setStatus, showInternalIds, canCreate, openCompany, add }: {
+function Companies({ companies, contacts, tasks, statusOptions, query, setQuery, status, setStatus, showInternalIds, canCreate, canEdit, managerOptions, updateCompany, updateTask, openCompanyContacts, openCompany, add }: {
   companies: Company[];
   contacts: Contact[];
   tasks: Task[];
@@ -2909,12 +3218,15 @@ function Companies({ companies, contacts, tasks, statusOptions, query, setQuery,
   setStatus: (value: string) => void;
   showInternalIds: boolean;
   canCreate: boolean;
+  canEdit: boolean;
+  managerOptions: string[];
+  updateCompany: (company: Company) => Promise<boolean>;
+  updateTask: (task: Task) => Promise<boolean>;
+  openCompanyContacts: (companyId: string) => void;
   openCompany: (company: Company) => void;
   add: () => void;
 }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [searchFocused, setSearchFocused] = useState(false);
-  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [ownerFilter, setOwnerFilter] = useUrlStringState("company_owner", "All owners");
   const [countryFilter, setCountryFilter] = useUrlStringState("company_country", "All countries");
   const [typeFilter, setTypeFilter] = useUrlStringState("company_type", "All types");
@@ -2946,28 +3258,12 @@ function Companies({ companies, contacts, tasks, statusOptions, query, setQuery,
   const countries = Array.from(new Set(companies.map((company) => company.country))).sort();
   const types = Array.from(new Set(companies.map((company) => company.kind))).sort();
   const sortBy = (field: typeof sortField) => { setPage(1); if (sortField === field) setSortDirection((direction) => direction === "asc" ? "desc" : "asc"); else { setSortField(field); setSortDirection("asc"); } };
-  const searchSuggestions = query.trim() ? companies.filter((company) => company.name.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 8) : [];
-  const showSearchSuggestions = searchFocused && query.trim().length > 0;
-  const selectSearchSuggestion = (company: Company) => { setQuery(company.name); setPage(1); setSearchFocused(false); };
-  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!showSearchSuggestions || searchSuggestions.length === 0) {
-      if (event.key === "Escape") setSearchFocused(false);
-      return;
-    }
-    if (event.key === "ArrowDown") { event.preventDefault(); setSuggestionIndex((current) => Math.min(current + 1, searchSuggestions.length - 1)); }
-    if (event.key === "ArrowUp") { event.preventDefault(); setSuggestionIndex((current) => Math.max(current - 1, 0)); }
-    if (event.key === "Enter") { event.preventDefault(); selectSearchSuggestion(searchSuggestions[suggestionIndex] ?? searchSuggestions[0]); }
-    if (event.key === "Escape") { event.preventDefault(); setSearchFocused(false); }
-  };
 
   return (
     <section className="panel data-panel">
       <div className="data-toolbar companies-toolbar">
         <div className="company-search-combobox">
-          <div className="toolbar-search"><span aria-hidden="true">⌕</span><input type="search" role="combobox" value={query} onFocus={() => { setSearchFocused(true); setSuggestionIndex(0); }} onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)} onKeyDown={handleSearchKeyDown} onChange={(event) => { setQuery(event.target.value); setPage(1); setSearchFocused(true); setSuggestionIndex(0); }} placeholder="Search companies" aria-label="Search companies" aria-controls="company-search-suggestions" aria-expanded={showSearchSuggestions} aria-autocomplete="list" autoComplete="off" spellCheck={false} />{query && <button className="search-clear-button" type="button" aria-label="Clear company search" onMouseDown={(event) => event.preventDefault()} onClick={() => { setQuery(""); setPage(1); setSearchFocused(false); }}>×</button>}</div>
-          {showSearchSuggestions && <div className="company-search-suggestions" id="company-search-suggestions" role="listbox" aria-label="Company search suggestions">
-            {searchSuggestions.length > 0 ? searchSuggestions.map((company, index) => <button key={company.id} type="button" role="option" aria-selected={index === suggestionIndex} className={index === suggestionIndex ? "active" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSearchSuggestion(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{companyLocation(company)}</small></span><span aria-hidden="true">›</span></button>) : <div className="company-search-empty">No companies found</div>}
-          </div>}
+          <div className="toolbar-search"><span aria-hidden="true">⌕</span><input type="search" value={query} onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search names by syllables" aria-label="Search companies by name syllables" autoComplete="off" spellCheck={false} />{query && <button className="search-clear-button" type="button" aria-label="Clear company search" onClick={() => { setQuery(""); setPage(1); }}>×</button>}</div>
         </div>
         <div className="companies-toolbar-controls">
           <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }} aria-label="Filter by status">
@@ -2984,7 +3280,7 @@ function Companies({ companies, contacts, tasks, statusOptions, query, setQuery,
           <label><span>Owner</span><select value={ownerFilter} onChange={(event) => { setOwnerFilter(event.target.value); setPage(1); }}><option>All owners</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           <label><span>Country</span><select value={countryFilter} onChange={(event) => { setCountryFilter(event.target.value); setPage(1); }}><option>All countries</option>{countries.map((country) => <option key={country}>{country}</option>)}</select></label>
           <label><span>Company type</span><select value={typeFilter} onChange={(event) => { setTypeFilter(event.target.value); setPage(1); }}><option>All types</option>{types.map((type) => <option key={type}>{type}</option>)}</select></label>
-          <label><span>Priority</span><select value={priorityFilter} onChange={(event) => { setPriorityFilter(event.target.value); setPage(1); }}><option>All priorities</option>{TASK_PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
+          <label><span>Priority</span><select value={priorityFilter} onChange={(event) => { setPriorityFilter(event.target.value); setPage(1); }}><option>All priorities</option>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>
           <button className="secondary-button" type="button" onClick={() => { setOwnerFilter("All owners"); setCountryFilter("All countries"); setTypeFilter("All types"); setPriorityFilter("All priorities"); setPage(1); }}>Reset</button>
           <button className="primary-button" type="button" onClick={() => setFiltersOpen(false)}>Done</button>
         </div>
@@ -2994,15 +3290,15 @@ function Companies({ companies, contacts, tasks, statusOptions, query, setQuery,
           <thead><tr><th><button className="sort-button" type="button" onClick={() => sortBy("name")}>Company {sortField === "name" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("kind")}>Type {sortField === "kind" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("country")}>Location {sortField === "country" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th><button className="sort-button" type="button" onClick={() => sortBy("status")}>Client status {sortField === "status" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th>Priority</th><th>Contacts</th><th><button className="sort-button" type="button" onClick={() => sortBy("lastContact")}>Last contact {sortField === "lastContact" ? (sortDirection === "asc" ? "↑" : "↓") : ""}</button></th><th>Owner</th><th aria-label="Actions" /></tr></thead>
           <tbody>
             {visibleCompanies.map((company) => (
-              <tr key={company.id} tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
+              <tr key={company.id} className={company.status === "Black List" ? "blacklisted-company" : ""} tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
                 <td data-label="Company"><span className="company-cell"><EntityLogo name={company.name} src={company.logoDataUrl} lazy /><span><b>{company.name}</b>{(showInternalIds || company.website) && <small className="company-meta">{showInternalIds && <span className="company-internal-id">{company.id}</span>}{company.website && <a className="inline-data-link compact company-website-link" href={websiteHref(company.website)} target="_blank" rel="noreferrer" title={company.website} aria-label={`Open ${company.name} website: ${company.website}`} onClick={(event) => event.stopPropagation()}>{companyWebsiteLabel(company.website)}</a>}</small>}</span></span></td>
                 <td data-label="Type"><span className="company-card-value">{company.kind}</span></td>
                 <td data-label="Location"><span className="company-card-value"><b className="normal-weight">{company.city}</b><small className="cell-sub">{company.country}</small></span></td>
-                <td data-label="Client status"><span className="company-card-value"><StatusBadge value={company.status} /></span></td>
-                <td data-label="Priority"><span className="company-card-value">{latestTaskByCompany.has(company.id) ? <StatusBadge value={`${latestTaskByCompany.get(company.id)!.priority} priority`} /> : "—"}</span></td>
-                <td data-label="Contacts"><span className="company-card-value"><CountBadge count={contactCount(contacts, company.id)} label="contacts" detail={`${company.name} has ${contactCount(contacts, company.id)} saved contact people. Open the company profile for details.`} /></span></td>
+                <td data-label="Client status"><span className="company-card-value">{canEdit ? <select className="table-inline-select" aria-label={`Relationship status for ${company.name}`} value={company.status} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); void updateCompany({ ...company, status: event.target.value }); }}>{Array.from(new Set([...statusOptions, company.status])).map((value) => <option key={value}>{value}</option>)}</select> : <StatusBadge value={company.status} />}</span></td>
+                <td data-label="Priority"><span className="company-card-value">{company.status === "Black List" ? <span className="priority-unavailable" title="Priority is unavailable for Black List companies">—</span> : latestTaskByCompany.has(company.id) ? (canEdit ? <select className={`table-inline-select priority-select ${priorityToneClass(latestTaskByCompany.get(company.id)!.priority)}`} aria-label={`Latest task priority for ${company.name}`} value={latestTaskByCompany.get(company.id)!.priority} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); void updateTask({ ...latestTaskByCompany.get(company.id)!, priority: event.target.value as Task["priority"] }); }}>{TASK_PRIORITIES.map((value) => <option key={value} value={value}>{value}</option>)}</select> : <StatusBadge value={`${latestTaskByCompany.get(company.id)!.priority} priority`} />) : "—"}</span></td>
+                <td data-label="Contacts"><span className="company-card-value"><button className="count-badge company-contact-filter" type="button" title={`Show contacts for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompanyContacts(company.id); }}>{contactCount(contacts, company.id)}</button></span></td>
                 <td data-label="Last contact"><span className="company-card-value">{company.lastContact}</span></td>
-                <td data-label="Owner"><span className="company-card-value"><span className="owner-cell"><span className="mini-avatar">{company.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>{company.owner}</span></span></td>
+                <td data-label="Owner"><span className="company-card-value">{canEdit ? <select className="table-inline-select owner-select" aria-label={`Owner for ${company.name}`} value={company.owner} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); void updateCompany({ ...company, owner: event.target.value }); }}>{Array.from(new Set([...managerOptions, company.owner])).map((value) => <option key={value}>{value}</option>)}</select> : <span className="owner-cell"><span className="mini-avatar">{company.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>{company.owner}</span>}</span></td>
                 <td data-label="Actions"><button className="row-menu" type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></td>
               </tr>
             ))}
@@ -3093,7 +3389,26 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
   );
 }
 
-function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFilter, managerFilter, setManagerFilter, showTaskIds, canCreate, canCreateContact, add, addContact, openTask }: {
+function TaskCardButton({ task, comments, showTaskIds, openTask, branch = false }: { task: Task; companies: Company[]; comments: TaskComment[]; showTaskIds: boolean; openTask: (task: Task) => void; branch?: boolean }) {
+  const locked = isTaskEditLocked(task);
+  return (
+    <button className={`task-card${branch ? " task-branch-card" : ""}${isOverdue(task) ? " task-overdue" : ""}${locked ? " task-inactive" : ""}`} type="button" onClick={() => openTask(task)}>
+      <span className={`task-status-line ${task.status.toLowerCase().replace(" ", "-")}`} />
+      <span className="task-card-main">
+        <span className="task-title-row"><b>{task.title}</b><StaticStatusBadge value={task.status} /></span>
+        {(branch || showTaskIds) && <span className="task-company">{branch ? "Branch" : "Task"}{showTaskIds ? ` · ${task.id}` : ""}</span>}
+        <span className="task-facts"><span>Contact: {task.contactDate || "—"}</span><span>Person: {task.contactPerson || "—"}</span></span>
+        <span className="task-note">{task.note}</span>
+        <span className={`task-reminder-row${task.reminderPossible === false ? " reminder-impossible" : ""}`}>{task.reminderPossible === false ? "⚠ Reminder impossible: manager has no active User or email" : (task.reminderLeads?.length ? `Reminder: ${task.reminderLeads.join(", ")}` : "No reminder scheduled")}</span>
+        <span className="task-counters">💬 {task.commentCount ?? comments.filter((comment) => comment.taskId === task.id).length} comments · ↻ {task.changeCount ?? 0} changes</span>
+      </span>
+      <span className="task-card-side"><StaticStatusBadge value={`${task.priority} priority`} /><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b><small>{locked ? "Editing locked" : task.owner}</small></span>
+      <span className="row-arrow">›</span>
+    </button>
+  );
+}
+
+function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFilter, managerFilter, setManagerFilter, showTaskIds, canCreate, canCreateContact, add, addContact, openTask, openCompany }: {
   tasks: Task[];
   companies: Company[];
   comments: TaskComment[];
@@ -3108,8 +3423,10 @@ function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFi
   add: () => void;
   addContact: () => void;
   openTask: (task: Task) => void;
+  openCompany: (company: Company) => void;
 }) {
-  const filters = [...taskStatusOptions, "Open", "Overdue", "All"];
+  const filters = [...taskStatusOptions.filter((item) => item !== "Open"), "Open", "Overdue", "All"];
+  const [visibleTaskCounts, setVisibleTaskCounts] = useState<Record<string, number>>({});
   const managers = Array.from(new Set(tasks.map((task) => task.owner))).sort();
   const managerTasks = managerFilter === "All managers" ? tasks : tasks.filter((task) => task.owner === managerFilter);
   const counts = Object.fromEntries(filters.map((item) => [
@@ -3127,7 +3444,17 @@ function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFi
   useEffect(() => {
     if (!filterSignature.split("\u001f").includes(filter)) setFilter("All");
   }, [filter, filterSignature, setFilter]);
-  const visibleTasks = managerTasks.filter((task) => activeFilter === "All" || (activeFilter === "Open" ? isOpenTask(task) : activeFilter === "Overdue" ? isOverdue(task) : task.status === activeFilter));
+  const matchesFilter = (task: Task) => activeFilter === "All" || (activeFilter === "Open" ? isOpenTask(task) : activeFilter === "Overdue" ? isOverdue(task) : task.status === activeFilter);
+  const visibleTasks = managerTasks.filter(matchesFilter);
+  const tasksByCompany = new Map<string, Task[]>();
+  visibleTasks.forEach((task) => {
+    const companyTasks = tasksByCompany.get(task.companyId) ?? [];
+    companyTasks.push(task);
+    tasksByCompany.set(task.companyId, companyTasks);
+  });
+  const visibleCompanySequences = Array.from(tasksByCompany.entries())
+    .map(([companyId, companyTasks]) => ({ companyId, tasks: companyTaskSequence(companyTasks) }))
+    .sort((a, b) => Number(b.tasks[0]?.id ?? 0) - Number(a.tasks[0]?.id ?? 0));
   return (
     <>
       <div className="activity-toolbar">
@@ -3138,22 +3465,19 @@ function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFi
         </div>
       </div>
       <section className="task-board">
-        {visibleTasks.map((task) => (
-          <button className={`task-card${isOverdue(task) ? " task-overdue" : ""}`} key={task.id} type="button" onClick={() => openTask(task)}>
-            <span className={`task-status-line ${task.status.toLowerCase().replace(" ", "-")}`} />
-            <span className="task-card-main">
-              <span className="task-title-row"><b>{task.title}</b><StaticStatusBadge value={task.status} /></span>
-              <span className="task-company">{companyName(companies, task.companyId)}{showTaskIds ? ` · ${task.id}` : ""}</span>
-              <span className="task-facts"><span>Contact: {task.contactDate || "—"}</span><span>Person: {task.contactPerson || "—"}</span></span>
-              <span className="task-note">{task.note}</span>
-              <span className={`task-reminder-row${task.reminderPossible === false ? " reminder-impossible" : ""}`}>{task.reminderPossible === false ? "⚠ Reminder impossible: manager has no active User or email" : (task.reminderLeads?.length ? `Reminder: ${task.reminderLeads.join(", ")}` : "No reminder scheduled")}</span>
-              <span className="task-counters">💬 {task.commentCount ?? comments.filter((comment) => comment.taskId === task.id).length} comments · ↻ {task.changeCount ?? 0} changes</span>
-            </span>
-            <span className="task-card-side"><StaticStatusBadge value={`${task.priority} priority`} /><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b><small>{task.owner}</small></span>
-            <span className="row-arrow">›</span>
-          </button>
-        ))}
-        {visibleTasks.length === 0 && <div className="empty-state"><b>No tasks match this filter</b><span>Change the filter{canCreate ? " or create a new task" : ""}.</span></div>}
+        {visibleCompanySequences.map(({ companyId, tasks: sequence }) => {
+          const company = companies.find((item) => item.id === companyId);
+          const blacklisted = company?.status === "Black List";
+          const visibleTaskCount = sequence.length > 5 ? Math.min(visibleTaskCounts[companyId] ?? 2, sequence.length) : sequence.length;
+          const visibleSequence = sequence.slice(0, visibleTaskCount);
+          const hiddenTaskCount = sequence.length - visibleSequence.length;
+          return <article className={`activity-thread company-task-group${blacklisted ? " blacklisted-activity-company" : ""}`} key={companyId}>
+            {company && <div className="company-task-group-head"><button className="table-link activity-company-link" type="button" onClick={() => openCompany(company)}>{company.name}</button><button className="text-button" type="button" onClick={() => openCompany(company)}>Open company</button></div>}
+            {hiddenTaskCount > 0 && <div className="thread-unhide-actions"><small>{hiddenTaskCount} earlier {hiddenTaskCount === 1 ? "task" : "tasks"} hidden</small><button className="text-button" type="button" onClick={() => setVisibleTaskCounts((counts) => ({ ...counts, [companyId]: Math.min(sequence.length, visibleTaskCount + 1) }))}>Unhide previous</button><button className="text-button" type="button" onClick={() => setVisibleTaskCounts((counts) => ({ ...counts, [companyId]: sequence.length }))}>Unhide all</button></div>}
+            <div className="company-task-sequence">{visibleSequence.map((task) => <TaskCardButton key={task.id} task={task} companies={companies} comments={comments} showTaskIds={showTaskIds} openTask={openTask} />)}</div>
+          </article>;
+        })}
+        {visibleCompanySequences.length === 0 && <div className="empty-state"><b>No tasks match this filter</b><span>Change the filter{canCreate ? " or create a new task" : ""}.</span></div>}
       </section>
     </>
   );
@@ -3384,6 +3708,12 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
     setEditing(false);
   }
 
+  const taskSequence = companyTaskSequence(tasks);
+  const [visibleTaskCount, setVisibleTaskCount] = useState(tasks.length > 5 ? 2 : tasks.length);
+  const visibleTaskSequence = taskSequence.slice(0, visibleTaskCount);
+  const hiddenTaskCount = Math.max(0, taskSequence.length - visibleTaskSequence.length);
+  const priorityTask = taskSequence.find((task) => !isCompletedTask(task)) ?? taskSequence[0];
+
   return (
     <Modal title={company.name} eyebrow={showInternalIds ? `${company.id} · ${company.kind}` : company.kind} onClose={onClose} wide>
       {editing ? (
@@ -3407,7 +3737,11 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
           <div className="detail-description"><small>About company</small><p>{company.description}</p></div>
           <div className="detail-columns">
             <section><div className="detail-section-head"><h3>Contacts <CountBadge count={contacts.length} label="contacts" detail={`Contact people at ${company.name}.`} /></h3>{canAddContact && <button type="button" aria-label="Add contact" onClick={addContact}>＋</button>}</div>{contacts.map((contact) => <button className={`detail-contact${contact.contactStatus === "inactive" ? " inactive-contact" : ""}`} type="button" key={contact.id} onClick={() => openContact(contact)}><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b><small>{contact.position} · {contact.email} · {contact.contactStatus === "inactive" ? "Inactive" : "Active"}</small></span><span className="row-arrow">›</span></button>)}{contacts.length === 0 && <p className="muted-copy">No contacts yet.</p>}</section>
-            <section><div className="detail-section-head"><h3>Activity <CountBadge count={tasks.length} label="tasks" detail={`All tasks linked to ${company.name}.`} /></h3>{canAddTask && <button type="button" aria-label="Add task" onClick={addTask}>＋</button>}</div>{tasks.slice().sort((a, b) => (b.contactDate ?? "").localeCompare(a.contactDate ?? "")).map((task) => <button className="detail-task" type="button" key={task.id} onClick={() => openTask(task)}><span className={`priority-mark${task.status === "Completed" ? " completed" : isOverdue(task) ? " overdue" : ""}`}>{task.status === "Completed" ? "✓" : "!"}</span><span><b>{task.title}</b><small>{task.contactDate || "—"} · {formatDateTime(task.deadline)}</small></span><span>›</span></button>)}{tasks.length === 0 && <p className="muted-copy">No tasks yet.</p>}</section>
+            <section className="company-thread-preview"><div className="detail-section-head"><h3>Activity <CountBadge count={taskSequence.length} label="tasks" detail={`Sequential tasks linked to ${company.name}.`} /></h3>{canAddTask && <button type="button" aria-label="Add task" onClick={addTask}>＋</button>}</div>
+              {hiddenTaskCount > 0 && <div className="thread-unhide-actions"><small>{hiddenTaskCount} earlier {hiddenTaskCount === 1 ? "task" : "tasks"} hidden</small><button className="text-button" type="button" onClick={() => setVisibleTaskCount((count) => Math.min(taskSequence.length, count + 1))}>Unhide previous</button><button className="text-button" type="button" onClick={() => setVisibleTaskCount(taskSequence.length)}>Unhide all</button></div>}
+              <div className="company-task-history">{visibleTaskSequence.map((task) => <button className={`detail-task company-sequence-task${task.id === priorityTask?.id ? " current" : ""}`} type="button" key={task.id} onClick={() => openTask(task)}><span className={`priority-mark${task.status === "Completed" ? " completed" : isOverdue(task) ? " overdue" : ""}`}>{task.status === "Completed" ? "✓" : "!"}</span><span><b>{task.title}</b><small>{task.id === priorityTask?.id && !isCompletedTask(task) ? "Current priority · " : "Task · "}{task.contactDate || "—"} · {formatDateTime(task.deadline)}</small>{task.id === priorityTask?.id && <p className="company-latest-branch-description">{task.note || "No description."}</p>}</span><span>›</span></button>)}</div>
+              {taskSequence.length === 0 && <p className="muted-copy">No tasks yet.</p>}
+            </section>
           </div>
           <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive company</button>}</div>
         </>
@@ -3520,7 +3854,7 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
             <div><small>CJN Manager</small><b>{contact.owner}</b></div>
             <div><small>Initiated by</small><b>{contact.initiatedBy || "Not recorded"}</b></div>
           </div>
-          <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive contact</button>}{contact.email && <a className="primary-button action-link" href={`mailto:${contact.email}`}>Send email</a>}</div>
+          <div className="modal-actions contact-detail-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{contact.email && <a className="primary-button action-link" href={contactMailto(contact, company)} title="Open a prefilled email in your default mail app">Send mail</a>}<button className="primary-button" type="button" onClick={() => exportContactToOutlook(contact, company)} title="Download an Outlook-compatible contact card">Export to Outlook</button>{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive contact</button>}</div>
         </>
       )}
     </Modal>
@@ -3562,7 +3896,7 @@ function UserDetail({ user, onClose, updateUser, rejectUser, lastActiveAdmin }: 
   );
 }
 
-function TaskDetail({ task, company, companies, contacts, comments, attachments, events, onClose, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, reminderLeadOptions, managerOptions }: {
+function TaskDetail({ task, company, companies, contacts, comments, attachments, events, onClose, openContact, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, updateComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, reminderLeadOptions, managerOptions }: {
   task: Task;
   company: string;
   companies: Company[];
@@ -3571,6 +3905,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   attachments: TaskAttachment[];
   events: AuditEvent[];
   onClose: () => void;
+  openContact: (contact: Contact) => void;
   canEdit: boolean;
   canComment: boolean;
   canArchive: boolean;
@@ -3578,6 +3913,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   updateTask: (task: Task) => Promise<boolean>;
   updateStatus: (task: Task, status: Task["status"]) => void;
   addComment: (taskId: string, text: string) => Promise<boolean>;
+  updateComment: (taskId: string, commentId: string, text: string) => Promise<boolean>;
   setCommentHidden: (taskId: string, commentId: string, hidden: boolean) => Promise<void>;
   uploadAttachment: (taskId: string, file: File) => Promise<boolean>;
   downloadAttachment: (attachment: TaskAttachment) => Promise<void>;
@@ -3590,16 +3926,28 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   managerOptions: string[];
 }) {
   const taskEditFormDraft = useFormDraft(`task-edit:${task.id}`);
-  const [editing, setEditing] = useState(taskEditFormDraft.restored);
+  const taskCompanyBlacklisted = companies.find((item) => item.id === task.companyId)?.status === "Black List";
+  const taskEditLocked = isTaskEditLocked(task);
+  const taskReadOnly = taskEditLocked || taskCompanyBlacklisted;
+  const [editing, setEditing] = useState(taskEditFormDraft.restored && !taskReadOnly);
   const [commentDraft, setCommentDraft, clearCommentDraft, commentDraftRestored] = useCookieDraft(`task-${task.id}-comment`, "");
   const [editNote, setEditNote, clearEditNoteDraft, editNoteDraftRestored] = useCookieDraft(`task-${task.id}-description`, task.note);
   const [editCompanyId, setEditCompanyId] = useState(task.companyId);
   const [editCompanyName, setEditCompanyName] = useState(company);
   const [editContactPersonId, setEditContactPersonId] = useState(task.contactPersonId ?? "");
+  const [editDeadline, setEditDeadline] = useState(() => taskDeadlineDraftValue(taskEditFormDraft.initialValue, task.deadline));
+  const [editPriority, setEditPriority] = useState<Task["priority"]>(task.priority);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [commentRetry, setCommentRetry] = useState(false);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingCommentText, setEditingCommentText] = useState("");
+  const [commentEditSubmitting, setCommentEditSubmitting] = useState(false);
   const editCompanyContacts = contacts.filter((contact) => contact.companyId === editCompanyId);
+  const displayedTask = task;
+  const taskCanEdit = canEdit && !taskReadOnly;
+  const taskContact = contacts.find((contact) => contact.id === task.contactPersonId);
+  const editCompanyBlacklisted = companies.find((item) => item.id === editCompanyId)?.status === "Black List";
 
   function selectCompany(value: string) {
     const match = companyByName(companies, value);
@@ -3610,6 +3958,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (taskReadOnly) return;
     const form = event.currentTarget;
     const data = new FormData(form);
     const title = String(data.get("title") ?? "").trim();
@@ -3627,7 +3976,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
       owner: String(data.get("owner") ?? task.owner),
       contactPersonId: editContactPersonId,
       status: String(data.get("status") ?? task.status),
-      priority: String(data.get("priority") ?? task.priority) as Task["priority"],
+      priority: editCompanyBlacklisted ? task.priority : String(data.get("priority") ?? task.priority) as Task["priority"],
       note: String(data.get("note") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
     };
@@ -3640,7 +3989,9 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
 
   async function postComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setCommentSubmitting(true); setCommentRetry(false);
+    if (taskReadOnly) return;
+    setCommentSubmitting(true);
+    setCommentRetry(false);
     const posted = await addComment(task.id, commentDraft);
     setCommentSubmitting(false);
     if (posted) {
@@ -3650,6 +4001,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   }
 
   async function attach(event: React.ChangeEvent<HTMLInputElement>) {
+    if (taskReadOnly) return;
     const file = event.target.files?.[0];
     if (!file) return;
     setAttachmentUploading(true);
@@ -3659,64 +4011,107 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   }
 
   function openEditor() {
+    if (taskReadOnly) return;
     setEditCompanyId(task.companyId);
     setEditCompanyName(company);
     setEditContactPersonId(task.contactPersonId ?? "");
+    setEditDeadline(task.deadline);
+    setEditPriority(task.priority);
     setEditing(true);
   }
 
+  async function saveCommentEdit(commentId: string) {
+    if (taskReadOnly) return;
+    const text = editingCommentText.trim();
+    if (!text || commentEditSubmitting) return;
+    setCommentEditSubmitting(true);
+    const saved = await updateComment(task.id, commentId, text);
+    setCommentEditSubmitting(false);
+    if (saved) {
+      setEditingCommentId(null);
+      setEditingCommentText("");
+    }
+  }
+
   return (
-    <Modal title={task.title} eyebrow={isAdmin ? `${task.id} · ${company}` : company} onClose={onClose} wide>
-      {editing ? (
+    <Modal title={task.title} eyebrow={isAdmin ? `${task.id} · ${company}` : company} onClose={onClose} wide initialScroll="top">
+      {editing && !taskReadOnly ? (
         <form {...taskEditFormDraft.formProps} className="entity-form detail-edit-form" onSubmit={save}>
           <label className="field field-full"><span>Task title *</span><input name="title" defaultValue={task.title} required minLength={3} maxLength={255} autoFocus /></label>
           <CompanyCombobox inputId="task-edit-company" label="Company *" companies={companies} value={editCompanyName} onChange={selectCompany} required />
           <label className="field"><span>Contact date *</span><input name="contactDate" type="date" defaultValue={task.contactDate ?? task.deadline.slice(0, 10)} required /></label>
-          <label className="field"><span>Deadline · {CLIENT_TIME_ZONE_LABEL}</span><input name="deadline" type="datetime-local" defaultValue={task.deadline} /></label>
+          <div className="field field-full task-deadline-field"><TaskDeadlineInput value={editDeadline} onChange={setEditDeadline} /></div>
           <label className="field"><span>Responsible manager</span><select name="owner" defaultValue={task.owner}>{Array.from(new Set([...managerOptions, task.owner])).map((owner) => <option key={owner}>{owner}</option>)}</select></label>
           <label className="field"><span>Contact person</span><select name="contactPersonId" value={editContactPersonId} onChange={(event) => setEditContactPersonId(event.target.value)}><option value="">Not specified</option>{editCompanyContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
           <label className="field"><span>Status</span><select name="status" defaultValue={task.status}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>
-          <label className="field"><span>Priority</span><select name="priority" defaultValue={task.priority}>{TASK_PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
-          <label className="field field-full"><span>Description</span><textarea name="note" value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={4} maxLength={4000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={editNote} onChange={setEditNote} maxLength={4000} draftRestored={editNoteDraftRestored} /></label>
+          {editCompanyBlacklisted ? <div className="field priority-locked-field"><span>Priority</span><b>Unavailable for Black List companies</b></div> : <label className="field"><span>Priority</span><select className={priorityToneClass(editPriority)} name="priority" value={editPriority} onChange={(event) => setEditPriority(event.target.value as Task["priority"])}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>}
+          <label className="field field-full"><span>Description</span><textarea name="note" value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={4} maxLength={4000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={editNote} onChange={setEditNote} maxLength={4000} draftRestored={editNoteDraftRestored} /><TranslateToEnglishButton text={editNote} onChange={setEditNote} /></label>
           <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} defaultChecked={(task.reminderLeads ?? []).includes(lead)} /><span>{lead}</span></label>)}</fieldset>
-          <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { taskEditFormDraft.clear(); clearEditNoteDraft(); setEditNote(task.note); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit">Save task</button></div>
+          <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { taskEditFormDraft.clear(); clearEditNoteDraft(); setEditNote(task.note); setEditDeadline(task.deadline); setEditPriority(task.priority); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit">Save task</button></div>
         </form>
       ) : (
         <>
-          <div className="task-detail-status"><StatusBadge value={task.status} /><StatusBadge value={`${task.priority} priority`} />{isOverdue(task) && <StaticStatusBadge value="Overdue" />}{canEdit && <button className="secondary-button task-edit-button" type="button" onClick={openEditor}>Edit task</button>}</div>
-          <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? task.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE_LABEL}</small><b className={isOverdue(task) ? "overdue-text" : ""}>{formatDateTime(task.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small><b>{contacts.find((contact) => contact.id === task.contactPersonId)?.name ?? "—"}</b></div><div><small>Calendar</small>{task.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(task)}>Download .ics</button> : <b>Set a deadline first</b>}</div></div>
-          <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p></div>
-          <section className="attachment-section"><div className="detail-section-head"><h3>Attachments <StaticStatusBadge value={String(attachments.length)} /></h3>{canEdit && <label className="secondary-button attachment-upload">{attachmentUploading ? "Uploading…" : "＋ Upload file"}<input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,image/*" disabled={attachmentUploading} onChange={(event) => void attach(event)} /></label>}</div><div className="attachment-list">{attachments.map((attachment) => <article key={attachment.id}><span><b>{attachment.name}</b><small>{(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB · {attachment.author}</small></span><button className="secondary-button" type="button" onClick={() => void downloadAttachment(attachment)}>Download</button>{(isAdmin || attachment.authorUserId === currentUserId) && <button className="danger-button" type="button" onClick={() => void deleteAttachment(attachment)}>Delete</button>}</article>)}{attachments.length === 0 && <p className="muted-copy">No attachments yet. PDF, Word, Excel, and images up to 20 MB are supported.</p>}</div></section>
-          <section className="comment-stream"><div className="detail-section-head"><h3>Comments <StaticStatusBadge value={String(comments.filter((comment) => !comment.isHidden).length)} /></h3></div>{comments.map((comment) => <article key={comment.id} className={comment.isHidden ? "comment-hidden" : ""}><span className="timeline-avatar blue">{comment.author.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><p><b>{comment.author}</b><small>{comment.createdAt} · {CLIENT_TIME_ZONE_LABEL}</small><span>{comment.isHidden ? "Comment hidden by Admin" : comment.text}</span></p>{isAdmin && <button className="text-button" type="button" onClick={() => void setCommentHidden(task.id, comment.id, !comment.isHidden)}>{comment.isHidden ? "Restore" : "Hide"}</button>}</article>)}{comments.length === 0 && <div className="empty-state compact"><b>No comments yet</b><span>The task discussion will appear here.</span></div>}{canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write a clear update for the team" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools disabled={commentSubmitting} value={commentDraft} onChange={(value) => { setCommentDraft(value); setCommentRetry(false); }} maxLength={2000} draftRestored={commentDraftRestored} /></label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}</section>
+          <div className={`task-detail-summary${taskReadOnly ? " task-detail-inactive" : ""}`}>
+            <div className="task-detail-status">{taskCanEdit ? <><label className="inline-task-field"><span>Status</span><select value={task.status} onChange={(event) => updateStatus(task, event.target.value)}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>{taskCompanyBlacklisted ? <span className="inline-priority-locked" title="Priority is unavailable for Black List companies">Priority unavailable</span> : <label className="inline-task-field"><span>Priority</span><select className={priorityToneClass(task.priority)} value={task.priority} onChange={(event) => void updateTask({ ...task, priority: event.target.value as Task["priority"] })}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>}</> : <><StatusBadge value={task.status} />{!taskCompanyBlacklisted && <StatusBadge value={`${task.priority} priority`} />}</>}{isOverdue(displayedTask) && <StaticStatusBadge value="Overdue" />}<div className="task-detail-actions">{taskCanEdit && <label className="secondary-button attachment-upload attachment-tooltip" data-tooltip="PDF, Word, Excel, Outlook MSG/EML, JPG, PNG, or WebP · up to 20 MB">{attachmentUploading ? "Uploading…" : "＋ Upload"}<input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.msg,.eml,image/*" disabled={attachmentUploading} onChange={(event) => void attach(event)} /></label>}{attachments.length > 0 && <StaticStatusBadge value={`${attachments.length} ${attachments.length === 1 ? "file" : "files"}`} />}{taskCanEdit && <button className="secondary-button task-edit-button" type="button" onClick={openEditor}>Edit</button>}</div></div>
+            {attachments.length > 0 && <div className="task-attachment-bar" aria-label="Attachments"><div className="task-attachment-chips">{attachments.map((attachment) => <article key={attachment.id}><button type="button" onClick={() => void downloadAttachment(attachment)}><b>{attachment.name}</b><small>{(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB · {attachment.author}</small></button>{taskCanEdit && (isAdmin || attachment.authorUserId === currentUserId) && <button className="attachment-delete" type="button" aria-label={`Delete ${attachment.name}`} onClick={() => void deleteAttachment(attachment)}>×</button>}</article>)}</div></div>}
+            {taskCompanyBlacklisted ? <p className="task-completion-window locked">Black List company · task editing is locked</p> : isCompletedTask(task) && <p className={`task-completion-window${taskEditLocked ? " locked" : ""}`}>{taskCompletionEditLabel(task)}</p>}
+            <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? displayedTask.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE_LABEL}</small><b className={isOverdue(displayedTask) ? "overdue-text" : ""}>{formatDateTime(displayedTask.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small>{taskContact ? <button className="table-link task-contact-link" type="button" onClick={() => openContact(taskContact)}>{taskContact.name}</button> : <b>—</b>}</div><div className="task-calendar-field"><small>Calendar</small>{displayedTask.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(displayedTask)}>Add to Outlook</button> : <b>Set a deadline first</b>}</div></div>
+            <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p></div>
+            <div className="modal-actions">{taskCanEdit && !isCompletedTask(task) && task.status !== "Started" && taskStatusOptions.includes("Started") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Started")}>Start task</button>}{taskCanEdit && task.status === "Started" && taskStatusOptions.includes("Deferred") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Deferred")}>Defer</button>}{taskCanEdit && !isCompletedTask(task) && taskStatusOptions.includes("Completed") && <button className="primary-button" type="button" onClick={() => updateStatus(task, "Completed")}>✓ Mark as completed</button>}</div>
+          </div>
+          <section className={`comment-stream branch-comments${taskReadOnly ? " task-inactive" : ""}`}>
+              <div className="detail-section-head"><h3>Task comments <StaticStatusBadge value={String(comments.filter((comment) => !comment.isHidden).length)} /></h3></div>
+              {comments.map((comment) => {
+                const canEditComment = !taskReadOnly && !comment.isHidden && (isAdmin || comment.authorUserId === currentUserId);
+                const commentIsEditing = editingCommentId === comment.id;
+                return <article key={comment.id} className={comment.isHidden ? "comment-hidden" : ""}>
+                  <span className="timeline-avatar blue">{comment.author.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>
+                  <div className="comment-copy">
+                    <b>{comment.author}</b>
+                    <small>{comment.createdAt} · {CLIENT_TIME_ZONE_LABEL}{comment.updatedAt && comment.updatedAt !== comment.createdAt ? " · Edited" : ""}</small>
+                    {commentIsEditing
+                      ? <div className="comment-edit-panel"><textarea value={editingCommentText} onChange={(event) => setEditingCommentText(event.target.value)} maxLength={2000} rows={3} autoFocus /><span><button className="secondary-button" type="button" onClick={() => { setEditingCommentId(null); setEditingCommentText(""); }}>Cancel</button><button className="primary-button" type="button" disabled={!editingCommentText.trim() || commentEditSubmitting} onClick={() => void saveCommentEdit(comment.id)}>{commentEditSubmitting ? "Saving…" : "Save"}</button></span></div>
+                      : <div className="comment-text">{comment.isHidden ? <p>Comment hidden by Admin</p> : commentParagraphs(comment.text).map((paragraph, index) => <p key={`${comment.id}-${index}`}>{paragraph}</p>)}</div>}
+                  </div>
+                  <div className="comment-actions">{canEditComment && !commentIsEditing && <button className="comment-edit-button" type="button" aria-label={`Edit comment by ${comment.author}`} title="Edit comment" onClick={() => { setEditingCommentId(comment.id); setEditingCommentText(comment.text); }}>✎</button>}{isAdmin && !taskReadOnly && !commentIsEditing && <button className="text-button" type="button" onClick={() => void setCommentHidden(task.id, comment.id, !comment.isHidden)}>{comment.isHidden ? "Restore" : "Hide"}</button>}</div>
+                </article>;
+              })}
+              {comments.length === 0 && <div className="empty-state compact"><b>No task comments yet</b><span>Updates for this task will appear here.</span></div>}
+              {taskReadOnly
+                ? <p className="muted-copy">{taskCompanyBlacklisted ? "Tasks for Black List companies are read-only." : "This completed task is read-only because its seven-day editing window has ended."}</p>
+                : canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write an update for this task" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools disabled={commentSubmitting} value={commentDraft} onChange={(value) => { setCommentDraft(value); setCommentRetry(false); }} maxLength={2000} draftRestored={commentDraftRestored} /><TranslateToEnglishButton text={commentDraft} onChange={(value) => { setCommentDraft(value); setCommentRetry(false); }} /></label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}
+            </section>
+          {canArchive && <div className="task-archive-actions"><button className="danger-button" type="button" onClick={archive}>Archive task</button></div>}
           <section className="change-log"><div className="detail-section-head"><h3>Change log</h3><small>{events.length} events</small></div>{events.slice(0, 8).map((event) => <article key={event.id}><span>{event.action}</span><p><b>{event.detail}</b><small>{event.actor} · {event.at} · {CLIENT_TIME_ZONE_LABEL}</small></p></article>)}{events.length === 0 && <p className="muted-copy">No changes recorded for this task.</p>}</section>
-          <div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button>{task.deadline && <button className="secondary-button" type="button" onClick={() => void downloadIcs(task)}>↓ Add to calendar</button>}{canArchive && <button className="danger-button" type="button" onClick={archive}>Archive task</button>}{canEdit && task.status !== "Completed" && task.status !== "Started" && taskStatusOptions.includes("Started") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Started")}>Start task</button>}{canEdit && task.status === "Started" && taskStatusOptions.includes("Deferred") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Deferred")}>Defer</button>}{canEdit && task.status !== "Completed" && taskStatusOptions.includes("Completed") && <button className="primary-button" type="button" onClick={() => updateStatus(task, "Completed")}>✓ Mark as completed</button>}</div>
         </>
       )}
     </Modal>
   );
 }
 
-function CompanyForm({ statusOptions, companyTypeOptions, defaultOwner, onClose, onSubmit }: { statusOptions: string[]; companyTypeOptions: string[]; defaultOwner: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, logoDataUrl: string) => Promise<boolean> }) {
+function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, defaultOwner, openExistingCompany, onClose, onSubmit }: { companies: Company[]; countries: string[]; statusOptions: string[]; companyTypeOptions: string[]; defaultOwner: string; openExistingCompany: (company: Company) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, logoDataUrl: string) => Promise<boolean> }) {
   const companyCreateDraft = useFormDraft("company-create");
   const [logoDataUrl, setLogoDataUrl] = useState("");
   const [imageProcessing, setImageProcessing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
+  const [companyNameDraft, setCompanyNameDraft] = useState(() => companyCreateDraft.initialValue("name"));
   const [descriptionDraft, setDescriptionDraft, clearDescriptionDraft, descriptionDraftRestored] = useCookieDraft("company-create-description", "");
+  const duplicateCompanies = companyNameDraft.trim().length < 2 ? [] : companies.filter((company) => company.name.toLowerCase().includes(companyNameDraft.trim().toLowerCase())).slice(0, 6);
   return (
     <Modal title="New company" eyebrow="Companies" onClose={onClose}>
       <form {...companyCreateDraft.formProps} onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, logoDataUrl).then((saved) => { if (saved) { companyCreateDraft.clear(); clearDescriptionDraft(); } setRetry(!saved); }).finally(() => setSubmitting(false)); } }} className="entity-form">
         <ImageField label="Company logo" name="companyLogo" value={logoDataUrl} onChange={setLogoDataUrl} onProcessingChange={setImageProcessing} kind="company" />
-        <label className="field field-full"><span>Company name *</span><input name="name" required minLength={2} maxLength={255} autoFocus placeholder="For example, Baltic Engineering" /></label>
+        <div className="field field-full company-duplicate-field"><label><span>Company name *</span><input name="name" value={companyNameDraft} onChange={(event) => setCompanyNameDraft(event.target.value)} required minLength={2} maxLength={255} autoFocus placeholder="For example, Baltic Engineering" autoComplete="off" /></label>{duplicateCompanies.length > 0 && <div className="company-duplicate-suggestions" role="listbox" aria-label="Existing companies with a similar name">{duplicateCompanies.map((company) => <button key={company.id} type="button" onClick={() => openExistingCompany(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{companyLocation(company)} · open existing company</small></span></button>)}</div>}</div>
         <label className="field"><span>Company type *</span><select name="kind" required>{companyTypeOptions.map((kind) => <option key={kind}>{kind}</option>)}</select></label>
         <label className="field"><span>Relationship status *</span><select name="status" required>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-        <label className="field"><span>Country *</span><input name="country" required maxLength={100} placeholder="Ukraine" /></label>
+        <label className="field"><span>Country *</span><input name="country" list="company-country-options" required maxLength={100} placeholder="Select or type a country" /><datalist id="company-country-options">{countries.map((country) => <option key={country} value={country} />)}</datalist></label>
         <label className="field"><span>City</span><input name="city" maxLength={100} placeholder="Kyiv" /></label>
         <label className="field"><span>Website</span><input name="website" inputMode="url" maxLength={255} placeholder="example.com" /></label>
         <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/company/..." /></label>
         <label className="field"><span>NDA</span><select name="ndaStatus" defaultValue={NDA_STATUSES[0]}>{NDA_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label>
         <input name="owner" type="hidden" value={defaultOwner} />
-        <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Directions, projects, and cooperation context" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={descriptionDraft} onChange={setDescriptionDraft} maxLength={4000} draftRestored={descriptionDraftRestored} /></label>
+        <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Directions, projects, and cooperation context" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={descriptionDraft} onChange={setDescriptionDraft} maxLength={4000} draftRestored={descriptionDraftRestored} /><TranslateToEnglishButton text={descriptionDraft} onChange={setDescriptionDraft} /></label>
         {retry && <div className="form-error field-full" role="alert">The company was not saved. Your entries are preserved; try again when the connection is available.</div>}
         <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { companyCreateDraft.clear(); clearDescriptionDraft(); onClose(); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing || submitting}>{imageProcessing ? "Processing image…" : submitting ? "Saving…" : retry ? "Try again" : "Create company"}</button></div>
       </form>
@@ -3871,7 +4266,20 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
   const [noteDraft, setNoteDraft, clearNoteDraft, noteDraftRestored] = useCookieDraft("task-create-description", "");
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
+  const [contactDate, setContactDate] = useState(() => taskCreateDraft.initialValue("contactDate", todayUser()));
+  const [deadline, setDeadline] = useState(() => taskDeadlineDraftValue(taskCreateDraft.initialValue, taskDeadlineFromContactDate(taskCreateDraft.initialValue("contactDate", todayUser()), "month")));
+  const [priorityDraft, setPriorityDraft] = useState<Task["priority"]>(() => {
+    const drafted = taskCreateDraft.initialValue("priority", "Low") as Task["priority"];
+    return TASK_PRIORITIES.includes(drafted) ? drafted : "Low";
+  });
+  const managerStorageKey = `crm:last-task-manager:${currentUserEmail.toLowerCase()}`;
+  const [responsibleManager, setResponsibleManager] = useState(() => {
+    const drafted = taskCreateDraft.initialValue("owner");
+    const remembered = typeof window === "undefined" ? "" : window.localStorage.getItem(managerStorageKey) ?? "";
+    return [drafted, remembered, defaultOwner].find((value) => managerOptions.includes(value)) ?? managerOptions[0] ?? "";
+  });
   const companyContacts = contacts.filter((contact) => contact.companyId === companyId);
+  const selectedCompanyBlacklisted = companies.find((company) => company.id === companyId)?.status === "Black List";
 
   function selectCompany(value: string) {
     const match = companyByName(companies, value);
@@ -3914,7 +4322,8 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
   return (
     <Modal title="New task" eyebrow="Activity" onClose={onClose}>
       <form {...taskCreateDraft.formProps} onSubmit={(event) => { if (quickContactOpen) { event.preventDefault(); setQuickError("Save or cancel the quick contact before creating the task."); } else if (!companies.some((company) => company.id === companyId)) { event.preventDefault(); setFieldError(event.currentTarget, "companyName", "Select an existing company from the list."); } else { setSubmitting(true); setRetry(false); void onSubmit(event).then((saved) => { if (saved) { taskCreateDraft.clear(); clearNoteDraft(); } setRetry(!saved); }).finally(() => setSubmitting(false)); } }} className="entity-form">
-        <label className="field field-full"><span>Task title *</span><input name="title" required minLength={3} maxLength={255} autoFocus placeholder="What needs to be done?" /></label>
+        <input name="companyId" type="hidden" value={companyId} />
+        <label className="field field-full"><span>Task title *</span><input name="title" list="task-title-options" required minLength={3} maxLength={255} autoFocus placeholder="Choose or enter a task title" /><datalist id="task-title-options"><option value="Follow Up" /><option value="Introductory meeting" /></datalist></label>
         <CompanyCombobox inputId="task-create-company" label="Company *" companies={companies} value={companyQuery} onChange={selectCompany} required />
         <div className="contact-field-with-action">
           <label className="field"><span>Contact person</span><select name="contactPersonId" value={contactPersonId} onChange={(event) => setContactPersonId(event.target.value)}><option value="">Not specified</option>{companyContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
@@ -3935,12 +4344,12 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
           {quickError && <div className="form-error" role="alert">{quickError}</div>}
           <div className="quick-contact-actions"><button className="secondary-button" type="button" onClick={resetQuickContact}>Cancel</button><button className="primary-button" type="button" disabled={quickPhotoProcessing} onClick={saveQuickContact}>{quickPhotoProcessing ? "Processing image…" : "Save contact"}</button></div>
         </section>}
-        <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required defaultValue={todayUser()} /></label>
-        <label className="field"><span>Deadline · {CLIENT_TIME_ZONE_LABEL}</span><input name="deadline" type="datetime-local" /></label>
-        <label className="field"><span>Responsible manager *</span><select name="owner" required defaultValue={defaultOwner}>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
+        <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required value={contactDate} onChange={(event) => { const value = event.target.value; setContactDate(value); setDeadline(taskDeadlineFromContactDate(value, "month")); }} /></label>
+        <div className="field field-full task-deadline-field"><div className="task-deadline-row"><TaskDeadlineInput value={deadline} onChange={setDeadline} /><div className="deadline-presets" aria-label="Quick deadline choices"><button type="button" onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "week"))}>1 week</button><button type="button" onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "two-weeks"))}>2 weeks</button><button type="button" onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "month"))}>1 month</button></div></div></div>
+        <label className="field"><span>Responsible manager *</span><select name="owner" required value={responsibleManager} onChange={(event) => { setResponsibleManager(event.target.value); window.localStorage.setItem(managerStorageKey, event.target.value); }}>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
         <label className="field"><span>Status *</span><select name="status" defaultValue={taskStatusOptions[0] ?? ""}>{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-        <label className="field"><span>Priority *</span><select name="priority" defaultValue="Low">{TASK_PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
-        <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={noteDraft} onChange={setNoteDraft} maxLength={4000} draftRestored={noteDraftRestored} /></label>
+        {selectedCompanyBlacklisted ? <div className="field priority-locked-field"><span>Priority</span><b>Unavailable for Black List companies</b></div> : <label className="field"><span>Priority *</span><select className={priorityToneClass(priorityDraft)} name="priority" value={priorityDraft} onChange={(event) => setPriorityDraft(event.target.value as Task["priority"])}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>}
+        <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={noteDraft} onChange={setNoteDraft} maxLength={4000} draftRestored={noteDraftRestored} /><TranslateToEnglishButton text={noteDraft} onChange={setNoteDraft} /></label>
         <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} /><span>{lead}</span></label>)}</fieldset>
         <div className="reminder-note field-full"><span>◷</span><p><b>Calendar and email reminders</b><small>The CRM provides an .ics file. Scheduled email delivery requires an active User linked to the selected CJN Manager.</small></p></div>
         {retry && <div className="form-error field-full" role="alert">The task was not saved. Your entries are preserved; try again when the connection is available.</div>}

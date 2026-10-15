@@ -6,6 +6,7 @@ namespace CRM\Controller;
 
 use CRM\Domain\BusinessCardOcrService;
 use CRM\Domain\SpeechTranscriptionService;
+use CRM\Domain\TranslationService;
 use CRM\Http\ApiException;
 use CRM\Http\Request;
 use CRM\Http\Response;
@@ -19,6 +20,7 @@ final class AiInputController
         private readonly AuthContext $auth,
         private readonly BusinessCardOcrService $ocr,
         private readonly SpeechTranscriptionService $speech,
+        private readonly TranslationService $translation,
         private readonly ResourceGuard $resources
     ) {
     }
@@ -47,5 +49,13 @@ final class AiInputController
         $this->resources->consume('speech', $this->auth->userId(), Config::int('WHISPER_MAX_REQUESTS_PER_HOUR', 10));
         $result = $this->resources->exclusive('speech', fn (): array => $this->speech->transcribe($file));
         Response::json(['data' => $result]);
+    }
+
+    public function translate(Request $request): never
+    {
+        $this->auth->requireWrite();
+        $text = trim((string) ($request->json()['text'] ?? ''));
+        $this->resources->consume('translation', $this->auth->userId(), Config::int('TRANSLATION_MAX_REQUESTS_PER_HOUR', 120));
+        Response::json(['data' => ['text' => $this->translation->toEnglish($text)]]);
     }
 }

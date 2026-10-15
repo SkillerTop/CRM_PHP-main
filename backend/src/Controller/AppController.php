@@ -109,7 +109,7 @@ final class AppController
             'id' => (int) $row['id'], 'task_id' => (int) $row['task_id'],
             'author_user_id' => $row['author_user_id'] === null ? null : (int) $row['author_user_id'],
             'author' => (string) $row['author_name'], 'text' => (string) $row['text'], 'is_hidden' => (bool) $row['is_hidden'],
-            'created_at' => Clock::api((string) $row['created_at']),
+            'created_at' => Clock::api((string) $row['created_at']), 'updated_at' => Clock::api((string) $row['updated_at']),
         ], $comments);
 
         $attachmentRows = $this->db->query(
@@ -130,6 +130,10 @@ final class AppController
         foreach ($this->db->query($lookupSql)->fetchAll() as $row) {
             $lookupGroups[(string) $row['type']][] = $this->lookups->map($row, $admin);
         }
+        $countries = array_map(
+            static fn (array $row): string => (string) $row['name'],
+            $this->db->query('SELECT name FROM countries ORDER BY sort_order, name')->fetchAll()
+        );
 
         $users = [];
         if ($admin) {
@@ -181,7 +185,7 @@ final class AppController
             'companies' => array_map([EntityMapper::class, 'company'], $companies),
             'contacts' => array_map([EntityMapper::class, 'contact'], $contacts),
             'tasks' => $mappedTasks, 'comments' => $mappedComments, 'attachments' => $attachments,
-            'lookups' => $lookupGroups, 'users' => $users, 'audit' => $events,
+            'lookups' => $lookupGroups, 'countries' => $countries, 'users' => $users, 'audit' => $events,
         ]]);
     }
 }

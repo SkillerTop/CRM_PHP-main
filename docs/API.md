@@ -37,13 +37,15 @@
 | GET/POST | `/tasks` | `manager`, `company`, `state`, `page`, `sort`, `dir`; `include_archived=1` только Admin |
 | GET/PUT | `/tasks/{id}` | одинаковый набор полей для create/edit |
 | POST | `/tasks/{id}/archive` | Admin |
-| GET/POST | `/tasks/{id}/comments` | комментарии immutable |
+| GET/POST | `/tasks/{id}/comments` | список и создание комментариев |
+| PUT | `/tasks/{id}/comments/{commentId}` | автор комментария или Admin; обновляет текст |
 | PATCH | `/tasks/{id}/comments/{commentId}` | Admin: `{hidden:true}` |
 | GET | `/tasks/{id}/log` | фильтр единого ChangeEvent |
 | GET | `/tasks/{id}/reminder.ics` | Outlook-compatible event |
 | POST | `/tasks/{id}/attachments` | multipart, поле `file`, до 20 МБ |
 | GET/DELETE | `/tasks/{id}/attachments/{attachmentId}` | delete: автор или Admin |
 | POST | `/speech/transcribe` | multipart `file`; локальная библиотека OpenAI Whisper, возвращает распознанный текст для вставки в поле; браузер записывает не более 60 секунд за один запрос |
+| POST | `/translate` | `{text}`; определяет язык, переводит на английский и возвращает текст для замены содержимого поля |
 
 `state` для задач: `actual` (по умолчанию), `overdue`, `completed`, `deferred`, `canceled`, `all`.
 

@@ -29,6 +29,7 @@ use CRM\Domain\ManagerUserLinker;
 use CRM\Domain\ProcessRunner;
 use CRM\Domain\ReminderService;
 use CRM\Domain\SpeechTranscriptionService;
+use CRM\Domain\TranslationService;
 use CRM\Domain\SystemSettings;
 use CRM\Http\ApiException;
 use CRM\Http\Request;
@@ -64,6 +65,7 @@ final class App
         $processRunner = new ProcessRunner();
         $businessCardOcr = new BusinessCardOcrService($processRunner);
         $speechTranscription = new SpeechTranscriptionService($processRunner);
+        $translation = new TranslationService();
 
         $authController = new AuthController($db, $this->auth, $audit, $rateLimiter, $mailer, $settings, $managerUsers);
         $profileController = new ProfileController($db, $this->auth, $audit, $mailer);
@@ -78,7 +80,7 @@ final class App
         $settingsController = new SettingsController($db, $this->auth, $audit, $settings);
         $healthController = new HealthController($db);
         $appController = new AppController($db, $this->auth, $lookups, $managerUsers);
-        $aiInputController = new AiInputController($this->auth, $businessCardOcr, $speechTranscription, $resourceGuard);
+        $aiInputController = new AiInputController($this->auth, $businessCardOcr, $speechTranscription, $translation, $resourceGuard);
 
         $this->router = Routes::create(
             $healthController,

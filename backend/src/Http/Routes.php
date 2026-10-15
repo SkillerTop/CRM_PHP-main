@@ -57,6 +57,7 @@ final class Routes
 
         $r->add('POST', '/api/ocr/business-card', fn (Request $request) => $aiInputController->businessCard($request));
         $r->add('POST', '/api/speech/transcribe', fn (Request $request) => $aiInputController->speech($request));
+        $r->add('POST', '/api/translate', fn (Request $request) => $aiInputController->translate($request));
 
         $r->add('GET', '/api/companies', fn (Request $request) => $companyController->index($request));
         $r->add('POST', '/api/companies', fn (Request $request) => $companyController->store($request));
@@ -81,6 +82,7 @@ final class Routes
         $r->add('POST', '/api/tasks/{id}/archive', fn (Request $request, array $p) => $taskController->archive($request, (int) $p['id']));
         $r->add('GET', '/api/tasks/{id}/comments', fn (Request $request, array $p) => $taskController->comments($request, (int) $p['id']));
         $r->add('POST', '/api/tasks/{id}/comments', fn (Request $request, array $p) => $taskController->addComment($request, (int) $p['id']));
+        $r->add('PUT', '/api/tasks/{id}/comments/{commentId}', fn (Request $request, array $p) => $taskController->updateComment($request, (int) $p['id'], (int) $p['commentId']));
         $r->add('PATCH', '/api/tasks/{id}/comments/{commentId}', fn (Request $request, array $p) => $taskController->commentVisibility($request, (int) $p['id'], (int) $p['commentId']));
         $r->add('GET', '/api/tasks/{id}/log', fn (Request $request, array $p) => $taskController->log($request, (int) $p['id']));
         $r->add('GET', '/api/tasks/{id}/reminder.ics', fn (Request $_, array $p) => $taskController->calendar((int) $p['id']));

@@ -110,6 +110,7 @@ final class EnvironmentValidator
             ['OCR_MAX_FILE_MB', 1, 100, 8], ['WHISPER_MAX_FILE_MB', 1, 500, 25],
             ['OCR_TIMEOUT_SECONDS', 1, 300, 45], ['WHISPER_TIMEOUT_SECONDS', 1, 900, 900],
             ['AI_MAX_TIMEOUT_SECONDS', 1, 900, 900], ['AI_MAX_OUTPUT_BYTES', 1024, 10485760, 1048576],
+            ['TRANSLATION_TIMEOUT_SECONDS', 5, 60, 20], ['TRANSLATION_MAX_REQUESTS_PER_HOUR', 1, 1000, 120],
         ] as [$key, $minimum, $maximum, $default]) {
             self::integer($errors, $key, $minimum, $maximum, $default);
         }

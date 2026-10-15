@@ -78,6 +78,7 @@ final class EntityMapper
         return [
             'id' => (int) $row['id'],
             'company_id' => (int) $row['company_id'],
+            'parent_task_id' => isset($row['parent_task_id']) ? (int) $row['parent_task_id'] : null,
             'company' => $row['company_name'] ?? null,
             'name' => (string) $row['name'],
             'contact_date' => (string) $row['contact_date'],
@@ -88,6 +89,7 @@ final class EntityMapper
             'contact_person' => $row['contact_person_name'] ?? null,
             'description' => $row['description'],
             'status_id' => (int) $row['status_lookup_id'],
+            'status_key' => $row['status_key'] ?? null,
             'status' => $row['status_value'] ?? null,
             'priority' => $row['priority'] ?? 'Low',
             'is_closed' => (bool) ($row['status_is_closed'] ?? false),
@@ -95,6 +97,7 @@ final class EntityMapper
             'outcome_status' => $row['outcome_status_value'] ?? null,
             'outcome_notes' => $row['outcome_notes'],
             'deadline' => Clock::api($row['deadline'] ?? null),
+            'completed_at' => Clock::api($row['completed_at'] ?? null),
             'is_overdue' => isset($row['is_overdue']) ? (bool) $row['is_overdue'] : false,
             'reminder_possible' => isset($row['reminder_possible']) ? (bool) $row['reminder_possible'] : null,
             'comment_count' => isset($row['comment_count']) ? (int) $row['comment_count'] : null,

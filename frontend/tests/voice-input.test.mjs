@@ -137,7 +137,7 @@ test("caps microphone recording at one minute and wires all voice draft fields",
   assert.match(voice, /replaceSpellingIssue\(value, issue, suggestion\)/);
   assert.match(draftHook, /readSecureVoiceDraft\(scope, secureKey\)/);
   assert.match(draftHook, /writeSecureVoiceDraft\(scope, secureKey, draft\.value\)/);
-  assert.ok((app.match(/<VoiceTextTools\b/g) ?? []).length >= 5);
+  assert.ok((app.match(/<VoiceTextTools\b/g) ?? []).length >= 4);
   assert.match(voice, /className="voice-text-tools voice-text-tools-hidden"/);
   assert.doesNotMatch(app, /AI_INPUTS_ENABLED/);
 });

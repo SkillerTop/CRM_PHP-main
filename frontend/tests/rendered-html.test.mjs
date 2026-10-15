@@ -43,6 +43,8 @@ test("connects the static application directly to the same-origin PHP API", asyn
   assert.match(component, /apiRequest<\{ data: \{ user: ApiRecord; csrf_token: string \} \}>\("\/auth\/login"/);
   assert.match(component, /apiRequest<\{ data: \{ user: ApiRecord; csrf_token: string \} \}>\("\/auth\/me"\)/);
   assert.match(component, /apiRequest\("\/profile\/password", \{ method: "PUT"/);
+  assert.match(component, /async function signOut\(\)[\s\S]*await apiRequest\("\/auth\/logout", \{ method: "POST" \}\)[\s\S]*setIdentity\(null\)/);
+  assert.doesNotMatch(component, /void apiRequest\("\/auth\/logout"/);
   assert.match(component, /link\.href = `\/api\/audit\?\$\{params\}`/);
   assert.match(apiClient, /credentials: "same-origin"/);
   assert.match(apiClient, /credentials: normalizedBaseUrl === "" \? "same-origin" : "include"/);

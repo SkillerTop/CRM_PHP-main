@@ -161,7 +161,7 @@ test("reflows all nine Companies fields into contained cards below 1280 px", asy
   const companiesView = sectionBetween(component, "function Companies(", "function Contacts(");
 
   assert.match(companiesView, /className="table-scroll responsive-card-scroll"[^>]*role="region"[^>]*aria-label="Companies table"[^>]*tabIndex=\{0\}[\s\S]*?<table className="data-table companies-table responsive-card-table">/);
-  assert.match(companiesView, /<tr key=\{company\.id\} tabIndex=\{0\}[\s\S]*?event\.key === "Enter"[\s\S]*?event\.target === event\.currentTarget/);
+  assert.match(companiesView, /<tr key=\{company\.id\}[^>]*tabIndex=\{0\}[\s\S]*?event\.key === "Enter"[\s\S]*?event\.target === event\.currentTarget/);
 
   const expectedLabels = ["Company", "Type", "Location", "Client status", "Priority", "Contacts", "Last contact", "Owner", "Actions"];
   const renderedLabels = [...companiesView.matchAll(/<td\b[^>]*\bdata-label="([^"]+)"/g)].map((match) => match[1]);
@@ -372,11 +372,12 @@ test("keeps seeded statuses while allowing Admin to manage the workflow", async 
     "Active Client",
     "On Hold",
     "Lost / Declined",
+    "Black List",
   ];
   const statusSeed = sectionBetween(component, "const RELATIONSHIP_STATUSES = [", "] as const;");
   const seededStatuses = [...statusSeed.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(seededStatuses, expectedStatuses);
-  assert.equal(new Set(seededStatuses).size, 5, "Relationship statuses must be unique");
+  assert.equal(new Set(seededStatuses).size, 6, "Relationship statuses must be unique");
 
   const initialCompanies = sectionBetween(component, "const INITIAL_COMPANIES: Company[] = [", "const INITIAL_CONTACTS");
   const initialCompanyStatuses = [...initialCompanies.matchAll(/\bstatus:\s*"([^"]+)"/g)].map((match) => match[1]);
@@ -498,7 +499,8 @@ test("uses lookup task statuses in manager-scoped Activity filters without sideb
 
   assert.match(app, /const taskStatusOptions = lookupValues\("task-status"\)/);
   assert.match(app, /<Activity[\s\S]*?taskStatusOptions=\{taskStatusOptions\}/);
-  assert.match(activity, /const filters = \[\.\.\.taskStatusOptions, "Open", "Overdue", "All"\]/);
+  assert.match(activity, /const filters = \[\.\.\.taskStatusOptions\.filter\(\(item\) => item !== "Open"\), "Open", "Overdue", "All"\]/);
+  assert.match(activity, /filters\.map\(\(item\)/);
   assert.match(activity, /const managerTasks = managerFilter === "All managers" \? tasks : tasks\.filter\(\(task\) => task\.owner === managerFilter\)/);
   assert.match(activity, /item === "All"[\s\S]*?managerTasks\.length[\s\S]*?item === "Overdue"[\s\S]*?managerTasks\.filter\(isOverdue\)\.length[\s\S]*?managerTasks\.filter\(\(task\) => task\.status === item\)\.length/);
   assert.doesNotMatch(component, /TASK_FILTER_VALUES/);
@@ -522,23 +524,23 @@ test("removes outcome controls and keeps the searchable company list inside the 
   assert.doesNotMatch(activity, /task-outcome|Outcome notes|Outcome status/i);
   assert.doesNotMatch(taskDetail, /name="outcome|Outcome notes|Outcome status/i);
   assert.doesNotMatch(taskForm, /name="outcome|Outcome notes|Outcome status/i);
-  assert.doesNotMatch(component, /<datalist/);
+  assert.doesNotMatch(companyCombobox, /<datalist/);
   assert.match(contactForm, /<CompanyCombobox inputId="contact-create-company"[\s\S]*?onChange=\{selectCompany\} required/);
   assert.match(contactDetail, /<CompanyCombobox inputId="contact-edit-company"[\s\S]*?onChange=\{selectCompany\} required/);
   assert.match(taskForm, /<CompanyCombobox inputId="task-create-company"[\s\S]*?onChange=\{selectCompany\} required/);
   assert.match(taskDetail, /<CompanyCombobox inputId="task-edit-company"[\s\S]*?onChange=\{selectCompany\} required/);
   assert.match(companyCombobox, /role="combobox"[\s\S]*?aria-autocomplete="list"[\s\S]*?aria-expanded=\{open\}/);
   assert.match(companyCombobox, /event\.key === "ArrowDown"[\s\S]*?event\.key === "ArrowUp"[\s\S]*?event\.key === "Enter"[\s\S]*?event\.key === "Escape"/);
-  assert.match(companyCombobox, /className="company-combobox-toggle"[\s\S]*?<span className="company-combobox-chevron" aria-hidden="true" \/>/);
+  assert.match(companyCombobox, /className="company-combobox-toggle"[\s\S]*?<span aria-hidden="true">•••<\/span>/);
   assert.match(companyCombobox, /className="company-combobox-options"[\s\S]*?role="listbox"/);
-  assert.match(blockAfter(css, ".company-combobox-chevron {"), /border-right:\s*2px solid currentColor[\s\S]*?border-bottom:\s*2px solid currentColor[\s\S]*?rotate\(45deg\)/);
+  assert.doesNotMatch(css, /\.company-combobox-chevron/);
   assert.match(blockAfter(css, ".company-combobox-options {"), /position:\s*absolute[\s\S]*?right:\s*0[\s\S]*?left:\s*0[\s\S]*?overflow-y:\s*auto/);
   assert.match(contactForm, /Select an existing company from the list\./);
   assert.match(contactDetail, /Select an existing company from the list\./);
   assert.match(taskForm, /Select an existing company from the list\./);
   assert.match(taskDetail, /Select an existing company from the list\./);
-  assert.match(taskForm, /name="priority" defaultValue="Low"[\s\S]*?TASK_PRIORITIES\.map/);
-  assert.match(taskDetail, /name="priority" defaultValue=\{task\.priority\}[\s\S]*?TASK_PRIORITIES\.map/);
+  assert.match(taskForm, /selectedCompanyBlacklisted[\s\S]*?name="priority" value=\{priorityDraft\}[\s\S]*?TASK_PRIORITIES\.map/);
+  assert.match(taskDetail, /editCompanyBlacklisted[\s\S]*?name="priority" value=\{editPriority\}[\s\S]*?TASK_PRIORITIES\.map/);
   assert.match(taskDetail, /const editCompanyContacts = contacts\.filter\(\(contact\) => contact\.companyId === editCompanyId\)/);
   assert.match(taskDetail, /setEditContactPersonId\(""\)/);
 });
@@ -881,7 +883,7 @@ test("ships the Companies card breakpoint and containment rules in compiled CSS"
 test("covers the v3.1 audit gaps in the integrated frontend", async () => {
   const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
   const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
-  const activity = sectionBetween(component, "function Activity(", "function Lookups(");
+  const taskCard = sectionBetween(component, "function TaskCardButton(", "function Activity(");
   const users = sectionBetween(component, "function Users(", "function Audit(");
   const audit = sectionBetween(component, "function Audit(", "function CompanyDetail(");
   const taskDetail = sectionBetween(component, "function TaskDetail(", "function CompanyForm(");
@@ -892,12 +894,14 @@ test("covers the v3.1 audit gaps in the integrated frontend", async () => {
   assert.match(app, /403 · Access forbidden/);
   assert.match(app, /possible_duplicate[\s\S]*?allow_duplicate: true/);
   assert.match(app, /Use Try again to resubmit without losing the form/);
-  assert.match(activity, /Contact: \{task\.contactDate[\s\S]*?Person: \{task\.contactPerson/);
-  assert.match(activity, /Reminder impossible/);
-  assert.match(taskDetail, /Attachments[\s\S]*?Upload file[\s\S]*?downloadAttachment[\s\S]*?deleteAttachment/);
+  assert.match(taskCard, /Contact: \{task\.contactDate[\s\S]*?Person: \{task\.contactPerson/);
+  assert.match(taskCard, /Reminder impossible/);
+  assert.match(taskDetail, /attachment-tooltip[\s\S]*?Upload[\s\S]*?task-attachment-bar[\s\S]*?downloadAttachment[\s\S]*?deleteAttachment/);
   assert.match(app, /apiDownload\(`\/tasks\/\$\{task\.id\}\/reminder\.ics`\)[\s\S]*?link\.download = `task-\$\{task\.id\}\.ics`/);
   assert.match(taskDetail, /downloadIcs: \(task: Task\) => Promise<void>/);
-  assert.match(taskDetail, /Comment hidden by Admin[\s\S]*?setCommentHidden/);
+  assert.match(taskDetail, /Task comments[\s\S]*?Post comment/);
+  assert.match(taskDetail, /taskEditLocked[\s\S]*?seven-day editing window has ended/);
+  assert.match(taskDetail, /const displayedTask = task/);
   assert.match(audit, /audit_action[\s\S]*?audit_user[\s\S]*?audit_entity[\s\S]*?audit_from[\s\S]*?audit_to/);
   assert.match(audit, /apiRequest<\{ data: ApiRecord\[\]; meta: ApiMeta \}>\(`\/audit\?\$\{params\}`\)/);
   assert.match(audit, /Previous audit page[\s\S]*?Next audit page/);
@@ -928,7 +932,7 @@ test("selects the signed-in user's linked manager for new records", async () => 
   assert.match(userController, /approve\([\s\S]*?managerUsers->ensureForUser\(\$id\)/);
   assert.match(app, /<CompanyForm[\s\S]*?defaultOwner=\{defaultManager\}/);
   assert.match(app, /<TaskForm[\s\S]*?defaultOwner=\{defaultManager\}/);
-  assert.match(app, /<select name="owner" required defaultValue=\{defaultOwner\}>/);
+  assert.match(app, /<select name="owner" required value=\{responsibleManager\}/);
 });
 
 test("reloads persisted contact photos from the paginated API", async () => {
@@ -964,7 +968,7 @@ test("covers the requested company, dashboard, NDA, and linked-record improvemen
   assert.match(companies, /latestTaskByCompany\.get\(company\.id\)\?\.priority === priorityFilter/);
   assert.match(companyDetail, />LinkedIn<\/a>/);
   assert.match(companyDetail, /NDA_STATUSES\.map/);
-  assert.match(companyDetail, /priority-mark\$\{task\.status === "Completed" \? " completed"/);
+  assert.match(companyDetail, /company-sequence-task\$\{task\.id === priorityTask\?\.id \? " current"/);
   assert.match(taskForm, /companies\.find\(\(company\) => company\.id === initialCompanyId\) \?\? companyByName/);
   assert.match(css, /\.priority-mark\.completed\s*\{[^}]*color:\s*var\(--green\)/s);
   assert.match(css, /\.detail-logo\s*\{[^}]*width:\s*88px[^}]*height:\s*88px/s);
@@ -980,8 +984,140 @@ test("uses a three-column contact information grid and combines source with its 
     readFile(new URL("app/globals.css", root), "utf8"),
   ]);
   const contactDetail = sectionBetween(app, "function ContactDetail(", "function UserDetail(");
-  const infoGrid = sectionBetween(contactDetail, '<div className="detail-grid contact-info-grid">', '<div className="modal-actions">');
+  const infoGrid = sectionBetween(contactDetail, '<div className="detail-grid contact-info-grid">', '<div className="modal-actions contact-detail-actions">');
   assert.match(infoGrid, /Email[\s\S]*?Phone[\s\S]*?LinkedIn[\s\S]*?Source \/ detail[\s\S]*?CJN Manager[\s\S]*?Initiated by/);
   assert.match(infoGrid, /contact\.sourceDetail \|\| contact\.referredBy/);
+  assert.match(app, /function exportContactToOutlook[\s\S]*?BEGIN:VCARD[\s\S]*?ORG:[\s\S]*?TITLE:[\s\S]*?EMAIL;TYPE=INTERNET,WORK[\s\S]*?URL;TYPE=LinkedIn[\s\S]*?END:VCARD/);
+  assert.match(contactDetail, /exportContactToOutlook\(contact, company\)[\s\S]*?Export to Outlook/);
   assert.match(blockAfter(css, ".contact-info-grid {"), /grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
+});
+
+test("groups activities into company task sequences without parent tasks", async () => {
+  const [app, css, controller, mapper, migration] = await Promise.all([
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("../backend/src/Controller/TaskController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8"),
+    readFile(new URL("../backend/database/migrations/009_task_threads.sql", root), "utf8"),
+  ]);
+  const companyDetail = sectionBetween(app, "function CompanyDetail(", "function ContactDetail(");
+  const activity = sectionBetween(app, "function Activity(", "function Lookups(");
+  const taskForm = sectionBetween(app, "function TaskForm(", "function UserForm(");
+
+  assert.match(app, /parentTaskId\?: string/);
+  assert.match(app, /parent_task_id: null/);
+  assert.match(app, /function companyTaskSequence/);
+  assert.match(activity, /visibleTaskCounts[\s\S]*?visibleCompanySequences[\s\S]*?Unhide previous[\s\S]*?Unhide all[\s\S]*?company-task-sequence/);
+  assert.match(companyDetail, /visibleTaskCount[\s\S]*?Unhide previous[\s\S]*?Unhide all/);
+  assert.match(companyDetail, /company-task-history[\s\S]*?Current priority/);
+  assert.match(taskForm, /<Modal title="New task" eyebrow="Activity"/);
+  assert.doesNotMatch(taskForm, /parentTask/);
+  assert.match(css, /\.company-task-sequence[\s\S]*?border-left/);
+  assert.match(controller, /task_threads_removed[\s\S]*?previous_task_not_completed/);
+  assert.match(mapper, /'parent_task_id' => isset\(\$row\['parent_task_id'\]\)/);
+  assert.match(migration, /ADD COLUMN parent_task_id[\s\S]*?FOREIGN KEY \(parent_task_id\)/);
+});
+
+test("covers inline CRM updates, editable comments, task defaults, countries, and Black List", async () => {
+  const [app, css, taskController, routes, upload, migration] = await Promise.all([
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("../backend/src/Controller/TaskController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Http/Routes.php", root), "utf8"),
+    readFile(new URL("../backend/src/Support/UploadedFile.php", root), "utf8"),
+    readFile(new URL("../backend/database/migrations/011_countries_and_black_list.sql", root), "utf8"),
+  ]);
+  const companies = sectionBetween(app, "function Companies(", "function Contacts(");
+  const activity = sectionBetween(app, "function Activity(", "function Lookups(");
+  const taskDetail = sectionBetween(app, "function TaskDetail(", "function CompanyForm(");
+  const companyForm = sectionBetween(app, "function CompanyForm(", "function ContactForm(");
+  const taskForm = sectionBetween(app, "function TaskForm(", "function UserForm(");
+
+  assert.match(taskDetail, /async function saveCommentEdit[\s\S]*?updateComment/);
+  assert.match(taskDetail, /comment-edit-button[\s\S]*?setEditingCommentId/);
+  assert.match(routes, /PUT', '\/api\/tasks\/\{id\}\/comments\/\{commentId\}'/);
+  assert.match(taskController, /function updateComment[\s\S]*?assertTaskEditable[\s\S]*?author_user_id/);
+  assert.match(taskDetail, /inline-task-field[\s\S]*?Status[\s\S]*?Priority[\s\S]*?Add to Outlook/);
+  assert.match(css, /\.inline-task-field select\s*\{[^}]*field-sizing:\s*content/s);
+  assert.match(css, /\.task-detail-actions \.attachment-upload,[\s\S]*?width:\s*fit-content[\s\S]*?min-width:\s*0/s);
+  assert.match(css, /\.task-contact-link,[\s\S]*?\.task-calendar-field \.detail-action-button\s*\{[^}]*margin-top:\s*5px[^}]*font-size:\s*15px/s);
+  assert.match(companies, /table-inline-select/);
+  assert.match(companies, /updateCompany\(\{ \.\.\.company, status:/);
+  assert.match(companies, /updateTask\(\{ \.\.\.latestTaskByCompany/);
+  assert.match(companies, /openCompanyContacts\(company\.id\)/);
+  assert.match(activity, /company-task-group-head[\s\S]*?activity-company-link[\s\S]*?company\.name[\s\S]*?openCompany\(company\)[\s\S]*?Open company/);
+  assert.doesNotMatch(activity, /companyName\(companies, companyId\)/);
+  assert.match(companyForm, /company-duplicate-suggestions[\s\S]*?company-country-options/);
+  assert.match(taskForm, /Follow Up[\s\S]*?Introductory meeting[\s\S]*?deadline-presets[\s\S]*?1 week[\s\S]*?2 weeks[\s\S]*?1 month/);
+  assert.match(app, /function TaskDeadlineInput[\s\S]*?name="deadlineMinute"[\s\S]*?<option value="00">00<\/option><option value="30">30<\/option>/);
+  assert.match(taskForm, /TaskDeadlineInput value=\{deadline\}[\s\S]*?responsibleManager[\s\S]*?localStorage\.setItem/);
+  assert.match(taskForm, /field field-full task-deadline-field/);
+  assert.match(css, /\.task-deadline-control > span\s*\{[^}]*font-size:\s*13px[^}]*text-transform:\s*uppercase/s);
+  assert.match(taskForm, /task-deadline-row[\s\S]*?TaskDeadlineInput[\s\S]*?deadline-presets/);
+  assert.match(css, /\.task-deadline-row\s*\{[^}]*align-items:\s*flex-end[^}]*overflow-x:\s*visible/s);
+  assert.match(css, /\.task-deadline-input\s*\{[^}]*grid-template-columns:\s*170px max-content auto max-content[^}]*width:\s*fit-content/s);
+  assert.match(css, /\.task-deadline-input select\s*\{[^}]*min-width:\s*72px[^}]*field-sizing:\s*content[^}]*font-size:\s*17px/s);
+  assert.match(css, /\.deadline-presets button\s*\{[^}]*min-height:\s*36px[^}]*font-size:\s*13px/s);
+  assert.match(css, /\.deadline-presets\s*\{[^}]*flex-wrap:\s*nowrap[^}]*margin-left:\s*auto[^}]*margin-bottom:\s*5px/s);
+  assert.match(css, /\.deadline-presets button\s*\{[^}]*width:\s*fit-content[^}]*min-width:\s*0/s);
+  assert.doesNotMatch(taskForm, /Default 2:00 PM|minutes are limited/);
+  assert.match(app, /TranslateToEnglishButton/);
+  assert.doesNotMatch(app, /translate\.google\.com|window\.open\(/);
+  assert.match(app, /apiRequest<\{ data: \{ text: string \} \}>\("\/translate"/);
+  assert.match(app, /commentParagraphs\(comment\.text\)[\s\S]*?<p key=/);
+  assert.match(css, /\.comment-text\s*\{[^}]*font-size:\s*16px[^}]*line-height:\s*1\.6/s);
+  assert.match(taskDetail, /Task comments[\s\S]*?task-archive-actions[\s\S]*?Change log/);
+  assert.match(css, /select option\[value="Low"\][\s\S]*?select option\[value="Medium"\][\s\S]*?select option\[value="High"\]/);
+  assert.match(css, /select\s*\{[^}]*appearance:\s*none[^}]*background-image:\s*none !important/s);
+  assert.match(companies, /company\.status === "Black List"[\s\S]*?priority-unavailable/);
+  assert.match(taskController, /isBlacklistedCompany[\s\S]*?\$priority = isset\(\$current\['priority'\]\)/);
+  assert.match(taskDetail, /taskReadOnly = taskEditLocked \|\| taskCompanyBlacklisted[\s\S]*?taskCanEdit = canEdit && !taskReadOnly/);
+  assert.match(taskDetail, /Black List company · task editing is locked[\s\S]*?Tasks for Black List companies are read-only\./);
+  assert.match(taskController, /function assertTaskEditable[\s\S]*?assertCompanyAllowsTaskEditing/);
+  assert.match(taskController, /function assertCompanyAllowsTaskEditing[\s\S]*?blacklisted_task_locked/);
+  assert.match(taskController, /function commentVisibility[\s\S]*?assertTaskEditable\(\$task\)/);
+  assert.match(activity, /blacklisted-activity-company/);
+  assert.match(css, /\.company-task-group\.blacklisted-activity-company[\s\S]*?background:\s*#181d20/);
+  assert.match(css, /\.blacklisted-activity-company \.activity-company-link[\s\S]*?color:\s*#f4f6f7/);
+  assert.match(upload, /'msg'[\s\S]*?'eml'/);
+  assert.match(migration, /CREATE TABLE countries[\s\S]*?'UA','Ukraine'[\s\S]*?'black_list', 'Black List'/);
+  assert.match(css, /\.blacklisted-company[\s\S]*?\.status-black-list/);
+});
+
+test("searches companies, contacts, and activities by syllables after 200 ms", async () => {
+  const [app, css, routes, translation] = await Promise.all([
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("../backend/src/Http/Routes.php", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/TranslationService.php", root), "utf8"),
+  ]);
+  const searchKeyboard = sectionBetween(app, "function handleGlobalSearchKeyDown", "function openAuditEntity");
+  const globalSearchEffect = sectionBetween(app, "useEffect(() => {\n    const query = globalSearch.trim()", "const globalSearchOpen");
+  const companiesView = sectionBetween(app, "function Companies(", "function Contacts(");
+  const activity = sectionBetween(app, "function Activity(", "function Lookups(");
+  const openCompanyFromActivity = sectionBetween(app, "function openCompanyInCompanies", "function openGlobalResult");
+
+  assert.match(app, /const GLOBAL_SEARCH_PAGE_SIZE = 10/);
+  assert.match(app, /function companySearchWords[\s\S]*?normalize\("NFKD"\)[\s\S]*?\[\^\\p\{L\}\]/);
+  assert.match(app, /function companySearchSyllables[\s\S]*?return companySearchWords\(value\)/);
+  assert.match(app, /function searchTextMatches[\s\S]*?syllables\.every\(\(syllable\) => words\.some\(\(word\) => word\.includes\(syllable\)\)\)/);
+  assert.match(app, /useDebouncedValue\(companyQuery, 200\)/);
+  assert.match(globalSearchEffect, /searchTextMatches\(company\.name, query\)/);
+  assert.match(globalSearchEffect, /searchTextMatches\(contact\.name, query\)/);
+  assert.match(globalSearchEffect, /searchTextMatches\(task\.title, query\)[\s\S]*?}, 200\)/);
+  assert.doesNotMatch(globalSearchEffect, /apiRequest/);
+  assert.match(app, /setGlobalSearch\(value\); setGlobalResults\(\[\]\)/);
+  assert.match(searchKeyboard, /event\.key === "Enter"[\s\S]*?event\.preventDefault\(\)/);
+  assert.doesNotMatch(searchKeyboard, /openGlobalResult/);
+  assert.match(app, /visibleGlobalResults = globalResults\.slice/);
+  assert.match(app, /className="search-pagination"[\s\S]*?globalSearchPageCount/);
+  assert.match(companiesView, /event\.key === "Enter"[\s\S]*?event\.preventDefault\(\)[\s\S]*?Search names by syllables/);
+  assert.doesNotMatch(companiesView, /company-search-suggestions/);
+  assert.match(openCompanyFromActivity, /navigate\("companies"\)[\s\S]*?setSelectedCompany\(company\)/);
+  assert.match(app, /<Activity[\s\S]*?openCompany=\{openCompanyInCompanies\}/);
+  assert.match(activity, /activity-company-link[\s\S]*?onClick=\{\(\) => openCompany\(company\)\}/);
+  assert.match(css, /\.search-results \.search-pagination button/);
+  assert.match(routes, /POST', '\/api\/translate'/);
+  assert.match(translation, /'langpair' => 'Autodetect\|en'/);
+  assert.match(app, /onChange\(response\.data\.text\)/);
 });
