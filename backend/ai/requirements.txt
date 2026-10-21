@@ -1,0 +1,2 @@
+-r requirements-speech.txt
+-r requirements-ocr.txt

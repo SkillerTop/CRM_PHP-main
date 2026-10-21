@@ -29,7 +29,7 @@
 | GET | `/companies/{id}/contacts` | вкладка карточки |
 | GET | `/companies/{id}/tasks` | вкладка карточки |
 | GET | `/companies/{id}/log` | ChangeEvent компании |
-| POST | `/ocr/business-card` | multipart `file`; Tesseract OCR, возвращает `raw_text`, `draft`, `confidence`; запись не сохраняется автоматически |
+| POST | `/ocr/business-card` | multipart `file`; локальный PaddleOCR PP-OCRv5, возвращает `raw_text`, `draft`, `confidence`, `ocr_confidence`; запись не сохраняется автоматически |
 | GET/POST | `/contacts` | `company`, `source`, `status`, `has_linkedin`, `q`, `page`, `sort`, `dir`; `include_archived=1` только Admin; contact `status`: `active`/`inactive` |
 | GET/PUT | `/contacts/{id}` | перенос в другую компанию — только Admin; `status` принимает `active` или `inactive` |
 | POST | `/contacts/{id}/archive` | Admin |
@@ -44,7 +44,7 @@
 | GET | `/tasks/{id}/reminder.ics` | Outlook-compatible event |
 | POST | `/tasks/{id}/attachments` | multipart, поле `file`, до 20 МБ |
 | GET/DELETE | `/tasks/{id}/attachments/{attachmentId}` | delete: автор или Admin |
-| POST | `/speech/transcribe` | multipart `file`; локальная библиотека OpenAI Whisper, возвращает распознанный текст для вставки в поле; браузер записывает не более 60 секунд за один запрос |
+| POST | `/speech/transcribe` | multipart `file`; локальный Faster-Whisper `large-v3-turbo` на GPU, возвращает распознанный текст для вставки в поле; браузер записывает не более 60 секунд за один запрос |
 | POST | `/translate` | `{text}`; определяет язык, переводит на английский и возвращает текст для замены содержимого поля |
 
 `state` для задач: `actual` (по умолчанию), `overdue`, `completed`, `deferred`, `canceled`, `all`.

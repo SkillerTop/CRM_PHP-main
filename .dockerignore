@@ -1,0 +1,17 @@
+.git
+.runtime
+.tmp
+.env
+.env.docker
+**/.env
+**/.env.local
+backend/ai/models
+backend/storage
+frontend/node_modules
+frontend/dist
+frontend/.next
+frontend/.wrangler
+frontend/tsconfig.tsbuildinfo
+deploy/*.zip
+output
+work

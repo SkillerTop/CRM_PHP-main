@@ -5,8 +5,10 @@ Backend:
 
 ```powershell
 $php = (Resolve-Path ".runtime\php\php.exe").Path
-& $php -S 127.0.0.1:8080 -t backend/public backend/public/index.php
+& $php -d upload_max_filesize=25M -d post_max_size=32M -d max_file_uploads=20 -d max_input_time=120 -S 127.0.0.1:8080 -t backend/public backend/public/index.php
 ```
+
+Параметры `-d` обязательны для загрузки визиток и вложений больше 2 МБ: встроенный PHP-сервер не применяет `.user.ini`.
 
 Frontend:
 
@@ -25,11 +27,12 @@ Production
 - примените `php backend/bin/console migrate` до переключения трафика;
 - backend `.env` находится в `backend/.env`: `APP_ENV=production`, `APP_DEBUG=false`, `SESSION_SECURE=true`, публичный HTTPS `APP_URL`; `TRUSTED_PROXIES` должен содержать только адреса reverse proxy, которые действительно передают клиентский IP;
 - frontend и PHP API должны быть на одном HTTPS origin: DocumentRoot указывает на `backend/public`, интерфейс работает в `/`, API — в `/api/*`;
-- полный архив собирается из корня командой `& .\deploy\build-package.ps1`; он содержит PHP backend и production frontend внутри `backend/public`, но не содержит локальный `.env`;
+- полный архив собирается из корня командой `& .\deploy\build-package.ps1`; он содержит PHP backend, production frontend внутри `backend/public`, файлы `backend/.env` и `frontend/.env*`, а также скачанные веса в `backend/ai/models`;
+- после распаковки полного архива выполните `python deploy/setup-ai.py`: скрипт проверяет контрольные суммы моделей и создаёт Python-окружения внутри проекта под целевую ОС. Затем `php deploy/check-ai.php` проверяет реальное распознавание на устройствах из `.env`. Подробности — `deploy/DEPLOY_WITH_MODELS.md`;
 - готовый архив только для обновления публичной части создаётся командой `& .\deploy\build-frontend-package.ps1`; он также сохраняет структуру `backend/public/*` и содержит nginx-совместимый `index.php`;
 - `.htaccess` внутри `backend/public` направляет `/api/*` в соседний `index.php`, отдаёт существующие assets и возвращает `index.html` для SPA-маршрутов; на Mirohost/nginx аналогичную маршрутизацию выполняет упакованный PHP front controller;
 - оставьте cron из корневого README для напоминаний и cleanup;
-- не публикуйте `backend/.env`, `.env.local`, пароли или содержимое `backend/storage/uploads`.
+- храните полный архив с `.env` как приватный пакет; DocumentRoot должен оставаться `backend/public`, чтобы настройки и веса не были доступны по HTTP. Не публикуйте `.env`, пароли или содержимое `backend/storage/uploads`.
 
 После развёртывания проверьте: health, вход, смену пароля, создание/изменение/архивирование записи, конфликт `updated_at`, роли Read-only/Admin, комментарий, `.ics` и Audit CSV.
 
@@ -47,9 +50,9 @@ Production
 
 OCR и голосовой ввод
 
-- Для скана визиток установите Tesseract на сервер и укажите `OCR_TESSERACT_BIN`. Языки по умолчанию: `eng+ukr+rus`.
-- Для голосового ввода установите пакет открытой модели OpenAI Whisper (`python -m pip install -U openai-whisper`) и FFmpeg, затем укажите путь к созданной командой пакета `whisper` в `WHISPER_BIN`, а путь к исполняемому файлу FFmpeg — в `WHISPER_FFMPEG_BIN`. По умолчанию используется многоязычная модель `base`; при необходимости её можно переопределить через `WHISPER_MODEL`. Локальный каталог моделей задаётся через `WHISPER_MODEL_DIR`. `WHISPER_LANGUAGE=auto` оставляет автоопределение украинского, русского и английского. В локальной Windows-конфигурации проекта окружение находится в `.runtime/whisper`, FFmpeg — в `.runtime/whisper/ffmpeg`, а модели — в `.runtime/whisper-models`.
-- Для CPU-запуска `base` лимиты `WHISPER_TIMEOUT_SECONDS`, `AI_MAX_TIMEOUT_SECONDS` и `CRM_PROXY_TIMEOUT_MS` по умолчанию составляют 900 секунд, 900 секунд и 900000 мс. На сервере с GPU эти значения можно уменьшить после замера реальной скорости.
+- Для скана визиток используется локальный PaddleOCR PP-OCRv5. Установите GPU-сборку PaddlePaddle и пакет `paddleocr` из `backend/ai/requirements.txt`, затем укажите `OCR_PYTHON_BIN`, `OCR_PADDLE_SCRIPT`, `OCR_DEVICE=gpu`, `OCR_LANGUAGE=uk` и `OCR_MODEL_DIR`. Модель `uk` семейства PP-OCRv5 распознаёт украинский, русский и английский текст.
+- Для голосового ввода используется Faster-Whisper с многоязычной моделью `large-v3-turbo`, `WHISPER_DEVICE=cuda` и `WHISPER_COMPUTE_TYPE=float16`. Установите зависимости из `backend/ai/requirements.txt`, CUDA 12 cuBLAS и cuDNN 9, затем укажите Python и скрипт через `WHISPER_PYTHON_BIN` и `WHISPER_SCRIPT`. `WHISPER_LANGUAGE=auto` оставляет автоопределение языка. FFmpeg отдельно не требуется: Faster-Whisper использует PyAV.
+- Конфигурация и команды для станции с RTX 5080 приведены в `docs/AI_RTX5080_SETUP.md`. Полный пакет включает готовые веса; Python и драйверы устанавливаются под целевую ОС. Пути из `.env` разрешаются относительно `backend`, без привязки к каталогу сборочной машины.
 - Оба механизма локальные: данные клиентов не отправляются в облачные API. Если бинарники не установлены, соответствующая кнопка покажет ошибку настройки, но остальная CRM продолжит работать.
 - Проверка OCR: откройте форму создания контакта, нажмите **Scan / upload card**, загрузите изображение визитки, убедитесь что поля заполнились черновиком и сохранение происходит только после нажатия **Create contact**.
 - Проверка Voice: в описании компании, форме задачи или комментарии нажмите **Voice**, произнесите текст и нажмите **Stop**. Запись автоматически остановится через 60 секунд; после локального распознавания текст добавится в поле. Локальный корректор сверяет весь введённый и распознанный текст со словарями русского, украинского и английского языков; для неизвестного слова выберите один из предложенных вариантов замены.

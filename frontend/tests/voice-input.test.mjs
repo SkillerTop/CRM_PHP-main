@@ -115,7 +115,7 @@ test("rejects sub-second recordings before transcription", () => {
   assert.equal(isVoiceRecordingLongEnough(1_000), true);
 });
 
-test("caps microphone recording at one minute and wires all voice draft fields", async () => {
+test("exposes voice recording in company, task, and comment forms", async () => {
   const root = new URL("../", import.meta.url);
   const [voice, app, draftHook] = await Promise.all([
     readFile(new URL("src/shared/components/voice-input.tsx", root), "utf8"),
@@ -137,8 +137,17 @@ test("caps microphone recording at one minute and wires all voice draft fields",
   assert.match(voice, /replaceSpellingIssue\(value, issue, suggestion\)/);
   assert.match(draftHook, /readSecureVoiceDraft\(scope, secureKey\)/);
   assert.match(draftHook, /writeSecureVoiceDraft\(scope, secureKey, draft\.value\)/);
-  assert.ok((app.match(/<VoiceTextTools\b/g) ?? []).length >= 4);
-  assert.match(voice, /className="voice-text-tools voice-text-tools-hidden"/);
+  assert.doesNotMatch(app, /<VoiceTextTools\b/);
+  assert.match(app, /shared\/components\/voice-input/);
+  assert.equal((app.match(/<VoiceInputButton\b/g) ?? []).length, 5);
+  for (const setter of ["setDescriptionDraft", "setEditNote", "setCommentDraft", "setNoteDraft"]) {
+    assert.ok(app.includes(`${setter}((current) => appendVoiceText(current, text,`));
+  }
+  assert.match(voice, /className="voice-text-tools"/);
+  assert.match(voice, /const VOICE_INPUT_ENABLED = true/);
+  assert.match(voice, /\{VOICE_INPUT_ENABLED && <VoiceInputButton/);
+  assert.match(voice, /Enter text to check spelling/);
+  assert.doesNotMatch(voice, /className="voice-text-tools voice-text-tools-hidden"/);
   assert.doesNotMatch(app, /AI_INPUTS_ENABLED/);
 });
 

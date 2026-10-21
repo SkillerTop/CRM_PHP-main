@@ -3,7 +3,7 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiDownload, apiMessage, apiRequest, setCsrfToken } from "../shared/api/api-client";
 import { Avatar, EntityLogo } from "../shared/components/identity";
-import { VoiceTextTools } from "../shared/components/voice-input";
+import { appendVoiceText, VoiceInputButton } from "../shared/components/voice-input";
 import { useCookieDraft } from "../shared/hooks/use-cookie-draft";
 import { DraftScopeContext, useFormDraft } from "../shared/hooks/use-form-draft";
 import { useUrlStringState } from "../shared/hooks/use-url-string-state";
@@ -244,7 +244,7 @@ type OcrDraft = { first_name?: string; last_name?: string; position?: string; ph
 type OcrResult = { raw_text: string; draft: OcrDraft; confidence: "low" | "medium" | "high" };
 
 const DEFAULT_PREFERENCES: Preferences = { deadlineReminders: true, overdueNotifications: true, workspaceSummary: true };
-const OCR_INPUT_ENABLED = false;
+const OCR_INPUT_ENABLED = true;
 const CLIENT_TIME_ZONE = getBrowserTimeZone();
 const CLIENT_TIME_ZONE_IS_DEFAULT = CLIENT_TIME_ZONE === DEFAULT_TIME_ZONE;
 const CLIENT_TIME_ZONE_LABEL = timeZoneCityLabel(CLIENT_TIME_ZONE);
@@ -1186,7 +1186,7 @@ function CountBadge({ count, label, detail }: { count: number; label: string; de
   );
 }
 
-function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll = "top" }: { title: string; eyebrow?: string; onClose: () => void; children: ReactNode; wide?: boolean; initialScroll?: "top" | "bottom" }) {
+function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll = "top" }: { title: string; eyebrow?: ReactNode; onClose: () => void; children: ReactNode; wide?: boolean; initialScroll?: "top" | "bottom" }) {
   const dialogRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
 
@@ -1976,7 +1976,7 @@ export function CRMApp() {
   function openCompanyInCompanies(company: Company) {
     setCompanyQuery("");
     setCompanyStatus("All statuses");
-    resetUrlFilters(["company_owner", "company_country", "company_type", "company_priority"]);
+    resetUrlFilters(["company_q", "company_status", "company_owner", "company_country", "company_type", "company_priority"]);
     navigate("companies");
     setSelectedCompany(company);
   }
@@ -2906,10 +2906,10 @@ export function CRMApp() {
               canViewAudit={canViewAudit}
               identity={identity}
               openAuditEntity={openAuditEntity}
-              openCompanies={() => { setCompanyQuery(""); setCompanyStatus("All statuses"); resetUrlFilters(["company_owner", "company_country", "company_type", "company_priority"]); navigate("companies"); }}
-              openContacts={() => { setContactQuery(""); resetUrlFilters(["contact_source", "contact_initiator", "contact_company", "contact_linkedin"]); navigate("contacts"); }}
+              openCompanies={() => { setCompanyQuery(""); setCompanyStatus("All statuses"); resetUrlFilters(["company_q", "company_status", "company_owner", "company_country", "company_type", "company_priority"]); navigate("companies"); }}
+              openContacts={() => { setContactQuery(""); resetUrlFilters(["contact_q", "contact_source", "contact_initiator", "contact_company", "contact_linkedin"]); navigate("contacts"); }}
               openTaskList={(filter) => { setTaskManagerFilter("All managers"); setTaskFilter(filter); navigate("activity"); }}
-              openCompaniesForStatus={(status) => { setCompanyQuery(""); setCompanyStatus(status); resetUrlFilters(["company_owner", "company_country", "company_type", "company_priority"]); navigate("companies"); }}
+              openCompaniesForStatus={(status) => { setCompanyQuery(""); resetUrlFilters(["company_q", "company_status", "company_owner", "company_country", "company_type", "company_priority"]); setCompanyStatus(status); navigate("companies"); }}
               openTasksForManager={(manager) => { setTaskManagerFilter(manager); setTaskFilter("All"); navigate("activity"); }}
             />
           )}
@@ -2931,6 +2931,7 @@ export function CRMApp() {
               updateTask={updateTask}
               openCompanyContacts={(companyId) => {
                 setContactQuery("");
+                resetUrlFilters(["contact_q", "contact_source", "contact_initiator", "contact_company", "contact_linkedin"]);
                 const nextUrl = urlWithFilter(window.location.href, "contact_company", companyId, "All companies");
                 window.history.replaceState(window.history.state, "", nextUrl);
                 navigate("contacts");
@@ -3034,7 +3035,8 @@ export function CRMApp() {
           attachments={taskAttachments.filter((attachment) => attachment.taskId === selectedTask.id)}
           events={audit.filter((event) => event.entity === `Task · ${selectedTask.id}`)}
           onClose={() => setSelectedTask(null)}
-          openContact={(contact) => { setSelectedTask(null); setSelectedContact(contact); }}
+          openContact={(contact) => { setContactQuery(""); resetUrlFilters(["contact_q", "contact_source", "contact_initiator", "contact_company", "contact_linkedin"]); navigate("contacts"); setSelectedTask(null); setSelectedContact(contact); }}
+          openCompany={() => { const company = companies.find((item) => item.id === selectedTask.companyId); if (company) { setSelectedTask(null); openCompanyInCompanies(company); } }}
           updateStatus={updateTaskStatus}
           updateTask={updateTask}
           addComment={addTaskComment}
@@ -3668,7 +3670,7 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
   const [editing, setEditing] = useState(companyFormDraft.restored);
   const [logoDataUrl, setLogoDataUrl] = useState(company.logoDataUrl ?? "");
   const [imageProcessing, setImageProcessing] = useState(false);
-  const [descriptionDraft, setDescriptionDraft, clearDescriptionDraft, descriptionDraftRestored] = useCookieDraft(`company-${company.id}-description`, company.description);
+  const [descriptionDraft, setDescriptionDraft, clearDescriptionDraft] = useCookieDraft(`company-${company.id}-description`, company.description);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3727,7 +3729,7 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
           <label className="field"><span>Website</span><input name="website" inputMode="url" defaultValue={company.website} maxLength={300} /></label>
           <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" defaultValue={company.linkedin ?? ""} maxLength={300} /></label>
           <label className="field"><span>NDA</span><select name="ndaStatus" defaultValue={company.ndaStatus ?? NDA_STATUSES[0]}>{NDA_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label>
-          <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={2000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={descriptionDraft} onChange={setDescriptionDraft} maxLength={2000} draftRestored={descriptionDraftRestored} /></label>
+          <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={2000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton disabled={imageProcessing} onText={(text) => setDescriptionDraft((current) => appendVoiceText(current, text, 2000))} /></label>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { companyFormDraft.clear(); clearDescriptionDraft(); setLogoDataUrl(company.logoDataUrl ?? ""); setDescriptionDraft(company.description); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save changes"}</button></div>
         </form>
       ) : (
@@ -3896,7 +3898,7 @@ function UserDetail({ user, onClose, updateUser, rejectUser, lastActiveAdmin }: 
   );
 }
 
-function TaskDetail({ task, company, companies, contacts, comments, attachments, events, onClose, openContact, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, updateComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, reminderLeadOptions, managerOptions }: {
+function TaskDetail({ task, company, companies, contacts, comments, attachments, events, onClose, openContact, openCompany, canEdit, canComment, canArchive, archive, updateTask, updateStatus, addComment, updateComment, setCommentHidden, uploadAttachment, downloadAttachment, downloadIcs, deleteAttachment, currentUserId, isAdmin, taskStatusOptions, reminderLeadOptions, managerOptions }: {
   task: Task;
   company: string;
   companies: Company[];
@@ -3906,6 +3908,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   events: AuditEvent[];
   onClose: () => void;
   openContact: (contact: Contact) => void;
+  openCompany: () => void;
   canEdit: boolean;
   canComment: boolean;
   canArchive: boolean;
@@ -3930,8 +3933,8 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   const taskEditLocked = isTaskEditLocked(task);
   const taskReadOnly = taskEditLocked || taskCompanyBlacklisted;
   const [editing, setEditing] = useState(taskEditFormDraft.restored && !taskReadOnly);
-  const [commentDraft, setCommentDraft, clearCommentDraft, commentDraftRestored] = useCookieDraft(`task-${task.id}-comment`, "");
-  const [editNote, setEditNote, clearEditNoteDraft, editNoteDraftRestored] = useCookieDraft(`task-${task.id}-description`, task.note);
+  const [commentDraft, setCommentDraft, clearCommentDraft] = useCookieDraft(`task-${task.id}-comment`, "");
+  const [editNote, setEditNote, clearEditNoteDraft] = useCookieDraft(`task-${task.id}-description`, task.note);
   const [editCompanyId, setEditCompanyId] = useState(task.companyId);
   const [editCompanyName, setEditCompanyName] = useState(company);
   const [editContactPersonId, setEditContactPersonId] = useState(task.contactPersonId ?? "");
@@ -4034,7 +4037,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   }
 
   return (
-    <Modal title={task.title} eyebrow={isAdmin ? `${task.id} · ${company}` : company} onClose={onClose} wide initialScroll="top">
+    <Modal title={task.title} eyebrow={<>{isAdmin && <>{task.id} · </>}<button className="task-company-link" type="button" onClick={openCompany} aria-label={`Open company ${company}`}>{company}</button></>} onClose={onClose} wide initialScroll="top">
       {editing && !taskReadOnly ? (
         <form {...taskEditFormDraft.formProps} className="entity-form detail-edit-form" onSubmit={save}>
           <label className="field field-full"><span>Task title *</span><input name="title" defaultValue={task.title} required minLength={3} maxLength={255} autoFocus /></label>
@@ -4045,7 +4048,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
           <label className="field"><span>Contact person</span><select name="contactPersonId" value={editContactPersonId} onChange={(event) => setEditContactPersonId(event.target.value)}><option value="">Not specified</option>{editCompanyContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
           <label className="field"><span>Status</span><select name="status" defaultValue={task.status}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>
           {editCompanyBlacklisted ? <div className="field priority-locked-field"><span>Priority</span><b>Unavailable for Black List companies</b></div> : <label className="field"><span>Priority</span><select className={priorityToneClass(editPriority)} name="priority" value={editPriority} onChange={(event) => setEditPriority(event.target.value as Task["priority"])}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>}
-          <label className="field field-full"><span>Description</span><textarea name="note" value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={4} maxLength={4000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={editNote} onChange={setEditNote} maxLength={4000} draftRestored={editNoteDraftRestored} /><TranslateToEnglishButton text={editNote} onChange={setEditNote} /></label>
+          <label className="field field-full"><span>Description</span><textarea name="note" value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={4} maxLength={4000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton onText={(text) => setEditNote((current) => appendVoiceText(current, text, 4000))} /><TranslateToEnglishButton text={editNote} onChange={setEditNote} /></label>
           <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} defaultChecked={(task.reminderLeads ?? []).includes(lead)} /><span>{lead}</span></label>)}</fieldset>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { taskEditFormDraft.clear(); clearEditNoteDraft(); setEditNote(task.note); setEditDeadline(task.deadline); setEditPriority(task.priority); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit">Save task</button></div>
         </form>
@@ -4057,7 +4060,6 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
             {taskCompanyBlacklisted ? <p className="task-completion-window locked">Black List company · task editing is locked</p> : isCompletedTask(task) && <p className={`task-completion-window${taskEditLocked ? " locked" : ""}`}>{taskCompletionEditLabel(task)}</p>}
             <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? displayedTask.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE_LABEL}</small><b className={isOverdue(displayedTask) ? "overdue-text" : ""}>{formatDateTime(displayedTask.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small>{taskContact ? <button className="table-link task-contact-link" type="button" onClick={() => openContact(taskContact)}>{taskContact.name}</button> : <b>—</b>}</div><div className="task-calendar-field"><small>Calendar</small>{displayedTask.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(displayedTask)}>Add to Outlook</button> : <b>Set a deadline first</b>}</div></div>
             <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p></div>
-            <div className="modal-actions">{taskCanEdit && !isCompletedTask(task) && task.status !== "Started" && taskStatusOptions.includes("Started") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Started")}>Start task</button>}{taskCanEdit && task.status === "Started" && taskStatusOptions.includes("Deferred") && <button className="secondary-button" type="button" onClick={() => updateStatus(task, "Deferred")}>Defer</button>}{taskCanEdit && !isCompletedTask(task) && taskStatusOptions.includes("Completed") && <button className="primary-button" type="button" onClick={() => updateStatus(task, "Completed")}>✓ Mark as completed</button>}</div>
           </div>
           <section className={`comment-stream branch-comments${taskReadOnly ? " task-inactive" : ""}`}>
               <div className="detail-section-head"><h3>Task comments <StaticStatusBadge value={String(comments.filter((comment) => !comment.isHidden).length)} /></h3></div>
@@ -4079,7 +4081,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
               {comments.length === 0 && <div className="empty-state compact"><b>No task comments yet</b><span>Updates for this task will appear here.</span></div>}
               {taskReadOnly
                 ? <p className="muted-copy">{taskCompanyBlacklisted ? "Tasks for Black List companies are read-only." : "This completed task is read-only because its seven-day editing window has ended."}</p>
-                : canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write an update for this task" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools disabled={commentSubmitting} value={commentDraft} onChange={(value) => { setCommentDraft(value); setCommentRetry(false); }} maxLength={2000} draftRestored={commentDraftRestored} /><TranslateToEnglishButton text={commentDraft} onChange={(value) => { setCommentDraft(value); setCommentRetry(false); }} /></label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}
+                : canComment && <form className="comment-form" onSubmit={postComment}><label><span>Add a comment</span><textarea value={commentDraft} onChange={(event) => { setCommentDraft(event.target.value); setCommentRetry(false); }} required maxLength={2000} rows={3} placeholder="Write an update for this task" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton disabled={commentSubmitting} onText={(text) => { setCommentDraft((current) => appendVoiceText(current, text, 2000)); setCommentRetry(false); }} /><TranslateToEnglishButton text={commentDraft} onChange={(value) => { setCommentDraft(value); setCommentRetry(false); }} /></label>{commentRetry && <div className="form-error" role="alert">The comment was not posted. Its text is preserved; try again.</div>}<button className="primary-button" type="submit" disabled={commentSubmitting}>{commentSubmitting ? "Posting…" : commentRetry ? "Try again" : "Post comment"}</button></form>}
             </section>
           {canArchive && <div className="task-archive-actions"><button className="danger-button" type="button" onClick={archive}>Archive task</button></div>}
           <section className="change-log"><div className="detail-section-head"><h3>Change log</h3><small>{events.length} events</small></div>{events.slice(0, 8).map((event) => <article key={event.id}><span>{event.action}</span><p><b>{event.detail}</b><small>{event.actor} · {event.at} · {CLIENT_TIME_ZONE_LABEL}</small></p></article>)}{events.length === 0 && <p className="muted-copy">No changes recorded for this task.</p>}</section>
@@ -4096,7 +4098,7 @@ function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, 
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
   const [companyNameDraft, setCompanyNameDraft] = useState(() => companyCreateDraft.initialValue("name"));
-  const [descriptionDraft, setDescriptionDraft, clearDescriptionDraft, descriptionDraftRestored] = useCookieDraft("company-create-description", "");
+  const [descriptionDraft, setDescriptionDraft, clearDescriptionDraft] = useCookieDraft("company-create-description", "");
   const duplicateCompanies = companyNameDraft.trim().length < 2 ? [] : companies.filter((company) => company.name.toLowerCase().includes(companyNameDraft.trim().toLowerCase())).slice(0, 6);
   return (
     <Modal title="New company" eyebrow="Companies" onClose={onClose}>
@@ -4111,7 +4113,7 @@ function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, 
         <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/company/..." /></label>
         <label className="field"><span>NDA</span><select name="ndaStatus" defaultValue={NDA_STATUSES[0]}>{NDA_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label>
         <input name="owner" type="hidden" value={defaultOwner} />
-        <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Directions, projects, and cooperation context" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={descriptionDraft} onChange={setDescriptionDraft} maxLength={4000} draftRestored={descriptionDraftRestored} /><TranslateToEnglishButton text={descriptionDraft} onChange={setDescriptionDraft} /></label>
+        <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Directions, projects, and cooperation context" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton disabled={imageProcessing || submitting} onText={(text) => setDescriptionDraft((current) => appendVoiceText(current, text, 4000))} /><TranslateToEnglishButton text={descriptionDraft} onChange={setDescriptionDraft} /></label>
         {retry && <div className="form-error field-full" role="alert">The company was not saved. Your entries are preserved; try again when the connection is available.</div>}
         <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { companyCreateDraft.clear(); clearDescriptionDraft(); onClose(); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing || submitting}>{imageProcessing ? "Processing image…" : submitting ? "Saving…" : retry ? "Try again" : "Create company"}</button></div>
       </form>
@@ -4193,8 +4195,9 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
     setCardScanning(true);
     setCardError("");
     setCardResult(null);
+    let dataUrl = "";
     try {
-      const dataUrl = await readFileAsDataUrl(file);
+      dataUrl = await readFileAsDataUrl(file);
       const body = new FormData();
       body.append("file", file);
       const response = await apiRequest<{ data: OcrResult }>("/ocr/business-card", { method: "POST", body });
@@ -4202,7 +4205,12 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
       setCardResult(response.data);
       applyOcrDraft(response.data.draft);
     } catch (caught) {
-      setCardError(apiMessage(caught));
+      if (caught instanceof ApiError && caught.code === "ocr_no_text" && dataUrl) {
+        setBusinessCardFile({ dataUrl, name: file.name || "business-card" });
+        setCardError("No text was recognized. The card image is attached; enter the contact details manually or try a clearer photo.");
+      } else {
+        setCardError(apiMessage(caught));
+      }
     } finally {
       setCardScanning(false);
     }
@@ -4214,7 +4222,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
         {OCR_INPUT_ENABLED && <section className="ai-capture-panel field-full">
           <div>
             <b>Scan business card</b>
-            <small>Photo or scan → Tesseract OCR → draft fields. Review everything before saving.</small>
+            <small>Photo or scan up to 20 MB → PaddleOCR PP-OCRv5 → draft fields. Review everything before saving.</small>
           </div>
           <div className="ai-capture-actions">
             <button className="secondary-button" type="button" disabled={cardScanning} onClick={() => cardInputRef.current?.click()}>{cardScanning ? "Scanning…" : "📷 Scan / upload card"}</button>
@@ -4263,7 +4271,7 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
   const defaultQuickInitiator = initiatorOptions.some((user) => user.email.toLowerCase() === normalizedCurrentUserEmail) ? normalizedCurrentUserEmail : "manual";
   const [quickInitiatorChoice, setQuickInitiatorChoice] = useState(() => taskCreateDraft.initialValue("quickInitiatorChoice", defaultQuickInitiator));
   const [quickInitiatorName, setQuickInitiatorName] = useState(() => taskCreateDraft.initialValue("quickInitiatorName"));
-  const [noteDraft, setNoteDraft, clearNoteDraft, noteDraftRestored] = useCookieDraft("task-create-description", "");
+  const [noteDraft, setNoteDraft, clearNoteDraft] = useCookieDraft("task-create-description", "");
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
   const [contactDate, setContactDate] = useState(() => taskCreateDraft.initialValue("contactDate", todayUser()));
@@ -4349,7 +4357,7 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
         <label className="field"><span>Responsible manager *</span><select name="owner" required value={responsibleManager} onChange={(event) => { setResponsibleManager(event.target.value); window.localStorage.setItem(managerStorageKey, event.target.value); }}>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
         <label className="field"><span>Status *</span><select name="status" defaultValue={taskStatusOptions[0] ?? ""}>{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
         {selectedCompanyBlacklisted ? <div className="field priority-locked-field"><span>Priority</span><b>Unavailable for Black List companies</b></div> : <label className="field"><span>Priority *</span><select className={priorityToneClass(priorityDraft)} name="priority" value={priorityDraft} onChange={(event) => setPriorityDraft(event.target.value as Task["priority"])}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>}
-        <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceTextTools value={noteDraft} onChange={setNoteDraft} maxLength={4000} draftRestored={noteDraftRestored} /><TranslateToEnglishButton text={noteDraft} onChange={setNoteDraft} /></label>
+        <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton disabled={submitting} onText={(text) => setNoteDraft((current) => appendVoiceText(current, text, 4000))} /><TranslateToEnglishButton text={noteDraft} onChange={setNoteDraft} /></label>
         <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} /><span>{lead}</span></label>)}</fieldset>
         <div className="reminder-note field-full"><span>◷</span><p><b>Calendar and email reminders</b><small>The CRM provides an .ics file. Scheduled email delivery requires an active User linked to the selected CJN Manager.</small></p></div>
         {retry && <div className="form-error field-full" role="alert">The task was not saved. Your entries are preserved; try again when the connection is available.</div>}

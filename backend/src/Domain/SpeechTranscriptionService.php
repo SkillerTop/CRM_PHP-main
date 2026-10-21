@@ -29,47 +29,55 @@ final class SpeechTranscriptionService
                 throw new ApiException(400, 'upload_failed', 'Аудиофайл не был сохранён для обработки.');
             }
 
-            $binary = trim((string) Config::get('WHISPER_BIN', 'whisper'));
-            $model = trim((string) Config::get('WHISPER_MODEL', 'base'));
+            $python = AiRuntimePaths::python(trim((string) Config::get('WHISPER_PYTHON_BIN', 'python3')));
+            $script = $this->localPath(trim((string) Config::get('WHISPER_SCRIPT', 'ai/faster_whisper_transcribe.py')));
+            $model = AiRuntimePaths::model(trim((string) Config::get('WHISPER_MODEL', 'large-v3-turbo')));
             $language = $this->normalizeLanguage(trim((string) Config::get('WHISPER_LANGUAGE', '')));
             $modelDirectory = $this->modelDirectory();
             $timeout = Config::int('WHISPER_TIMEOUT_SECONDS', 900);
+            if (!is_file($script)) {
+                throw new ApiException(503, 'speech_engine_not_configured', 'Скрипт Faster-Whisper не найден по указанному пути.');
+            }
 
             $command = [
-                $binary,
+                $python,
+                $script,
+                '--input',
                 $input,
                 '--model',
                 $model,
-                '--model_dir',
+                '--cache-dir',
                 $modelDirectory,
-                '--output_format',
-                'txt',
-                '--output_dir',
-                $workDir,
-                '--fp16',
-                'False',
-                '--verbose',
-                'False',
+                '--device',
+                trim((string) Config::get('WHISPER_DEVICE', 'cuda')),
+                '--compute-type',
+                trim((string) Config::get('WHISPER_COMPUTE_TYPE', 'float16')),
+                '--beam-size',
+                (string) Config::int('WHISPER_BEAM_SIZE', 5),
             ];
             if ($language !== '') {
                 $command[] = '--language';
                 $command[] = $language;
             }
-
-            $environment = [];
+            $initialPrompt = trim((string) Config::get('WHISPER_INITIAL_PROMPT', ''));
+            if ($initialPrompt !== '') {
+                $command[] = '--initial-prompt';
+                $command[] = $initialPrompt;
+            }
             $ffmpeg = trim((string) Config::get('WHISPER_FFMPEG_BIN', ''));
             if ($ffmpeg !== '') {
-                if (!is_file($ffmpeg)) {
-                    throw new ApiException(503, 'speech_engine_not_configured', 'FFmpeg для Whisper не найден по указанному пути.');
-                }
-                $currentPath = (string) (getenv('PATH') ?: getenv('Path') ?: '');
-                $environment['PATH'] = dirname($ffmpeg) . ($currentPath !== '' ? PATH_SEPARATOR . $currentPath : '');
+                $command[] = '--ffmpeg-bin';
+                $command[] = $this->localPath($ffmpeg);
             }
 
-            $result = $this->runner->run($command, $timeout, $environment);
+            $result = $this->runner->run($command, $timeout);
             $this->assertEngineSucceeded($result);
 
-            $text = $this->readTranscript($workDir);
+            $payload = json_decode(trim($result->stdout), true);
+            if (!is_array($payload)) {
+                throw new ApiException(503, 'speech_engine_failed', 'Faster-Whisper вернул некорректный ответ.');
+            }
+            $text = trim(preg_replace('/\s+/u', ' ', (string) ($payload['text'] ?? '')) ?? '');
             if ($text === '') {
                 throw new ApiException(
                     422,
@@ -80,7 +88,8 @@ final class SpeechTranscriptionService
 
             return [
                 'text' => $text,
-                'language' => $language !== '' ? $language : null,
+                'language' => trim((string) ($payload['language'] ?? '')) ?: null,
+                'model' => $model,
             ];
         } finally {
             $this->cleanup($workDir);
@@ -118,13 +127,21 @@ final class SpeechTranscriptionService
 
     private function modelDirectory(): string
     {
-        $configured = trim((string) Config::get('WHISPER_MODEL_DIR', ''));
-        $directory = $configured !== '' ? $configured : Config::root('.runtime/whisper-models');
+        $configured = trim((string) Config::get('WHISPER_MODEL_DIR', '.runtime/whisper-models'));
+        $directory = $this->localPath($configured);
         if (!is_dir($directory) && !mkdir($directory, 0770, true) && !is_dir($directory)) {
             throw new ApiException(500, 'model_storage_unavailable', 'Не удалось подготовить папку моделей Whisper.');
         }
 
         return $directory;
+    }
+
+    private function localPath(string $value): string
+    {
+        if (str_starts_with($value, '/') || str_starts_with($value, '\\') || preg_match('/^[A-Za-z]:[\\\\\/]/', $value) === 1) {
+            return $value;
+        }
+        return Config::root($value);
     }
 
     private function normalizeLanguage(string $language): string
@@ -137,18 +154,6 @@ final class SpeechTranscriptionService
             'russian' => 'ru',
             default => $language,
         };
-    }
-
-    private function readTranscript(string $workDir): string
-    {
-        $files = glob($workDir . DIRECTORY_SEPARATOR . '*.txt') ?: [];
-        foreach ($files as $path) {
-            $text = trim((string) file_get_contents($path));
-            if ($text !== '') {
-                return preg_replace('/\s+/u', ' ', $text) ?? $text;
-            }
-        }
-        return '';
     }
 
     private function assertEngineSucceeded(ProcessResult $result): void
@@ -182,7 +187,9 @@ final class SpeechTranscriptionService
         }
 
         $failureType = 'unknown';
-        if (preg_match('/\bdue to\s+([A-Za-z0-9_]+):/i', $output, $matches) === 1) {
+        if (preg_match('/"error"\s*:\s*"([A-Za-z0-9_]+)"/', $output, $matches) === 1) {
+            $failureType = $matches[1];
+        } elseif (preg_match('/\bdue to\s+([A-Za-z0-9_]+):/i', $output, $matches) === 1) {
             $failureType = $matches[1];
         } elseif (stripos($output, 'ffmpeg') !== false) {
             $failureType = 'media_decode';

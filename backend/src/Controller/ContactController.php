@@ -381,8 +381,8 @@ final class ContactController
         if ($dataUrl === null || $dataUrl === '') {
             return null;
         }
-        $maximum = Config::int('OCR_MAX_FILE_MB', 8) * 1024 * 1024;
-        $normalized = ImageDataUrl::validate($dataUrl, $maximum, ['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/tiff'], 'invalid_business_card_file', 'Файл визитки должен быть корректным изображением размером не более 8 МБ.');
+        $maximum = Config::int('OCR_MAX_FILE_MB', 20) * 1024 * 1024;
+        $normalized = ImageDataUrl::validate($dataUrl, $maximum, ['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/tiff'], 'invalid_business_card_file', 'Файл визитки должен быть корректным изображением размером не более 20 МБ.');
         preg_match('/^data:([^;]+);base64,(.*)$/s', (string) $normalized, $match);
         $mime = (string) $match[1];
         $content = base64_decode((string) $match[2], true);

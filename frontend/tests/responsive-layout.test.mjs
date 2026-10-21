@@ -51,6 +51,7 @@ function blocksAfter(source, marker) {
 }
 
 function sectionBetween(source, startMarker, endMarker) {
+  source = source.replace(/\r\n/g, "\n");
   const start = source.indexOf(startMarker);
   assert.notEqual(start, -1, `Missing section start: ${startMarker}`);
 
@@ -613,6 +614,8 @@ test("validates, processes, previews, and wires profile and entity images", asyn
   assert.match(contactForm, /onSubmit=\{\(event\) => void submit\(event\)\}/);
   assert.match(contactForm, /<ImageField label="Contact photo"[^>]*value=\{photoDataUrl\}[^>]*onChange=\{setPhotoDataUrl\}/);
   assert.match(contactForm, /apiRequest<\{ data: OcrResult \}>\("\/ocr\/business-card", \{ method: "POST", body \}\)/);
+  assert.match(component, /const OCR_INPUT_ENABLED = true/);
+  assert.match(contactForm, /PaddleOCR PP-OCRv5/);
   assert.match(contactForm, /Review everything before saving/);
   assert.match(contactForm, /type="submit" disabled=\{imageProcessing \|\| cardScanning \|\| submitting\}/);
   assert.match(contactDetail, /useState\(contact\.photoDataUrl \?\? ""\)[\s\S]*?<ImageField label="Contact photo"/);
@@ -1120,4 +1123,38 @@ test("searches companies, contacts, and activities by syllables after 200 ms", a
   assert.match(routes, /POST', '\/api\/translate'/);
   assert.match(translation, /'langpair' => 'Autodetect\|en'/);
   assert.match(app, /onChange\(response\.data\.text\)/);
+});
+
+test("uses GPU Faster-Whisper and PaddleOCR for conference capture", async () => {
+  const [app, voice, speech, ocr, speechRunner, ocrRunner, phpLimits, envTemplate, runGuide] = await Promise.all([
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("src/shared/components/voice-input.tsx", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/SpeechTranscriptionService.php", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/BusinessCardOcrService.php", root), "utf8"),
+    readFile(new URL("../backend/ai/faster_whisper_transcribe.py", root), "utf8"),
+    readFile(new URL("../backend/ai/paddleocr_business_card.py", root), "utf8"),
+    readFile(new URL("../backend/public/.user.ini", root), "utf8"),
+    readFile(new URL("../backend/.env copy", root), "utf8"),
+    readFile(new URL("../docs/RUN_AND_TEST.md", root), "utf8"),
+  ]);
+
+  assert.match(app, /const OCR_INPUT_ENABLED = true/);
+  assert.match(app, /PaddleOCR PP-OCRv5/);
+  assert.match(voice, /className="voice-text-tools"/);
+  assert.match(speech, /WHISPER_MODEL', 'large-v3-turbo'/);
+  assert.match(speech, /WHISPER_DEVICE', 'cuda'/);
+  assert.match(speech, /WHISPER_COMPUTE_TYPE', 'float16'/);
+  assert.match(speechRunner, /from faster_whisper import WhisperModel/);
+  assert.match(speechRunner, /vad_filter=True/);
+  assert.match(ocr, /OCR_PADDLE_SCRIPT/);
+  assert.match(ocr, /PaddleOCR PP-OCRv5/);
+  assert.match(ocrRunner, /from paddleocr import PaddleOCR/);
+  assert.match(ocrRunner, /ocr_version="PP-OCRv5"/);
+  assert.match(ocrRunner, /def resolve_device\(requested: str\)/);
+  assert.match(ocrRunner, /device = resolve_device\(args\.device\)/);
+  assert.match(ocrRunner, /ensure_ascii=True/);
+  assert.match(phpLimits, /upload_max_filesize=25M[\s\S]*?post_max_size=32M/);
+  assert.match(envTemplate, /OCR_MAX_FILE_MB=20/);
+  assert.match(runGuide, /-d upload_max_filesize=25M -d post_max_size=32M/);
+  assert.match(ocr, /UPLOAD_ERR_INI_SIZE[\s\S]*?upload_max_filesize/);
 });

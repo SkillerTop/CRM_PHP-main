@@ -1,5 +1,8 @@
 .env
-.runtime/
+.env.docker
+backend/ai/models/
+deploy/*-with-models*.zip
+.runtime
 .phpunit.cache/
 .tmp/
 __pycache__/

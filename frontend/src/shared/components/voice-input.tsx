@@ -12,6 +12,8 @@ import {
 
 export { VOICE_RECORDING_LIMIT_MS };
 
+const VOICE_INPUT_ENABLED = true;
+
 const speechBackendUrl = import.meta.env.DEV
   ? `${window.location.protocol}//${window.location.hostname}:8080`
   : "";
@@ -261,7 +263,7 @@ export function VoiceTextTools({ value, onChange, maxLength, disabled = false, d
       : "loading";
   const spellcheckIssues = spellcheckResult.text === value ? spellcheckResult.issues : [];
   const spellcheckSummary = spellcheckState === "idle"
-    ? "Enter or dictate text to check spelling."
+    ? "Enter text to check spelling."
     : spellcheckState === "loading"
       ? "Checking text against local dictionaries…"
       : spellcheckState === "error"
@@ -271,8 +273,8 @@ export function VoiceTextTools({ value, onChange, maxLength, disabled = false, d
           : `${spellcheckIssues.length} possible spelling ${spellcheckIssues.length === 1 ? "error" : "errors"}.`;
 
   return (
-    <div className="voice-text-tools voice-text-tools-hidden">
-      <VoiceInputButton disabled={disabled} onText={(text) => onChange(appendVoiceText(value, text, maxLength))} />
+    <div className="voice-text-tools">
+      {VOICE_INPUT_ENABLED && <VoiceInputButton disabled={disabled} onText={(text) => onChange(appendVoiceText(value, text, maxLength))} />}
       <div className={`spellcheck-panel ${spellcheckIssues.length > 0 ? "has-issues" : ""}`} aria-label="Spelling corrections" aria-live="polite">
         <div className="spellcheck-summary"><small>Spelling</small><span>{spellcheckSummary}</span></div>
         {spellcheckIssues.map((issue) => (

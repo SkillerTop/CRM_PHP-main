@@ -1,0 +1,74 @@
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:?Set DB_DATABASE in .env.docker}
+      MYSQL_USER: ${DB_USERNAME:?Set DB_USERNAME in .env.docker}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.docker}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env.docker}
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    image: crm-php-ai:local
+    restart: unless-stopped
+    env_file: .env.docker
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      WHISPER_PYTHON_BIN: /opt/ai/whisper/bin/python
+      OCR_PYTHON_BIN: /opt/ai/ocr/bin/python
+      WHISPER_MODEL: ./ai/models/faster-whisper-large-v3-turbo
+      WHISPER_MODEL_DIR: storage/whisper-cache
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE_TYPE: float16
+      OCR_DEVICE: gpu
+      OCR_MODEL_DIR: ai/models/paddleocr
+    ports:
+      - "${CRM_PORT:-8080}:80"
+    volumes:
+      - ./backend/ai/models:/var/www/backend/ai/models:ro
+      - app-storage:/var/www/backend/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  scheduler:
+    image: crm-php-ai:local
+    restart: unless-stopped
+    env_file: .env.docker
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+    volumes:
+      - app-storage:/var/www/backend/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    command: ["sh", "-c", "while :; do php bin/console reminders:run; php bin/console cleanup; sleep 900; done"]
+
+volumes:
+  db-data:
+  app-storage:
