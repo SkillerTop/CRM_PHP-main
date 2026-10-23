@@ -22,6 +22,7 @@ use CRM\Controller\UserController;
 use CRM\Database\Database;
 use CRM\Domain\AuditLogger;
 use CRM\Domain\BusinessCardOcrService;
+use CRM\Domain\CompanyWebsiteLookupService;
 use CRM\Domain\IcsGenerator;
 use CRM\Domain\LookupService;
 use CRM\Domain\Mailer;
@@ -39,6 +40,7 @@ use CRM\Http\Routes;
 use CRM\Security\AuthContext;
 use CRM\Security\RateLimiter;
 use CRM\Security\ResourceGuard;
+use CRM\Support\SafeHttpClient;
 use PDO;
 use Throwable;
 
@@ -66,6 +68,10 @@ final class App
         $businessCardOcr = new BusinessCardOcrService($processRunner);
         $speechTranscription = new SpeechTranscriptionService($processRunner);
         $translation = new TranslationService();
+        $companyWebsiteLookup = new CompanyWebsiteLookupService(
+            new SafeHttpClient(Config::int('COMPANY_LOOKUP_REQUEST_TIMEOUT_SECONDS', 8)),
+            Config::int('COMPANY_LOOKUP_TIMEOUT_SECONDS', 20)
+        );
 
         $authController = new AuthController($db, $this->auth, $audit, $rateLimiter, $mailer, $settings, $managerUsers);
         $profileController = new ProfileController($db, $this->auth, $audit, $mailer);
@@ -80,7 +86,7 @@ final class App
         $settingsController = new SettingsController($db, $this->auth, $audit, $settings);
         $healthController = new HealthController($db);
         $appController = new AppController($db, $this->auth, $lookups, $managerUsers);
-        $aiInputController = new AiInputController($this->auth, $businessCardOcr, $speechTranscription, $translation, $resourceGuard);
+        $aiInputController = new AiInputController($this->auth, $businessCardOcr, $speechTranscription, $translation, $companyWebsiteLookup, $resourceGuard);
 
         $this->router = Routes::create(
             $healthController,

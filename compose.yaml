@@ -1,12 +1,21 @@
+# Client Data CRM: web app (PHP + React + GPU speech/OCR), scheduler, and optional
+# MySQL / HTTPS proxy. Always run with the env file:
+#   docker compose --env-file .env.docker [--profile local-db] [--profile https] up -d --build
+# See deploy/DOCKER.md.
+name: client-data-crm
+
 services:
+  # Local MySQL, only with `--profile local-db`. Leave it off to use an existing
+  # database server (set DB_HOST/DB_PORT in .env.docker).
   db:
+    profiles: ["local-db"]
     image: mysql:8.4
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: ${DB_DATABASE:?Set DB_DATABASE in .env.docker}
       MYSQL_USER: ${DB_USERNAME:?Set DB_USERNAME in .env.docker}
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.docker}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env.docker}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}
     volumes:
       - db-data:/var/lib/mysql
     healthcheck:
@@ -16,29 +25,40 @@ services:
       retries: 20
 
   app:
-    build: .
-    image: crm-php-ai:local
+    build:
+      context: .
+      args:
+        PADDLE_VERSION: ${PADDLE_VERSION:-3.4.0}
+    image: ${CRM_IMAGE:-client-data-crm:latest}
     restart: unless-stopped
     env_file: .env.docker
     environment:
-      DB_HOST: db
-      DB_PORT: "3306"
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
       WHISPER_PYTHON_BIN: /opt/ai/whisper/bin/python
-      OCR_PYTHON_BIN: /opt/ai/ocr/bin/python
+      WHISPER_SCRIPT: ai/faster_whisper_transcribe.py
       WHISPER_MODEL: ./ai/models/faster-whisper-large-v3-turbo
       WHISPER_MODEL_DIR: storage/whisper-cache
-      WHISPER_DEVICE: cuda
-      WHISPER_COMPUTE_TYPE: float16
-      OCR_DEVICE: gpu
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      OCR_PYTHON_BIN: /opt/ai/ocr/bin/python
+      OCR_PADDLE_SCRIPT: ai/paddleocr_business_card.py
       OCR_MODEL_DIR: ai/models/paddleocr
+      OCR_DEVICE: ${OCR_DEVICE:-gpu}
+    # Published on the host's loopback by default: put a reverse proxy in front
+    # (the "https" profile below, or the host's own nginx/Apache).
     ports:
-      - "${CRM_PORT:-8080}:80"
+      - "${CRM_BIND:-127.0.0.1}:${CRM_PORT:-8080}:80"
     volumes:
-      - ./backend/ai/models:/var/www/backend/ai/models:ro
+      # Model weights are not baked into the image (1.7 GB). Point CRM_MODELS_DIR at a
+      # directory with faster-whisper-large-v3-turbo/ and paddleocr/official_models/.
+      - ${CRM_MODELS_DIR:-./.runtime/models}:/var/www/backend/ai/models:ro
       - app-storage:/var/www/backend/storage
     depends_on:
       db:
         condition: service_healthy
+        required: false
     deploy:
       resources:
         reservations:
@@ -51,24 +71,48 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 90s
 
+  # Reminders and cleanup every 15 minutes (replaces the host crontab).
   scheduler:
-    image: crm-php-ai:local
+    image: ${CRM_IMAGE:-client-data-crm:latest}
     restart: unless-stopped
+    user: www-data
     env_file: .env.docker
     environment:
-      DB_HOST: db
-      DB_PORT: "3306"
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-3306}
+      RUN_MIGRATIONS: "false"
     volumes:
       - app-storage:/var/www/backend/storage
     depends_on:
-      db:
-        condition: service_healthy
       app:
         condition: service_healthy
     command: ["sh", "-c", "while :; do php bin/console reminders:run; php bin/console cleanup; sleep 900; done"]
 
+  # HTTPS with automatic certificates, only with `--profile https`.
+  # Requires CRM_DOMAIN pointing at this host and ports 80/443 open.
+  proxy:
+    profiles: ["https"]
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      CRM_DOMAIN: ${CRM_DOMAIN:-localhost}
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?Set PROXY_SHARED_SECRET in .env.docker}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
 volumes:
   db-data:
   app-storage:
+  caddy-data:
+  caddy-config:

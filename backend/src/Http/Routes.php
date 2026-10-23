@@ -58,6 +58,7 @@ final class Routes
         $r->add('POST', '/api/ocr/business-card', fn (Request $request) => $aiInputController->businessCard($request));
         $r->add('POST', '/api/speech/transcribe', fn (Request $request) => $aiInputController->speech($request));
         $r->add('POST', '/api/translate', fn (Request $request) => $aiInputController->translate($request));
+        $r->add('POST', '/api/company-lookup', fn (Request $request) => $aiInputController->companyWebsite($request));
 
         $r->add('GET', '/api/companies', fn (Request $request) => $companyController->index($request));
         $r->add('POST', '/api/companies', fn (Request $request) => $companyController->store($request));

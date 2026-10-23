@@ -31,11 +31,17 @@ def result_payload(result: Any) -> Any:
     return value
 
 
-def collect_recognition(node: Any, texts: list[str], scores: list[float]) -> None:
+def collect_recognition(node: Any, texts: list[str], scores: list[float], boxes: list[Any] | None = None) -> None:
     if isinstance(node, dict):
         rec_texts = node.get("rec_texts")
         if isinstance(rec_texts, list):
-            texts.extend(str(item).strip() for item in rec_texts if str(item).strip())
+            rec_boxes = node.get("rec_boxes")
+            aligned = isinstance(rec_boxes, list) and len(rec_boxes) == len(rec_texts)
+            for index, item in enumerate(rec_texts):
+                if str(item).strip():
+                    texts.append(str(item).strip())
+                    if boxes is not None:
+                        boxes.append(rec_boxes[index] if aligned else None)
         rec_scores = node.get("rec_scores")
         if isinstance(rec_scores, list):
             for score in rec_scores:
@@ -44,11 +50,52 @@ def collect_recognition(node: Any, texts: list[str], scores: list[float]) -> Non
                 except (TypeError, ValueError):
                     pass
         for key, value in node.items():
-            if key not in {"rec_texts", "rec_scores"}:
-                collect_recognition(value, texts, scores)
+            if key not in {"rec_texts", "rec_scores", "rec_boxes"}:
+                collect_recognition(value, texts, scores, boxes)
     elif isinstance(node, list):
         for item in node:
-            collect_recognition(item, texts, scores)
+            collect_recognition(item, texts, scores, boxes)
+
+
+def group_lines(texts: list[str], boxes: list[Any]) -> list[str]:
+    """Join word boxes into card lines.
+
+    PP-OCRv5 often returns single words ("Sales" | "&" | "Department"). Words
+    are chained left to right when they share a baseline, have a similar
+    height, and sit close together; a wide gap starts a new line, so two-column
+    cards ("Name ... Mob. +47 ...") keep their columns apart.
+    """
+    items = []
+    for text, box in zip(texts, boxes):
+        try:
+            x1, y1, x2, y2 = (float(value) for value in box)
+        except (TypeError, ValueError):
+            return texts
+        items.append({"text": text, "x1": x1, "x2": x2, "cy": (y1 + y2) / 2, "h": max(1.0, y2 - y1)})
+
+    segments: list[list[dict[str, Any]]] = []
+    for item in sorted(items, key=lambda entry: entry["x1"]):
+        best = None
+        best_gap = None
+        for segment in segments:
+            last = segment[-1]
+            height = min(last["h"], item["h"])
+            gap = item["x1"] - last["x2"]
+            if (
+                -0.3 * height <= gap <= 1.2 * max(last["h"], item["h"])
+                and abs(item["cy"] - last["cy"]) <= 0.5 * height
+                and max(last["h"], item["h"]) <= 1.6 * height
+                and (best_gap is None or gap < best_gap)
+            ):
+                best, best_gap = segment, gap
+        if best is None:
+            segments.append([item])
+        else:
+            best.append(item)
+
+    # Reading order: top to bottom; the classifier labels each line on its own.
+    segments.sort(key=lambda segment: (segment[0]["cy"], segment[0]["x1"]))
+    return [" ".join(item["text"] for item in segment) for segment in segments]
 
 
 def resolve_device(requested: str) -> str:
@@ -105,7 +152,6 @@ def main() -> int:
             model_paths = {}
             for parameter, name in {
                 "doc_orientation_classify_model_dir": "PP-LCNet_x1_0_doc_ori",
-                "doc_unwarping_model_dir": "UVDoc",
                 "textline_orientation_model_dir": "PP-LCNet_x1_0_textline_ori",
                 "text_detection_model_dir": "PP-OCRv5_server_det",
                 "text_recognition_model_dir": "eslav_PP-OCRv5_mobile_rec",
@@ -123,15 +169,24 @@ def main() -> int:
                 ocr_version="PP-OCRv5",
                 device=device,
                 use_doc_orientation_classify=True,
-                use_doc_unwarping=True,
+                # Unwarping is built for full-page scans; on phone photos of a
+                # card lying on a desk it distorts the card and loses most text.
+                use_doc_unwarping=False,
                 use_textline_orientation=True,
+                # Phone photos are ~4000 px; detecting at 1920 px keeps card
+                # text in the detector's sweet spot and is several times faster.
+                text_det_limit_side_len=1920,
+                text_det_limit_type="max",
                 **model_paths,
             )
             results = list(ocr.predict(load_image(args.input)))
         texts: list[str] = []
         scores: list[float] = []
+        boxes: list[Any] = []
         for result in results:
-            collect_recognition(result_payload(result), texts, scores)
+            collect_recognition(result_payload(result), texts, scores, boxes)
+        if texts and all(box is not None for box in boxes):
+            texts = group_lines(texts, boxes)
         average = sum(scores) / len(scores) if scores else None
         # ASCII-safe JSON avoids Windows service/console code-page failures;
         # PHP's JSON decoder restores the original Unicode text.

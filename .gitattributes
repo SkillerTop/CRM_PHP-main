@@ -1,3 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 deploy/docker/*.sh text eol=lf
+deploy/docker/Caddyfile text eol=lf

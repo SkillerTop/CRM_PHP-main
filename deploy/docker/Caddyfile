@@ -1,0 +1,21 @@
+# HTTPS reverse proxy (compose profile "https"). Caddy obtains and renews the
+# certificate for CRM_DOMAIN automatically; ports 80 and 443 must reach this host.
+{$CRM_DOMAIN} {
+	encode zstd gzip
+
+	# Business-card photos and attachments: matches PHP post_max_size.
+	request_body {
+		max_size 32MB
+	}
+
+	reverse_proxy app:80 {
+		# The backend trusts X-Forwarded-For only with this secret (PROXY_SHARED_SECRET).
+		# Caddy overwrites any client-supplied value and sets X-Forwarded-For itself.
+		header_up X-CRM-Proxy-Secret {$PROXY_SHARED_SECRET}
+		transport http {
+			# Speech and OCR requests may run for minutes on a cold GPU.
+			read_timeout 910s
+			write_timeout 910s
+		}
+	}
+}

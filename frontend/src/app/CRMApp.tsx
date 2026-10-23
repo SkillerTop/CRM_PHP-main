@@ -240,8 +240,12 @@ type ContactCreationResult = {
 type ToastState = { message: string; tone: "success" | "warning" };
 type GlobalSearchResult = { type: "Company" | "Contact" | "Task"; label: string; meta: string; id: string };
 const GLOBAL_SEARCH_PAGE_SIZE = 10;
-type OcrDraft = { first_name?: string; last_name?: string; position?: string; phone?: string; email?: string; linkedin?: string; website?: string; company?: string };
-type OcrResult = { raw_text: string; draft: OcrDraft; confidence: "low" | "medium" | "high" };
+type OcrDraft = { first_name?: string; last_name?: string; position?: string; phone?: string; email?: string; linkedin?: string; website?: string; company?: string; address?: string };
+type OcrLineType = "name" | "position" | "company" | "email" | "phone" | "website" | "linkedin" | "address" | "location" | "registry" | "other";
+type OcrResult = { raw_text: string; draft: OcrDraft; confidence: "low" | "medium" | "high"; lines?: { text: string; type: OcrLineType }[]; company_candidates?: string[]; company_domain?: string | null };
+
+const OCR_LINE_LABELS: Record<OcrLineType, string> = { name: "Name", position: "Position", company: "Company", email: "Email", phone: "Phone", website: "Website", linkedin: "LinkedIn", address: "Address", location: "Location", registry: "Reg. no.", other: "Other" };
+const OCR_FILLED_LINE_TYPES = new Set<OcrLineType>(["name", "position", "company", "email", "phone", "linkedin"]);
 
 const DEFAULT_PREFERENCES: Preferences = { deadlineReminders: true, overdueNotifications: true, workspaceSummary: true };
 const OCR_INPUT_ENABLED = true;
@@ -641,9 +645,138 @@ function companyName(companies: Company[], id: string) {
   return companies.find((company) => company.id === id)?.name ?? "Unknown company";
 }
 
+// Exact name first, then ignoring accents and punctuation: "Cote" finds "Côte" and vice versa.
 function companyByName(companies: Company[], value: string) {
   const normalized = value.trim().toLocaleLowerCase();
-  return companies.find((company) => company.name.trim().toLocaleLowerCase() === normalized);
+  const exact = companies.find((company) => company.name.trim().toLocaleLowerCase() === normalized);
+  if (exact) return exact;
+  const fold = (name: string) => name.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(" ");
+  const folded = fold(value);
+  return folded ? companies.find((company) => fold(company.name) === folded) : undefined;
+}
+
+const COMPANY_LEGAL_FORM_WORDS = new Set(["llc", "ltd", "limited", "inc", "corp", "gmbh", "ag", "plc", "kft", "srl", "bv", "nv", "тзов", "тов", "прат", "пат", "ооо", "оао", "зао", "пао", "фоп"]);
+
+// Company name words without legal forms: "CONOSHIP INTERNATIONAL POLAND SP.Z O.O." → conoship international poland.
+function companyMatchWords(value: string) {
+  const joined = ` ${companySearchWords(value).join(" ")} `.replace(/ (?:sp z o o|s a|b v|n v|s r o|d o o)(?= )/gu, " ");
+  return joined.split(" ").filter((word) => word && !COMPANY_LEGAL_FORM_WORDS.has(word));
+}
+
+function websiteHost(value: string) {
+  return value.trim().toLocaleLowerCase().replace(/^[a-z]+:\/\//, "").replace(/^www\./, "").split(/[/?#:]/)[0];
+}
+
+// Matches a scanned card to an existing CRM company by email/website domain, then by name words.
+function matchOcrCompany(companies: Company[], result: OcrResult) {
+  const domain = result.company_domain ? websiteHost(result.company_domain) : "";
+  if (domain) {
+    const byDomain = companies.find((company) => {
+      const host = websiteHost(company.website ?? "");
+      return host !== "" && (host === domain || domain.endsWith(`.${host}`));
+    });
+    if (byDomain) return byDomain;
+  }
+  const candidates = result.company_candidates ?? (result.draft.company ? [result.draft.company] : []);
+  const indexed = companies.map((company) => ({ company, words: companyMatchWords(company.name) })).filter(({ words }) => words.join("").length >= 3);
+  for (const candidate of candidates) {
+    const words = companyMatchWords(candidate);
+    if (words.length === 0) continue;
+    const key = words.join(" ");
+    const exact = indexed.find((item) => item.words.join(" ") === key);
+    if (exact) return exact.company;
+    // Every word of the CRM name appears on the card: "Conoship" ⊂ "Conoship International Poland".
+    const contained = indexed
+      .filter((item) => item.words.every((word) => words.includes(word)))
+      .sort((left, right) => right.words.length - left.words.length)[0];
+    if (contained) return contained.company;
+  }
+  return undefined;
+}
+
+type CompanyPrefill = { name: string; country: string; city: string; website: string; linkedin: string; description: string };
+
+// Native and short spellings seen on cards → names used in the CRM country list.
+const COUNTRY_ALIASES: Record<string, string> = {
+  polska: "Poland", "україна": "Ukraine", "украина": "Ukraine", norge: "Norway", deutschland: "Germany", "españa": "Spain", espana: "Spain",
+  nederland: "Netherlands", holland: "Netherlands", "the netherlands": "Netherlands", sverige: "Sweden", danmark: "Denmark", suomi: "Finland",
+  uk: "United Kingdom", england: "United Kingdom", scotland: "United Kingdom", "united states": "USA", us: "USA", turkey: "Türkiye",
+  lietuva: "Lithuania", latvija: "Latvia", eesti: "Estonia", italia: "Italy", "czech republic": "Czechia", "česko": "Czechia",
+};
+const PHONE_COUNTRY_PREFIXES: [string, string][] = [
+  ["380", "Ukraine"], ["370", "Lithuania"], ["371", "Latvia"], ["372", "Estonia"], ["373", "Moldova"], ["358", "Finland"], ["351", "Portugal"],
+  ["357", "Cyprus"], ["356", "Malta"], ["385", "Croatia"], ["359", "Bulgaria"], ["420", "Czechia"], ["421", "Slovakia"], ["353", "Ireland"],
+  ["971", "United Arab Emirates"], ["48", "Poland"], ["47", "Norway"], ["46", "Sweden"], ["45", "Denmark"], ["49", "Germany"], ["31", "Netherlands"],
+  ["32", "Belgium"], ["33", "France"], ["34", "Spain"], ["39", "Italy"], ["30", "Greece"], ["90", "Türkiye"], ["40", "Romania"], ["36", "Hungary"],
+  ["43", "Austria"], ["41", "Switzerland"], ["44", "United Kingdom"], ["82", "South Korea"], ["81", "Japan"], ["86", "China"], ["65", "Singapore"], ["1", "USA"],
+];
+const DOMAIN_COUNTRIES: Record<string, string> = {
+  ua: "Ukraine", pl: "Poland", no: "Norway", se: "Sweden", dk: "Denmark", fi: "Finland", de: "Germany", nl: "Netherlands", be: "Belgium", fr: "France",
+  es: "Spain", it: "Italy", pt: "Portugal", gr: "Greece", tr: "Türkiye", cy: "Cyprus", mt: "Malta", hr: "Croatia", ro: "Romania", bg: "Bulgaria",
+  cz: "Czechia", sk: "Slovakia", hu: "Hungary", at: "Austria", ch: "Switzerland", uk: "United Kingdom", ie: "Ireland", lt: "Lithuania", lv: "Latvia",
+  ee: "Estonia", md: "Moldova", kr: "South Korea", jp: "Japan", cn: "China", sg: "Singapore", ae: "United Arab Emirates",
+};
+
+function ocrLinesOfType(result: OcrResult, ...types: OcrLineType[]) {
+  return (result.lines ?? []).filter((line) => types.includes(line.type)).map((line) => line.text);
+}
+
+function titleCaseIfUpper(value: string) {
+  return value === value.toLocaleUpperCase() ? value.toLocaleLowerCase().replace(/(^|[\s-])(\p{L})/gu, (_, gap: string, letter: string) => gap + letter.toLocaleUpperCase()) : value;
+}
+
+// Country from the card: an explicit address line wins, then the phone prefix, then the web domain.
+function cardCountry(result: OcrResult, countries: string[]) {
+  const known = (name: string) => countries.length === 0 ? name : countries.find((country) => country.toLocaleLowerCase() === name.toLocaleLowerCase()) ?? "";
+  for (const line of ocrLinesOfType(result, "location", "address")) {
+    const lower = ` ${line.toLocaleLowerCase().replace(/[(),.]/g, " ")} `;
+    for (const country of countries) if (lower.includes(` ${country.toLocaleLowerCase()} `)) return country;
+    for (const [alias, country] of Object.entries(COUNTRY_ALIASES)) if (lower.includes(` ${alias} `) && known(country)) return known(country);
+  }
+  for (const phone of contactPhones(result.draft.phone)) {
+    const digits = phone.trim().startsWith("+") ? phone.replace(/\D/g, "") : "";
+    const match = PHONE_COUNTRY_PREFIXES.find(([prefix]) => digits.startsWith(prefix));
+    if (match && known(match[1])) return known(match[1]);
+  }
+  const tld = (result.company_domain ?? "").split(".").pop() ?? "";
+  return DOMAIN_COUNTRIES[tld] && known(DOMAIN_COUNTRIES[tld]) ? known(DOMAIN_COUNTRIES[tld]) : "";
+}
+
+// City: "GDANSK, POLAND", "El Astillero (Cantabria) SPAIN", "6090 Fosnavaag, Norway" or "80-175 Gdansk".
+// Country lines are read first; lines that still carry a house number are streets.
+function cardCity(result: OcrResult, country: string) {
+  const countryNames = [country, ...Object.entries(COUNTRY_ALIASES).filter(([, name]) => name === country).map(([alias]) => alias)].filter(Boolean);
+  const countryPattern = countryNames.length > 0 ? new RegExp(`(?<!\\p{L})(?:${countryNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?!\\p{L})`, "giu") : null;
+  const lines = [...ocrLinesOfType(result, "location"), ...ocrLinesOfType(result, "address")];
+  for (const line of lines) {
+    if (/(?:^|\s)(?:ul|al|str|ave|vul|вул|ул)\.|street|straße|strasse|road|avenue/iu.test(line)) continue;
+    let text = line.replace(/\([^)]*\)/g, " ").replace(/(?<!\d)\d{2}-\d{3}(?!\d)|(?<!\d)\d{4,6}(?!\d)/g, " ");
+    if (countryPattern) text = text.replace(countryPattern, " ");
+    if (/\d/.test(text)) continue;
+    const city = text.split(",").map((part) => part.trim()).find(Boolean) ?? "";
+    if (/^\p{L}[\p{L}\s'-]{1,40}$/u.test(city) && city.split(/\s+/).length <= 3) return titleCaseIfUpper(city);
+  }
+  return "";
+}
+
+function companyPrefillFromCard(name: string, result: OcrResult | null, countries: string[]): CompanyPrefill {
+  if (!result) return { name, country: "", city: "", website: "", linkedin: "", description: "" };
+  const country = cardCountry(result, countries);
+  const address = ocrLinesOfType(result, "address", "location").join(", ");
+  const registry = ocrLinesOfType(result, "registry").join("; ");
+  const description = [
+    address && `Address: ${address}`,
+    registry && `Registration: ${registry}`,
+    "Created from a scanned business card.",
+  ].filter(Boolean).join("\n");
+  return {
+    name,
+    country,
+    city: cardCity(result, country),
+    website: result.draft.website ?? result.company_domain ?? "",
+    linkedin: result.draft.linkedin?.includes("/company/") ? result.draft.linkedin : "",
+    description,
+  };
 }
 
 function companySearchWords(value: string) {
@@ -853,6 +986,23 @@ function vCardValue(value: string | undefined) {
   return (value ?? "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/;/g, "\\;").replace(/,/g, "\\,");
 }
 
+// A contact's phone field may hold several numbers separated by ";" (mobile; office).
+function contactPhones(value: string | undefined) {
+  return (value ?? "").split(";").map((phone) => phone.trim()).filter((phone) => phone !== "" && phone !== "—");
+}
+
+function validContactPhones(value: string) {
+  return contactPhones(value).every((phone) => /^[+()\d\s.-]{7,24}$/.test(phone));
+}
+
+const CONTACT_PHONE_ERROR = "Enter valid phone numbers; separate several numbers with “;”.";
+
+function PhoneLinks({ value, className, stopPropagation = false }: { value: string | undefined; className?: string; stopPropagation?: boolean }) {
+  const phones = contactPhones(value);
+  if (phones.length === 0) return null;
+  return <span className="phone-links">{phones.map((phone) => <a key={phone} className={className} href={`tel:${phone.replace(/[^\d+]/g, "")}`} onClick={stopPropagation ? (event) => event.stopPropagation() : undefined}>{phone}</a>)}</span>;
+}
+
 function exportContactToOutlook(contact: Contact, company: string) {
   const names = contact.name.trim().split(/\s+/);
   const firstName = contact.firstName || names[0] || "";
@@ -871,7 +1021,7 @@ function exportContactToOutlook(contact: Contact, company: string) {
     `FN:${vCardValue(contact.name)}`,
     company && `ORG:${vCardValue(company)}`,
     contact.position && `TITLE:${vCardValue(contact.position)}`,
-    contact.phone && contact.phone !== "—" && `TEL;TYPE=WORK:${vCardValue(contact.phone)}`,
+    ...contactPhones(contact.phone).map((phone) => `TEL;TYPE=WORK:${vCardValue(phone)}`),
     contact.email && `EMAIL;TYPE=INTERNET,WORK:${vCardValue(contact.email)}`,
     contact.linkedin && `URL;TYPE=LinkedIn:${vCardValue(websiteHref(contact.linkedin))}`,
     notes && `NOTE:${vCardValue(notes)}`,
@@ -960,6 +1110,57 @@ async function processImageFile(file: File, kind: "person" | "company" = "person
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
+}
+
+type CompanyWebsiteInfo = { website: string; name: string | null; description: string | null; address: string | null; city: string | null; country: string | null; logo_data_url: string | null };
+
+// Website logos arrive as SVG, ICO, PNG…; company logos are stored as WebP up to 512 px.
+// An <img> never runs scripts inside an SVG, and the canvas output is a plain raster image.
+async function rasterizeLogo(dataUrl: string) {
+  const image = new window.Image();
+  image.decoding = "async";
+  image.src = dataUrl;
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("The website logo could not be opened."));
+  });
+  const width = image.naturalWidth || 512;
+  const height = image.naturalHeight || 512;
+  // Vector logos scale up cleanly, raster ones are only scaled down.
+  const factor = dataUrl.startsWith("data:image/svg+xml") ? 512 / Math.max(width, height) : Math.min(1, 512 / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * factor));
+  canvas.height = Math.max(1, Math.round(height * factor));
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Image preview is not supported by this browser.");
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  // Logos made for dark site headers are white on transparent and vanish on the CRM's white
+  // cards: put those on the CRM's dark navy instead.
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let opaque = 0;
+  let luminance = 0;
+  for (let index = 0; index < pixels.length; index += 4) {
+    if (pixels[index + 3] < 128) continue;
+    opaque += 1;
+    luminance += (0.2126 * pixels[index] + 0.7152 * pixels[index + 1] + 0.0722 * pixels[index + 2]) / 255;
+  }
+  if (opaque > 0 && opaque < pixels.length / 4 * 0.85 && luminance / opaque > 0.85) {
+    context.globalCompositeOperation = "destination-over";
+    context.fillStyle = "#0b2f48";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  return canvas.toDataURL("image/webp", 0.82);
+}
+
+// Website country: a name ("Norway", "Polska") or an ISO code ("NO") → the CRM country list.
+function countryFromWebsite(value: string | null, countries: string[]) {
+  const lower = value?.trim().toLocaleLowerCase() ?? "";
+  if (!lower) return "";
+  const candidate = countries.find((country) => country.toLocaleLowerCase() === lower)
+    ?? COUNTRY_ALIASES[lower]
+    ?? (lower.length === 2 ? DOMAIN_COUNTRIES[lower === "gb" ? "uk" : lower] : undefined)
+    ?? "";
+  return countries.length === 0 || countries.includes(candidate) ? candidate : "";
 }
 
 function ImageField({ label, name, value, onChange, onProcessingChange, kind = "person" }: {
@@ -1203,6 +1404,9 @@ function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll 
       (preferred ?? first)?.focus();
     });
     const handleKeyDown = (event: KeyboardEvent) => {
+      // With stacked dialogs (contact → new company) only the topmost one handles keys.
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      if (dialogs[dialogs.length - 1] !== dialogRef.current) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onCloseRef.current();
@@ -1491,6 +1695,7 @@ export function CRMApp() {
   const [selectedUser, setSelectedUser] = useState<CRMUser | null>(null);
   const [modal, setModal] = useState<"company" | "contact" | "task" | "user" | "profile" | "settings" | null>(null);
   const [modalCompanyId, setModalCompanyId] = useState<string | undefined>();
+  const [cardCompany, setCardCompany] = useState<{ prefill: CompanyPrefill; onCreated: (company: Company) => void } | null>(null);
   const [modalParentTaskId, setModalParentTaskId] = useState<string | undefined>();
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -1702,7 +1907,12 @@ export function CRMApp() {
   const lookupId = (type: string, value?: string) => Number(lookups.find((group) => group.type === type)?.items.find((item) => item.value === value)?.id || 0) || null;
   const companyPayload = (company: Company) => ({ name: company.name, type_id: lookupId("company-type", company.kind), country: company.country, city: company.city || null, status_id: lookupId("client-status", company.status), manager_id: lookupId("cjn-manager", company.owner), website: company.website || null, linkedin: company.linkedin || null, nda_status: company.ndaStatus ?? NDA_STATUSES[0], logo_data_url: company.logoDataUrl || null, description: company.description || null, updated_at: company.updatedAt });
   const contactPayload = (contact: Contact) => {
-    const names = contact.firstName ? [contact.firstName, contact.lastName ?? ""] : contact.name.trim().split(/\s+/, 2);
+    // Edits only change `name`; trust the stored first/last parts only while they still compose that name.
+    const fullName = contact.name.trim().replace(/\s+/g, " ");
+    const storedName = [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim().replace(/\s+/g, " ");
+    const names = contact.firstName && storedName === fullName
+      ? [contact.firstName, contact.lastName ?? ""]
+      : [fullName.split(" ")[0] ?? "", fullName.split(" ").slice(1).join(" ")];
     const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
     return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, status: contact.contactStatus ?? "active", manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), photo_data_url: contact.photoDataUrl || null, business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, updated_at: contact.updatedAt };
   };
@@ -2026,7 +2236,7 @@ export function CRMApp() {
     else if (hasPermission(currentRole, "audit.view")) navigate("audit");
   }
 
-  async function addCompany(event: FormEvent<HTMLFormElement>, logoDataUrl = ""): Promise<boolean> {
+  async function addCompany(event: FormEvent<HTMLFormElement>, logoDataUrl = "", onCreated?: (company: Company) => void): Promise<boolean> {
     event.preventDefault();
     if (!requirePermission("company.create", "create companies")) return false;
     const form = event.currentTarget;
@@ -2080,10 +2290,14 @@ export function CRMApp() {
       }
       const mapped = mapCompany(response.data);
       setCompanies((current) => [mapped, ...current]);
-      setModal(null);
+      // Created from the contact form: hand the company back instead of closing it.
+      if (onCreated) onCreated(mapped);
+      else setModal(null);
       notify("Company saved");
       return true;
     } catch (error) {
+      // An identical company is refused outright: retrying the same form cannot succeed.
+      if (error instanceof ApiError && error.code === "company_exists") { notify(error.message, "warning"); return setFieldError(form, "name", error.message); }
       notify(`${apiMessage(error)} Use Try again to resubmit without losing the form.`, "warning");
       return false;
     }
@@ -2117,11 +2331,14 @@ export function CRMApp() {
     if (initiatedBy.length > 120) return { field: "initiatedBy", error: "Keep the initiator name within 120 characters." };
     if (email && !EMAIL_PATTERN.test(email)) return { field: "email", error: "Enter a valid email address." };
     if (linkedinInput && !linkedin) return { field: "linkedin", error: "Enter a valid LinkedIn URL." };
-    if (phone && phone !== "—" && !/^[+()\d\s.-]{7,24}$/.test(phone)) return { field: "phone", error: "Enter a valid phone number." };
+    if (phone && phone !== "—" && !validContactPhones(phone)) return { field: "phone", error: CONTACT_PHONE_ERROR };
     const contact: Contact = {
       id: "",
       companyId,
       name,
+      // Keep both parts: re-splitting `name` would turn "Vinjevoll Thrane" into "Vinjevoll".
+      firstName,
+      lastName,
       position: draft.position?.trim() ?? "",
       email,
       phone,
@@ -2156,6 +2373,8 @@ export function CRMApp() {
       notify("Contact saved");
       return { contact: mapped };
     } catch (error) {
+      // Identical name in any company: refused outright, so point at the name instead of offering a retry.
+      if (error instanceof ApiError && error.code === "contact_exists") return { field: "firstName", error: error.message };
       return { error: apiMessage(error) };
     }
   }
@@ -2315,7 +2534,10 @@ export function CRMApp() {
         response = await apiRequest(`/companies/${updated.id}`, { method: "PUT", body: JSON.stringify({ ...payload, allow_duplicate: true }) });
       }
       const mapped = mapCompany(response.data); setCompanies((current) => current.map((item) => item.id === mapped.id ? mapped : item)); setSelectedCompany((current) => current?.id === mapped.id ? mapped : current); notify("Company profile updated"); return true;
-    } catch (error) { notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false; }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "company_exists") { notify(error.message, "warning"); return false; }
+      notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false;
+    }
   }
 
   async function updateContact(updated: Contact): Promise<boolean> {
@@ -2347,7 +2569,10 @@ export function CRMApp() {
         response = await apiRequest(`/contacts/${updated.id}`, { method: "PUT", body: JSON.stringify({ ...payload, allow_duplicate: true }) });
       }
       const mapped = mapContact(response.data); setContacts((current) => current.map((item) => item.id === mapped.id ? mapped : item)); setSelectedContact((current) => current?.id === mapped.id ? mapped : current); notify("Contact updated"); return true;
-    } catch (error) { notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false; }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "contact_exists") { notify(error.message, "warning"); return false; }
+      notify(`${apiMessage(error)} Your edits are preserved; try again.`, "warning"); return false;
+    }
   }
 
   async function updateTask(updated: Task): Promise<boolean> {
@@ -3069,7 +3294,8 @@ export function CRMApp() {
       )}
 
       {modal === "company" && <CompanyForm companies={liveCompanies} countries={countries} statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} openExistingCompany={(company) => { setModal(null); setSelectedCompany(company); }} onClose={() => setModal(null)} onSubmit={addCompany} />}
-      {modal === "contact" && <ContactForm companies={liveCompanies} sourceOptions={contactSourceOptions} initiatorOptions={users.filter((user) => user.state === "Active")} initialCompanyId={modalCompanyId} currentUserEmail={identity.accountEmail} onClose={() => setModal(null)} onSubmit={addContact} />}
+      {modal === "contact" && <ContactForm companies={liveCompanies} sourceOptions={contactSourceOptions} initiatorOptions={users.filter((user) => user.state === "Active")} initialCompanyId={modalCompanyId} currentUserEmail={identity.accountEmail} onClose={() => { setCardCompany(null); setModal(null); }} onSubmit={addContact} onCreateCompany={hasPermission(currentRole, "company.create") ? (name, card, onCreated) => setCardCompany({ prefill: companyPrefillFromCard(name, card, countries), onCreated }) : undefined} />}
+      {modal === "contact" && cardCompany && <CompanyForm companies={liveCompanies} countries={countries} statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} prefill={cardCompany.prefill} openExistingCompany={(company) => { cardCompany.onCreated(company); setCardCompany(null); }} onClose={() => setCardCompany(null)} onSubmit={(event, logoDataUrl) => addCompany(event, logoDataUrl, (company) => { cardCompany.onCreated(company); setCardCompany(null); })} />}
       {modal === "task" && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} defaultOwner={defaultManager} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
       {modal === "user" && <UserForm onClose={() => setModal(null)} onSubmit={inviteUser} />}
       {modal === "profile" && <ProfileModal identity={identity} onClose={() => setModal(null)} onSave={updateProfile} />}
@@ -3376,7 +3602,7 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
                 <tr key={contact.id} className={contact.contactStatus === "inactive" ? "inactive-contact" : ""} tabIndex={0} onClick={() => openContact(contact)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openContact(contact); }}>
                   <td data-label="Contact"><span className="contact-person"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b>{contact.email ? <a className="inline-data-link compact" href={`mailto:${contact.email}`} onClick={(event) => event.stopPropagation()}>{contact.email}</a> : <small>No email</small>}<StatusBadge value={contact.contactStatus === "inactive" ? "Inactive" : "Active"} /></span></span></td>
                   <td data-label="Company"><button className="table-link" type="button" onClick={(event) => { event.stopPropagation(); if (company) openCompany(company); }}>{company?.name}</button></td>
-                  <td data-label="Position">{contact.position || "—"}</td><td data-label="Phone">{contact.phone && contact.phone !== "—" ? <a className="inline-data-link" href={`tel:${contact.phone}`} onClick={(event) => event.stopPropagation()}>{contact.phone}</a> : "—"}</td><td data-label="Source"><StatusBadge value={contact.source} /></td>
+                  <td data-label="Position">{contact.position || "—"}</td><td data-label="Phone">{contactPhones(contact.phone).length > 0 ? <PhoneLinks value={contact.phone} className="inline-data-link" stopPropagation /> : "—"}</td><td data-label="Source"><StatusBadge value={contact.source} /></td>
                   <td data-label="Initiated by"><span className="owner-cell"><span className="mini-avatar">{(contact.initiatedBy || "?").split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>{contact.initiatedBy || "—"}</span></td>
                   <td data-label="Actions"><button className="row-menu" type="button" aria-label={`Open details for ${contact.name}`} onClick={(event) => { event.stopPropagation(); openContact(contact); }}>•••</button></td>
                 </tr>
@@ -3806,7 +4032,7 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
     if (canTransfer && !companies.some((item) => item.id === editCompanyId)) return void setFieldError(form, "companyName", "Select an existing company from the list.");
     if (name.length < 2) return void setFieldError(form, "name", "Enter at least 2 characters.");
     if (email && !EMAIL_PATTERN.test(email)) return void setFieldError(form, "email", "Enter a valid email address.");
-    if (phone && phone !== "—" && !/^[+()\d\s.-]{7,24}$/.test(phone)) return void setFieldError(form, "phone", "Enter a valid phone number.");
+    if (phone && phone !== "—" && !validContactPhones(phone)) return void setFieldError(form, "phone", CONTACT_PHONE_ERROR);
     if (linkedinInput && !linkedin) return void setFieldError(form, "linkedin", "Enter a valid LinkedIn URL.");
     if (!await updateContact({
       ...contact,
@@ -3835,7 +4061,7 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
           {canTransfer ? <CompanyCombobox inputId="contact-edit-company" label="Company (Admin only to change)" companies={companies} value={editCompanyName} onChange={selectCompany} required /> : <label className="field field-full"><span>Company (Admin only to change)</span><input value={company} readOnly /></label>}
           <label className="field field-full"><span>Full name</span><input name="name" defaultValue={contact.name} required minLength={2} maxLength={120} autoFocus /></label>
           <label className="field"><span>Position</span><input name="position" defaultValue={contact.position} maxLength={120} /></label>
-          <label className="field"><span>Phone</span><input name="phone" type="tel" defaultValue={contact.phone} maxLength={24} /></label>
+          <label className="field"><span>Phone</span><input name="phone" type="tel" defaultValue={contact.phone} maxLength={100} placeholder="+380…; +380…" /></label>
           <label className="field"><span>Email</span><input name="email" type="email" defaultValue={contact.email} maxLength={254} /></label>
           <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" defaultValue={contact.linkedin ?? ""} maxLength={300} /></label>
           <label className="field"><span>Contact status</span><select name="contactStatus" defaultValue={contact.contactStatus ?? "active"}><option value="active">Active — contactable</option><option value="inactive">Inactive — do not contact</option></select></label>
@@ -3850,7 +4076,7 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
           <div className="person-detail-head"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-detail-avatar" /><div><h3>{contact.position || "Position not specified"}</h3><p>{company}</p><StatusBadge value={contact.contactStatus === "inactive" ? "Inactive — do not contact" : "Active — contactable"} /></div>{canEdit && <button className="secondary-button" type="button" onClick={openEditor}>Edit</button>}</div>
           <div className="detail-grid contact-info-grid">
             <div><small>Email</small>{contact.email ? <a href={`mailto:${contact.email}`}>{contact.email}</a> : <b>—</b>}</div>
-            <div><small>Phone</small>{contact.phone && contact.phone !== "—" ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : <b>—</b>}</div>
+            <div><small>Phone</small>{contactPhones(contact.phone).length > 0 ? <PhoneLinks value={contact.phone} /> : <b>—</b>}</div>
             <div><small>LinkedIn</small>{contact.linkedin ? <a href={websiteHref(contact.linkedin)} target="_blank" rel="noreferrer">Open profile</a> : <b>—</b>}</div>
             <div className="contact-source-value"><small>Source / detail</small><b>{contact.source || "—"}</b>{(contact.sourceDetail || contact.referredBy) && <span>{contact.sourceDetail || contact.referredBy}</span>}</div>
             <div><small>CJN Manager</small><b>{contact.owner}</b></div>
@@ -4091,26 +4317,99 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   );
 }
 
-function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, defaultOwner, openExistingCompany, onClose, onSubmit }: { companies: Company[]; countries: string[]; statusOptions: string[]; companyTypeOptions: string[]; defaultOwner: string; openExistingCompany: (company: Company) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, logoDataUrl: string) => Promise<boolean> }) {
+function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, defaultOwner, openExistingCompany, onClose, onSubmit, prefill }: { companies: Company[]; countries: string[]; statusOptions: string[]; companyTypeOptions: string[]; defaultOwner: string; openExistingCompany: (company: Company) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, logoDataUrl: string) => Promise<boolean>; prefill?: CompanyPrefill }) {
   const companyCreateDraft = useFormDraft("company-create");
   const [logoDataUrl, setLogoDataUrl] = useState("");
   const [imageProcessing, setImageProcessing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
-  const [companyNameDraft, setCompanyNameDraft] = useState(() => companyCreateDraft.initialValue("name"));
-  const [descriptionDraft, setDescriptionDraft, clearDescriptionDraft] = useCookieDraft("company-create-description", "");
-  const duplicateCompanies = companyNameDraft.trim().length < 2 ? [] : companies.filter((company) => company.name.toLowerCase().includes(companyNameDraft.trim().toLowerCase())).slice(0, 6);
+  const [companyNameDraft, setCompanyNameDraft] = useState(() => prefill?.name ?? companyCreateDraft.initialValue("name"));
+  // A card prefill uses its own description draft and overrides anything restored from an earlier card.
+  const [descriptionDraft, setDescriptionDraft, clearDescriptionDraft] = useCookieDraft(prefill ? "company-create-card-description" : "company-create-description", "");
+  useEffect(() => {
+    if (prefill) setDescriptionDraft(prefill.description);
+  }, [prefill, setDescriptionDraft]);
+  const formRef = useRef<HTMLFormElement>(null);
+  const lookupRequestRef = useRef(0);
+  const autoLookupStartedRef = useRef(false);
+  const [websiteLookup, setWebsiteLookup] = useState<{ state: "idle" | "loading" | "done" | "error"; message: string }>({ state: "idle", message: "" });
+
+  useEffect(() => () => { lookupRequestRef.current += 1; }, []);
+
+  function setFormField(name: string, value: string, onlyIfEmpty: boolean) {
+    const element = formRef.current?.elements.namedItem(name);
+    if (!(element instanceof HTMLInputElement) || !value || (onlyIfEmpty && element.value.trim())) return false;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+
+  // Reads description, address and logo from the company's own site. Only empty fields
+  // are filled; site text is appended to the description, labelled, for review.
+  async function lookupWebsite() {
+    const websiteInput = formRef.current?.elements.namedItem("website");
+    const website = websiteInput instanceof HTMLInputElement ? websiteInput.value.trim() : "";
+    if (!website) {
+      setWebsiteLookup({ state: "error", message: "Enter the company website first." });
+      return;
+    }
+    const request = ++lookupRequestRef.current;
+    setWebsiteLookup({ state: "loading", message: `Reading ${websiteHost(website)}…` });
+    try {
+      const { data } = await apiRequest<{ data: CompanyWebsiteInfo }>("/company-lookup", { method: "POST", body: JSON.stringify({ website }) });
+      if (request !== lookupRequestRef.current) return;
+      const filled: string[] = [];
+      // A misread card name ("NGINEERING AS") lacks the domain's brand ("kvernevik"); the site's own name has it.
+      const brand = websiteHost(data.website).split(".")[0].split("-")[0];
+      const letters = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+      if (data.name && brand.length >= 4 && !letters(companyNameDraft).includes(brand) && letters(data.name).includes(brand)) {
+        setCompanyNameDraft(data.name);
+        filled.push("name");
+      }
+      if (setFormField("city", data.city ?? "", true)) filled.push("city");
+      if (setFormField("country", countryFromWebsite(data.country, countries), true)) filled.push("country");
+      setFormField("website", data.website, false);
+      const additions = [data.description && `About (website): ${data.description}`, data.address && `Address (website): ${data.address}`].filter((line): line is string => Boolean(line));
+      if (additions.length > 0) {
+        setDescriptionDraft((current) => [current.trim(), ...additions.filter((line) => !current.includes(line))].filter(Boolean).join("\n").slice(0, 4000));
+        if (data.description) filled.push("description");
+        if (data.address) filled.push("address");
+      }
+      if (data.logo_data_url) {
+        try {
+          const logo = await rasterizeLogo(data.logo_data_url);
+          if (request !== lookupRequestRef.current) return;
+          setLogoDataUrl((current) => current || logo);
+          filled.push("logo");
+        } catch {
+          // An unreadable logo does not block the rest of the lookup.
+        }
+      }
+      setWebsiteLookup({ state: "done", message: filled.length > 0 ? `Filled from ${websiteHost(data.website)}: ${filled.join(", ")}. Review before saving.` : `Nothing new found on ${websiteHost(data.website)}.` });
+    } catch (caught) {
+      if (request === lookupRequestRef.current) setWebsiteLookup({ state: "error", message: apiMessage(caught) });
+    }
+  }
+
+  // A company created from a scanned card looks up the card's website right away.
+  useEffect(() => {
+    if (!prefill?.website || autoLookupStartedRef.current) return;
+    autoLookupStartedRef.current = true;
+    void lookupWebsite();
+  });
+  const duplicateCompanies = companyNameDraft.trim().length < 2 ? [] : companies.filter((company) => searchTextMatches(company.name, companyNameDraft)).slice(0, 6);
   return (
-    <Modal title="New company" eyebrow="Companies" onClose={onClose}>
-      <form {...companyCreateDraft.formProps} onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, logoDataUrl).then((saved) => { if (saved) { companyCreateDraft.clear(); clearDescriptionDraft(); } setRetry(!saved); }).finally(() => setSubmitting(false)); } }} className="entity-form">
+    <Modal title={prefill ? "New company from business card" : "New company"} eyebrow={prefill ? "Contacts · business card" : "Companies"} onClose={onClose}>
+      <form ref={formRef} {...(prefill ? {} : companyCreateDraft.formProps)} onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, logoDataUrl).then((saved) => { if (saved) { companyCreateDraft.clear(); clearDescriptionDraft(); } setRetry(!saved); }).finally(() => setSubmitting(false)); } }} className="entity-form">
+        {prefill && <div className="reminder-note field-full"><span>i</span><p><b>Filled from the scanned card</b><small>Check the details, then save: you return to the contact with this company selected.</small></p></div>}
         <ImageField label="Company logo" name="companyLogo" value={logoDataUrl} onChange={setLogoDataUrl} onProcessingChange={setImageProcessing} kind="company" />
         <div className="field field-full company-duplicate-field"><label><span>Company name *</span><input name="name" value={companyNameDraft} onChange={(event) => setCompanyNameDraft(event.target.value)} required minLength={2} maxLength={255} autoFocus placeholder="For example, Baltic Engineering" autoComplete="off" /></label>{duplicateCompanies.length > 0 && <div className="company-duplicate-suggestions" role="listbox" aria-label="Existing companies with a similar name">{duplicateCompanies.map((company) => <button key={company.id} type="button" onClick={() => openExistingCompany(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{companyLocation(company)} · open existing company</small></span></button>)}</div>}</div>
         <label className="field"><span>Company type *</span><select name="kind" required>{companyTypeOptions.map((kind) => <option key={kind}>{kind}</option>)}</select></label>
         <label className="field"><span>Relationship status *</span><select name="status" required>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-        <label className="field"><span>Country *</span><input name="country" list="company-country-options" required maxLength={100} placeholder="Select or type a country" /><datalist id="company-country-options">{countries.map((country) => <option key={country} value={country} />)}</datalist></label>
-        <label className="field"><span>City</span><input name="city" maxLength={100} placeholder="Kyiv" /></label>
-        <label className="field"><span>Website</span><input name="website" inputMode="url" maxLength={255} placeholder="example.com" /></label>
-        <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/company/..." /></label>
+        <label className="field"><span>Country *</span><input name="country" list="company-country-options" required maxLength={100} placeholder="Select or type a country" defaultValue={prefill?.country} /><datalist id="company-country-options">{countries.map((country) => <option key={country} value={country} />)}</datalist></label>
+        <label className="field"><span>City</span><input name="city" maxLength={100} placeholder="Kyiv" defaultValue={prefill?.city} /></label>
+        <div className="field website-lookup-field"><label><span>Website</span><input name="website" inputMode="url" maxLength={255} placeholder="example.com" defaultValue={prefill?.website} /></label><div className="website-lookup"><button className="text-button" type="button" disabled={websiteLookup.state === "loading"} onClick={() => void lookupWebsite()}>{websiteLookup.state === "loading" ? "Reading website…" : "🔎 Fill from website"}</button>{websiteLookup.message && <small className={websiteLookup.state === "error" ? "website-lookup-error" : ""} role="status">{websiteLookup.message}</small>}</div></div>
+        <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/company/..." defaultValue={prefill?.linkedin} /></label>
         <label className="field"><span>NDA</span><select name="ndaStatus" defaultValue={NDA_STATUSES[0]}>{NDA_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label>
         <input name="owner" type="hidden" value={defaultOwner} />
         <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Directions, projects, and cooperation context" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton disabled={imageProcessing || submitting} onText={(text) => setDescriptionDraft((current) => appendVoiceText(current, text, 4000))} /><TranslateToEnglishButton text={descriptionDraft} onChange={setDescriptionDraft} /></label>
@@ -4121,7 +4420,7 @@ function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, 
   );
 }
 
-function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompanyId, currentUserEmail, onClose, onSubmit }: { companies: Company[]; sourceOptions: string[]; initiatorOptions: CRMUser[]; initialCompanyId?: string; currentUserEmail: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, photoDataUrl: string) => Promise<boolean> }) {
+function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompanyId, currentUserEmail, onClose, onSubmit, onCreateCompany }: { companies: Company[]; sourceOptions: string[]; initiatorOptions: CRMUser[]; initialCompanyId?: string; currentUserEmail: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, photoDataUrl: string) => Promise<boolean>; onCreateCompany?: (name: string, card: OcrResult | null, onCreated: (company: Company) => void) => void }) {
   const contactCreateDraft = useFormDraft("contact-create");
   const formRef = useRef<HTMLFormElement>(null);
   const cardInputRef = useRef<HTMLInputElement>(null);
@@ -4157,19 +4456,33 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
     }
   }
 
-  function applyOcrDraft(draft: OcrDraft) {
+  // Opens "New company" over this form; the contact keeps everything entered and gets the new company selected.
+  function createCompany(name: string, card: OcrResult | null = cardResult) {
+    onCreateCompany?.(name.trim(), card, (company) => {
+      setCompanyId(company.id);
+      setCompanyQuery(company.name);
+    });
+  }
+
+  function applyOcrResult(result: OcrResult) {
+    const { draft } = result;
     fillField("firstName", draft.first_name);
     fillField("lastName", draft.last_name);
     fillField("position", draft.position);
     fillField("phone", draft.phone);
     fillField("email", draft.email);
     fillField("linkedin", draft.linkedin);
-    if (draft.company) {
-      const match = companyByName(companies, draft.company);
-      if (match) {
-        setCompanyId(match.id);
-        setCompanyQuery(match.name);
-      }
+    const match = matchOcrCompany(companies, result);
+    if (match) {
+      setCompanyId(match.id);
+      setCompanyQuery(match.name);
+    } else if (draft.company && !initialCompanyId) {
+      // Never leave the previously selected company on a card from another firm;
+      // the recognized name stays visible and submit asks for an existing company.
+      setCompanyId("");
+      setCompanyQuery(draft.company);
+      // The card's company is not in the CRM yet: go straight to creating it from the card.
+      createCompany(draft.company, result);
     }
   }
 
@@ -4203,7 +4516,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
       const response = await apiRequest<{ data: OcrResult }>("/ocr/business-card", { method: "POST", body });
       setBusinessCardFile({ dataUrl, name: file.name || "business-card" });
       setCardResult(response.data);
-      applyOcrDraft(response.data.draft);
+      applyOcrResult(response.data);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "ocr_no_text" && dataUrl) {
         setBusinessCardFile({ dataUrl, name: file.name || "business-card" });
@@ -4215,6 +4528,8 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
       setCardScanning(false);
     }
   }
+
+  const cardCompanyMatch = cardResult ? matchOcrCompany(companies, cardResult) : undefined;
 
   return (
     <Modal title="Add contact manually" eyebrow="Contacts" onClose={onClose}>
@@ -4229,16 +4544,24 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
             <input ref={cardInputRef} className="image-input" type="file" accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff" capture="environment" onChange={(event) => void scanCard(event)} />
           </div>
           {cardError && <div className="form-error" role="alert">{cardError}</div>}
-          {cardResult && <div className="ocr-preview" aria-live="polite"><b>Recognized text · {cardResult.confidence} confidence</b><pre>{cardResult.raw_text}</pre>{cardResult.draft.company && !companies.some((company) => company.name.trim().toLowerCase() === cardResult.draft.company?.trim().toLowerCase()) && <small>Company “{cardResult.draft.company}” was recognized, but it is not in the CRM list yet. Select an existing company or create it first.</small>}</div>}
+          {cardResult && <div className="ocr-preview" aria-live="polite">
+            <b>Recognized text · {cardResult.confidence} confidence</b>
+            <ul className="ocr-lines">{(cardResult.lines ?? cardResult.raw_text.split("\n").map((text) => ({ text, type: "other" as const }))).map((line, index) => <li key={`${index}-${line.text}`} className={OCR_FILLED_LINE_TYPES.has(line.type) ? "ocr-line-filled" : ""}><span className={`ocr-tag ocr-tag-${line.type}`}>{OCR_LINE_LABELS[line.type] ?? OCR_LINE_LABELS.other}</span><span>{line.text}</span></li>)}</ul>
+            <small>Highlighted lines were filled into the form; the rest is kept for reference.</small>
+            {cardCompanyMatch
+              ? <small>Company matched to “{cardCompanyMatch.name}” in the CRM.</small>
+              : cardResult.draft.company && <div className="ocr-company-missing"><small>Company “{cardResult.draft.company}” was recognized, but it is not in the CRM list yet.</small>{onCreateCompany && <button className="secondary-button" type="button" onClick={() => createCompany(cardResult.draft.company ?? "")}>＋ Create company from card</button>}</div>}
+          </div>}
         </section>}
         {OCR_INPUT_ENABLED && <input name="businessCardDataUrl" type="hidden" value={businessCardFile.dataUrl} />}
         {OCR_INPUT_ENABLED && <input name="businessCardFileName" type="hidden" value={businessCardFile.name} />}
         <ImageField label="Contact photo" name="contactPhoto" value={photoDataUrl} onChange={setPhotoDataUrl} onProcessingChange={setImageProcessing} />
         <CompanyCombobox inputId="contact-create-company" label="Company *" companies={companies} value={companyQuery} onChange={selectCompany} required />
+        {onCreateCompany && !companyId && companyQuery.trim().length >= 2 && !(cardResult && !cardCompanyMatch && companyQuery.trim() === cardResult.draft.company?.trim()) && <div className="company-missing-action field-full"><small>“{companyQuery.trim()}” is not in the CRM.</small><button className="text-button" type="button" onClick={() => createCompany(companyQuery)}>＋ Create this company{cardResult ? " from the scanned card" : ""}</button></div>}
         <label className="field"><span>First name *</span><input name="firstName" required minLength={2} maxLength={100} autoFocus /></label>
         <label className="field"><span>Last name</span><input name="lastName" maxLength={100} /></label>
         <label className="field"><span>Position</span><input name="position" maxLength={150} placeholder="External Relations Director" /></label>
-        <label className="field"><span>Phone</span><input name="phone" type="tel" maxLength={50} placeholder="+380…" /></label>
+        <label className="field"><span>Phone</span><input name="phone" type="tel" maxLength={100} placeholder="+380…; +380…" /></label>
         <label className="field"><span>Contact status</span><select name="contactStatus" defaultValue="active"><option value="active">Active — contactable</option><option value="inactive">Inactive — do not contact</option></select></label>
         <label className="field"><span>Email</span><input name="email" type="email" maxLength={255} placeholder="name@company.com" /></label>
         <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/in/..." /></label>

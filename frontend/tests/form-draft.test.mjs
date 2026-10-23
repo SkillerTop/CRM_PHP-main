@@ -63,9 +63,11 @@ test("wires protected drafts to every business-data form", async () => {
     readFile(new URL("src/shared/hooks/use-form-draft.tsx", root), "utf8"),
     readFile(new URL("src/shared/utils/form-draft.ts", root), "utf8"),
   ]);
-  for (const draft of ["companyCreateDraft", "contactCreateDraft", "taskCreateDraft", "userCreateDraft", "profileDraft", "settingsDraft", "companyFormDraft", "contactFormDraft", "taskEditFormDraft", "userEditDraft", "lookupAddDraft"]) {
+  for (const draft of ["contactCreateDraft", "taskCreateDraft", "userCreateDraft", "profileDraft", "settingsDraft", "companyFormDraft", "contactFormDraft", "taskEditFormDraft", "userEditDraft", "lookupAddDraft"]) {
     assert.match(app, new RegExp(`<form[^>]*\\{\\.\\.\\.${draft}\\.formProps\\}`));
   }
+  // A company created from a scanned card is prefilled from the card, so it must not restore an older draft.
+  assert.match(app, /<form[^>]*\{\.\.\.\(prefill \? \{\} : companyCreateDraft\.formProps\)\}/);
   assert.match(app, /readFormDraft\(draftScope, "open-window"\)/);
   assert.match(app, /clearAccountDrafts\(draftScope\)/);
   assert.match(utility, /window\.sessionStorage/);

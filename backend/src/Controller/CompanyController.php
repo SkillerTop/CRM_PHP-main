@@ -14,6 +14,7 @@ use CRM\Http\Response;
 use CRM\Security\AuthContext;
 use CRM\Support\Arr;
 use CRM\Support\Clock;
+use CRM\Support\NameMatch;
 use CRM\Support\Pagination;
 use CRM\Support\Validator;
 use CRM\Support\ImageDataUrl;
@@ -132,7 +133,7 @@ final class CompanyController
             $before = $this->findForUpdate($id);
             RecordGuard::optimistic($before, Arr::string($input, 'updated_at'));
             $data = $this->validated($input, $before);
-            $this->duplicateGuard($data['name'], $id, Arr::bool($input, 'allow_duplicate'));
+            $this->duplicateGuard($data['name'], $id, Arr::bool($input, 'allow_duplicate'), $data['name'] !== $before['name']);
             $stmt = $this->db->prepare(
                 'UPDATE companies SET name = :name, type_lookup_id = :type_id, country = :country, city = :city,
                     status_lookup_id = :status_id, manager_lookup_id = :manager_id, website = :website, linkedin = :linkedin, nda_status = :nda_status,
@@ -246,21 +247,34 @@ final class CompanyController
         ];
     }
 
-    private function duplicateGuard(string $name, ?int $exceptId, bool $allow): void
+    /**
+     * An identical name (differing only in letter case or spacing) is refused even with allow_duplicate; a similar one
+     * (other alphabet, accents, lookalike letters, punctuation) asks the user to confirm. Read-only check.
+     */
+    private function duplicateGuard(string $name, ?int $exceptId, bool $allow, bool $nameChanged = true): void
     {
-        $sql = 'SELECT id, name FROM companies WHERE name = :name';
-        $params = ['name' => $name];
-        if ($exceptId !== null) {
-            $sql .= ' AND id <> :id';
-            $params['id'] = $exceptId;
+        if (!$nameChanged) {
+            return;
         }
-        $sql .= ' LIMIT 1';
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute($params);
-        $duplicate = $stmt->fetch();
-        if ($duplicate && !$allow) {
-            throw new ApiException(409, 'possible_duplicate', 'Компания с таким названием уже существует.', [
-                'duplicate' => ['id' => (int) $duplicate['id'], 'name' => $duplicate['name']],
+        $keys = NameMatch::keys($name);
+        $similar = null;
+        $stmt = $this->db->prepare('SELECT id, name, is_archived FROM companies WHERE id <> :id');
+        $stmt->execute(['id' => $exceptId ?? 0]);
+        while ($candidate = $stmt->fetch()) {
+            $candidateName = (string) $candidate['name'];
+            if (NameMatch::identical($name, $candidateName)) {
+                $archived = (int) $candidate['is_archived'] === 1 ? ' (archived)' : '';
+                throw new ApiException(409, 'company_exists', "Company \"{$candidateName}\"{$archived} already exists. Use the existing record.", [
+                    'duplicate' => ['id' => (int) $candidate['id'], 'name' => $candidateName, 'is_archived' => $archived !== ''],
+                ]);
+            }
+            if ($similar === null && !$allow && NameMatch::matches($keys, NameMatch::keys($candidateName))) {
+                $similar = $candidate;
+            }
+        }
+        if ($similar !== null) {
+            throw new ApiException(409, 'possible_duplicate', "A similar company already exists: {$similar['name']}.", [
+                'duplicate' => ['id' => (int) $similar['id'], 'name' => $similar['name']],
                 'retry_with' => ['allow_duplicate' => true],
             ]);
         }

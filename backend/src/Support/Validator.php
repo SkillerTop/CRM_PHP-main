@@ -48,6 +48,20 @@ final class Validator
             : '';
     }
 
+    /** Several numbers in one field, separated by ";" ("+47 481 52 925; +47 70 08 01 80"). */
+    public static function phones(?string $value): string
+    {
+        if ($value === null || $value === '') {
+            return '';
+        }
+        foreach (explode(';', $value) as $phone) {
+            if (trim($phone) === '' || self::phone(trim($phone)) !== '') {
+                return 'Допустимы цифры, +, пробелы, скобки и дефисы; несколько номеров разделяйте «;».';
+            }
+        }
+        return '';
+    }
+
     public static function password(?string $value): string
     {
         return $value === null || mb_strlen($value) < 8 ? 'Минимум 8 символов.' : '';

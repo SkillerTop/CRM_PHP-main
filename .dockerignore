@@ -1,10 +1,12 @@
 .git
+.claude
 .runtime
 .tmp
 .env
 .env.docker
 **/.env
 **/.env.local
+**/.env copy
 backend/ai/models
 backend/storage
 frontend/node_modules
@@ -13,5 +15,10 @@ frontend/.next
 frontend/.wrangler
 frontend/tsconfig.tsbuildinfo
 deploy/*.zip
+deploy/package
+# Scanned business cards contain personal data and are not part of the app.
+test for ocr
+test for ocr.zip
+tests
 output
 work

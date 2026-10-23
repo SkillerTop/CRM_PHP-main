@@ -16,6 +16,7 @@ use CRM\Security\AuthContext;
 use CRM\Security\ResourceGuard;
 use CRM\Support\Arr;
 use CRM\Support\Clock;
+use CRM\Support\NameMatch;
 use CRM\Support\Pagination;
 use CRM\Support\Validator;
 use CRM\Support\ImageDataUrl;
@@ -116,6 +117,8 @@ final class ContactController
             $this->resources->consume('upload', $this->auth->userId(), Config::int('UPLOAD_MAX_REQUESTS_PER_HOUR', 100));
         }
         $data = $this->validated($input);
+        // Name first: an outright refusal must come before any "save anyway" question.
+        $this->similarNameGuard($data, null, Arr::bool($input, 'allow_duplicate'));
         $this->duplicateGuard($data['email'], null, Arr::bool($input, 'allow_duplicate'));
         $storedBusinessCardPath = null;
         $this->db->beginTransaction();
@@ -160,6 +163,10 @@ final class ContactController
             $before = $this->findForUpdate($id);
             RecordGuard::optimistic($before, Arr::string($input, 'updated_at'));
             $data = $this->validated($input, $before);
+            $renamed = $data['first_name'] !== $before['first_name'] || $data['last_name'] !== $before['last_name'] || (int) $data['company_id'] !== (int) $before['company_id'];
+            if ($renamed) {
+                $this->similarNameGuard($data, $id, Arr::bool($input, 'allow_duplicate'));
+            }
             $this->duplicateGuard($data['email'], $id, Arr::bool($input, 'allow_duplicate'));
             if ((int) $before['company_id'] !== (int) $data['company_id']) {
                 $this->auth->requireAdmin();
@@ -262,7 +269,7 @@ final class ContactController
             'first_name' => Validator::required($firstName) ?: Validator::max($firstName, 100),
             'last_name' => Validator::max(Arr::nullableString($input, 'last_name'), 100),
             'position' => Validator::max(Arr::nullableString($input, 'position'), 150),
-            'phone' => Validator::phone(Arr::nullableString($input, 'phone')) ?: Validator::max(Arr::nullableString($input, 'phone'), 50),
+            'phone' => Validator::phones(Arr::nullableString($input, 'phone')) ?: Validator::max(Arr::nullableString($input, 'phone'), 100),
             'email' => Validator::email($email) ?: Validator::max($email, 255),
             'linkedin' => Validator::url($linkedin),
             'source_detail' => $source && $source['requires_detail'] ? Validator::required($sourceDetail) : '',
@@ -358,8 +365,51 @@ final class ContactController
         $stmt->execute($params);
         $duplicate = $stmt->fetch();
         if ($duplicate && !$allow) {
-            throw new ApiException(409, 'possible_duplicate', "Контакт с таким email уже существует в компании {$duplicate['company_name']}.", [
+            throw new ApiException(409, 'possible_duplicate', "A contact with this email already exists in company {$duplicate['company_name']}.", [
                 'duplicate' => ['id' => (int) $duplicate['id'], 'company_id' => (int) $duplicate['company_id'], 'company' => $duplicate['company_name']],
+                'retry_with' => ['allow_duplicate' => true],
+            ]);
+        }
+    }
+
+    /**
+     * An identical name (differing only in letter case or spacing) in any company is refused even with allow_duplicate.
+     * A similar name (another alphabet, accents, lookalike letters, word order) only asks the user to confirm.
+     * Read-only check.
+     */
+    private function similarNameGuard(array $data, ?int $exceptId, bool $allow): void
+    {
+        $name = trim($data['first_name'] . ' ' . ($data['last_name'] ?? ''));
+        $keys = NameMatch::keys($name);
+        $similar = null;
+        // Same-company rows first: they are the most likely real duplicates.
+        $stmt = $this->db->prepare(
+            'SELECT k.id, k.first_name, k.last_name, k.is_archived, c.id AS company_id, c.name AS company_name
+             FROM contacts k JOIN companies c ON c.id = k.company_id
+             WHERE k.id <> :id
+             ORDER BY k.company_id = :company_id DESC, k.id'
+        );
+        $stmt->execute(['company_id' => $data['company_id'], 'id' => $exceptId ?? 0]);
+        while ($candidate = $stmt->fetch()) {
+            $candidateName = trim($candidate['first_name'] . ' ' . ($candidate['last_name'] ?? ''));
+            $sameCompany = (int) $candidate['company_id'] === (int) $data['company_id'];
+            if (NameMatch::identical($name, $candidateName)) {
+                $archived = (int) $candidate['is_archived'] === 1 ? ' (archived)' : '';
+                $where = $sameCompany ? 'in this company' : "in company {$candidate['company_name']}";
+                throw new ApiException(409, 'contact_exists', "Contact \"{$candidateName}\"{$archived} already exists {$where}. Use the existing record.", [
+                    'duplicate' => ['id' => (int) $candidate['id'], 'company_id' => (int) $candidate['company_id'], 'company' => $candidate['company_name'], 'is_archived' => $archived !== ''],
+                ]);
+            }
+            if ($similar === null && !$allow && NameMatch::matches($keys, NameMatch::keys($candidateName))) {
+                $similar = $candidate + ['name' => $candidateName, 'same_company' => $sameCompany];
+            }
+        }
+        if ($similar !== null) {
+            $message = $similar['same_company']
+                ? "A contact with a similar name already exists in this company: {$similar['name']}."
+                : "A contact with a similar name already exists in another company ({$similar['company_name']}): {$similar['name']}.";
+            throw new ApiException(409, 'possible_duplicate', $message, [
+                'duplicate' => ['id' => (int) $similar['id'], 'company_id' => (int) $similar['company_id'], 'company' => $similar['company_name']],
                 'retry_with' => ['allow_duplicate' => true],
             ]);
         }

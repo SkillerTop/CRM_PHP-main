@@ -112,6 +112,8 @@ final class EnvironmentValidator
             ['WHISPER_BEAM_SIZE', 1, 10, 5],
             ['AI_MAX_TIMEOUT_SECONDS', 1, 900, 900], ['AI_MAX_OUTPUT_BYTES', 1024, 10485760, 1048576],
             ['TRANSLATION_TIMEOUT_SECONDS', 5, 60, 20], ['TRANSLATION_MAX_REQUESTS_PER_HOUR', 1, 1000, 120],
+            ['COMPANY_LOOKUP_MAX_REQUESTS_PER_HOUR', 1, 1000, 60], ['COMPANY_LOOKUP_TIMEOUT_SECONDS', 5, 60, 20],
+            ['COMPANY_LOOKUP_REQUEST_TIMEOUT_SECONDS', 2, 30, 8],
         ] as [$key, $minimum, $maximum, $default]) {
             self::integer($errors, $key, $minimum, $maximum, $default);
         }

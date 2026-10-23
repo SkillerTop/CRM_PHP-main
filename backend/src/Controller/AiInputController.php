@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CRM\Controller;
 
 use CRM\Domain\BusinessCardOcrService;
+use CRM\Domain\CompanyWebsiteLookupService;
 use CRM\Domain\SpeechTranscriptionService;
 use CRM\Domain\TranslationService;
 use CRM\Http\ApiException;
@@ -21,6 +22,7 @@ final class AiInputController
         private readonly BusinessCardOcrService $ocr,
         private readonly SpeechTranscriptionService $speech,
         private readonly TranslationService $translation,
+        private readonly CompanyWebsiteLookupService $websiteLookup,
         private readonly ResourceGuard $resources
     ) {
     }
@@ -49,6 +51,22 @@ final class AiInputController
         $this->resources->consume('speech', $this->auth->userId(), Config::int('WHISPER_MAX_REQUESTS_PER_HOUR', 10));
         $result = $this->resources->exclusive('speech', fn (): array => $this->speech->transcribe($file));
         Response::json(['data' => $result]);
+    }
+
+    /** Company description, address and logo from the company's own website (prefill only, nothing is saved). */
+    public function companyWebsite(Request $request): never
+    {
+        $this->auth->requireWrite();
+        if (!Config::bool('COMPANY_LOOKUP_ENABLED', true)) {
+            throw new ApiException(503, 'lookup_disabled', 'Поиск данных компании по сайту отключён.');
+        }
+        $website = trim((string) ($request->json()['website'] ?? ''));
+        if ($website === '' || mb_strlen($website) > 255) {
+            throw new ApiException(422, 'lookup_invalid_url', 'Укажите адрес сайта в формате example.com.');
+        }
+
+        $this->resources->consume('company_lookup', $this->auth->userId(), Config::int('COMPANY_LOOKUP_MAX_REQUESTS_PER_HOUR', 60));
+        Response::json(['data' => $this->websiteLookup->lookup($website)]);
     }
 
     public function translate(Request $request): never

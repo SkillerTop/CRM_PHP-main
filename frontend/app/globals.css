@@ -3169,6 +3169,7 @@ select option[value="High"] {
 }
 
 .field > span,
+.website-lookup-field > label > span,
 .detail-grid small,
 .detail-description > small {
   color: var(--muted);
@@ -6506,6 +6507,7 @@ img.detail-logo {
 .eyebrow,
 .nav-section,
 .field > span,
+.website-lookup-field > label > span,
 .field-label,
 .filter-drawer label > span,
 .lookup-add-form label,
@@ -7055,6 +7057,7 @@ img.detail-logo {
 }
 
 .field > span,
+.website-lookup-field > label > span,
 .field-label {
   font-size: 13px;
 }
@@ -7843,6 +7846,170 @@ img.detail-logo {
 /* Keep voice transcription and spelling/T9 wired, but hide their controls from the UI. */
 .voice-text-tools.voice-text-tools-hidden {
   display: none;
+}
+
+/* Business-card scan: upload, classified OCR lines, and company match note. */
+.ai-capture-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 13px;
+  background: #f4fafc;
+  border: 1px solid #d6e8ef;
+  border-radius: 10px;
+}
+
+.ai-capture-panel > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-capture-panel b {
+  color: var(--navy-800);
+  font-size: 12px;
+}
+
+.ai-capture-panel small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.ai-capture-panel .form-error {
+  grid-column: 1 / -1;
+}
+
+.ai-capture-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+.ocr-preview {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.ocr-lines {
+  display: grid;
+  gap: 3px;
+  max-height: 240px;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  list-style: none;
+  background: #f8fafb;
+  border-radius: 7px;
+}
+
+.ocr-lines li {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  border-radius: 5px;
+}
+
+.ocr-lines li.ocr-line-filled {
+  color: var(--navy-900);
+  font-weight: 600;
+  background: #e8f5fa;
+}
+
+.ocr-tag {
+  justify-self: start;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: #eef2f4;
+  border-radius: 999px;
+}
+
+.ocr-line-filled .ocr-tag {
+  color: #fff;
+  background: var(--cyan-600);
+}
+
+.ocr-company-missing,
+.company-missing-action {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.company-missing-action {
+  margin-top: -6px;
+  padding: 8px 10px;
+  background: #fff8ec;
+  border: 1px solid #f0dcb4;
+  border-radius: 8px;
+}
+
+.company-missing-action small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* "Fill from website" under the company Website field. */
+.website-lookup-field > label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.website-lookup {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+
+.website-lookup small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.website-lookup small.website-lookup-error {
+  color: var(--red);
+}
+
+/* A contact's phone field can hold several numbers ("mobile; office"). */
+.phone-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
+@media (max-width: 640px) {
+  .ai-capture-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-capture-actions,
+  .ai-capture-actions > button {
+    width: 100%;
+  }
 }
 
 .voice-input {

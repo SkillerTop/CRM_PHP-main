@@ -1158,3 +1158,32 @@ test("uses GPU Faster-Whisper and PaddleOCR for conference capture", async () =>
   assert.match(runGuide, /-d upload_max_filesize=25M -d post_max_size=32M/);
   assert.match(ocr, /UPLOAD_ERR_INI_SIZE[\s\S]*?upload_max_filesize/);
 });
+
+test("creates missing companies from scanned cards and fills them from the company website", async () => {
+  const [app, routes, client, lookup] = await Promise.all([
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+    readFile(new URL("../backend/src/Http/Routes.php", root), "utf8"),
+    readFile(new URL("../backend/src/Support/SafeHttpClient.php", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/CompanyWebsiteLookupService.php", root), "utf8"),
+  ]);
+
+  // Contact form → stacked "New company from business card" → back with the company selected.
+  assert.match(app, /createCompany\(draft\.company, result\)/);
+  assert.match(app, /prefill: companyPrefillFromCard\(name, card, countries\)/);
+  assert.match(app, /addCompany\(event, logoDataUrl, \(company\) => \{ cardCompany\.onCreated\(company\); setCardCompany\(null\); \}\)/);
+  assert.match(app, /if \(dialogs\[dialogs\.length - 1\] !== dialogRef\.current\) return;/);
+
+  // Website lookup: only empty fields are filled, logos are re-encoded in the browser.
+  assert.match(app, /apiRequest<\{ data: CompanyWebsiteInfo \}>\("\/company-lookup"/);
+  assert.match(app, /setFormField\("city", data\.city \?\? "", true\)/);
+  assert.match(app, /setLogoDataUrl\(\(current\) => current \|\| logo\)/);
+  assert.match(app, /canvas\.toDataURL\("image\/webp", 0\.82\)/);
+  assert.match(routes, /'POST', '\/api\/company-lookup'/);
+
+  // Server-side request forgery guards.
+  assert.match(client, /CURLOPT_RESOLVE/);
+  assert.match(client, /CURLOPT_FOLLOWLOCATION => false/);
+  assert.match(client, /FILTER_FLAG_GLOBAL_RANGE/);
+  assert.match(client, /CURLOPT_PROTOCOLS => CURLPROTO_HTTP \| CURLPROTO_HTTPS/);
+  assert.match(lookup, /LIBXML_NONET/);
+});

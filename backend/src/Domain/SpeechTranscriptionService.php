@@ -89,7 +89,7 @@ final class SpeechTranscriptionService
             return [
                 'text' => $text,
                 'language' => trim((string) ($payload['language'] ?? '')) ?: null,
-                'model' => $model,
+                'model' => basename(str_replace('\\', '/', $model)),
             ];
         } finally {
             $this->cleanup($workDir);

@@ -1,0 +1,6 @@
+# Versions tested with this build (RTX 5080, CUDA 12.9, cuDNN 9). Used as pip
+# constraints in the Docker image so rebuilds do not pick up untested releases.
+paddleocr==3.7.0
+faster-whisper==1.2.1
+ctranslate2==4.8.3
+av==15.1.0
