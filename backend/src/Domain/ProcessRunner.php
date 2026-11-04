@@ -63,6 +63,9 @@ final class ProcessRunner
         $stderr = '';
         $startedAt = hrtime(true);
         $timeoutSeconds = max(1, min($timeoutSeconds, Config::int('AI_MAX_TIMEOUT_SECONDS', 900)));
+        // max_execution_time (30 s by default, wall-clock time on Windows) must not end the
+        // request before the engine's own timeout: a fatal error leaves an empty, non-JSON reply.
+        set_time_limit($timeoutSeconds + 30);
         $maximumOutput = max(1024, Config::int('AI_MAX_OUTPUT_BYTES', 1024 * 1024));
         $exitCode = 0;
         $failure = null;

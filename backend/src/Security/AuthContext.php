@@ -31,7 +31,8 @@ final class AuthContext
 
         $stmt = $this->db->prepare(
             'SELECT s.id AS session_id, s.csrf_token, s.expires_at, s.last_activity_at,
-                    u.id, u.full_name, u.email, u.phone, u.photo_data_url, u.role, u.is_active, u.pending_approval,
+                    u.id, u.full_name, u.email, u.phone, (u.photo_data_url IS NOT NULL) AS has_photo,
+                    u.role, u.is_active, u.pending_approval,
                     u.must_change_password, u.last_login_at, u.updated_at
              FROM user_sessions s
              JOIN users u ON u.id = s.user_id
@@ -219,7 +220,7 @@ final class AuthContext
             'full_name' => (string) $row['full_name'],
             'email' => (string) $row['email'],
             'phone' => $row['phone'] ?? null,
-            'photo_data_url' => $row['photo_data_url'] ?? null,
+            'photo_data_url' => !empty($row['has_photo']) ? '/api/users/' . (int) $row['id'] . '/photo' : null,
             'role' => (string) $row['role'],
             'is_active' => (bool) $row['is_active'],
             'pending_approval' => (bool) $row['pending_approval'],

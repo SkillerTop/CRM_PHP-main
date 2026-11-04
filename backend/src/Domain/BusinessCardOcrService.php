@@ -22,6 +22,7 @@ final class BusinessCardOcrService
     private const ADDRESS = '/(?<!\p{L})(?:ul|al|pl|str|ave|blvd|rd|вул|ул|пр|просп|пров|бул|пл|буд|оф)\.|(?<!\p{L})(?:street|strasse|straße|avenue|road|ulica|aleja|вулиця|улица|проспект|провулок|переулок|бульвар|площа|площадь|office|suite|floor|building|room|p\.?\s?o\.?\s?box)(?!\p{L})|(?<!\d)\d{2}-\d{3}(?!\d)|(?<![\d+])\d{5}(?!\d)|\p{L}{3,}\.?\s\d{1,4}\p{L}?(?:\s?[\/-]\s?\d{1,4}\p{L}?)?\s*(?:,|$)/iu';
     private const NAME_DECORATION = '/(?<!\p{L})(?:siv\.?\s?ing|dipl\.?\s?-?\s?ing|m\.?\s?sc|b\.?\s?sc|mba|ph\.?\s?d|dr|mr|mrs|ms|prof|eng|ing|inż|inz|mgr|c\.?\s?eng|cfa|acca|к\.?\s?т\.?\s?н|к\.?\s?е\.?\s?н|д\.?\s?т\.?\s?н)\.?(?!\p{L})/iu';
     private const CONTACT_LABEL = '/(?<!\p{L})(?:(?:tel|phone|mob|mobile|cell|gsm|fax|office|off|direct|dir|work|tlf|telefon|e-?mail|web|website|site|тел|моб|факс)\s*[.:]{0,2}|[tmfewp]\s*[.:])(?=\s|$)/iu';
+    private const ADDRESS_LABEL = '/^\s*(?:address|addr|adresse|adres|adresa|direcci[oó]n|indirizzo|anschrift|адреса|адрес)\s*[.:]\s*/iu';
     private const COUNTRIES = ['ukraine', 'україна', 'украина', 'poland', 'polska', 'польща', 'польша', 'germany', 'deutschland', 'німеччина', 'германия', 'netherlands', 'the netherlands', 'nederland', 'holland', 'belgium', 'france', 'italy', 'spain', 'portugal', 'norway', 'norge', 'sweden', 'sverige', 'finland', 'suomi', 'denmark', 'danmark', 'estonia', 'latvia', 'lithuania', 'czech republic', 'czechia', 'slovakia', 'hungary', 'romania', 'moldova', 'bulgaria', 'greece', 'turkey', 'türkiye', 'cyprus', 'malta', 'croatia', 'slovenia', 'austria', 'switzerland', 'united kingdom', 'uk', 'england', 'scotland', 'ireland', 'usa', 'united states', 'canada', 'china', 'japan', 'korea', 'singapore', 'india', 'uae', 'united arab emirates', 'georgia', 'azerbaijan', 'kazakhstan', 'israel', 'egypt'];
     private const CITIES = ['kyiv', 'kiev', 'київ', 'киев', 'lviv', 'львів', 'львов', 'odesa', 'odessa', 'одеса', 'одесса', 'kharkiv', 'харків', 'харьков', 'dnipro', 'дніпро', 'днепр', 'mykolaiv', 'миколаїв', 'николаев', 'kherson', 'херсон', 'izmail', 'ізмаїл', 'warsaw', 'warszawa', 'gdansk', 'gdynia', 'szczecin', 'krakow', 'wroclaw', 'poznan', 'lodz', 'berlin', 'hamburg', 'bremen', 'munich', 'munchen', 'rotterdam', 'amsterdam', 'antwerp', 'london', 'paris', 'oslo', 'bergen', 'stockholm', 'gothenburg', 'copenhagen', 'helsinki', 'tallinn', 'riga', 'vilnius', 'klaipeda', 'prague', 'vienna', 'istanbul', 'athens', 'piraeus', 'limassol', 'genoa', 'dubai', 'shanghai'];
     private const WEBSITE_TLDS = ['com', 'net', 'org', 'info', 'biz', 'io', 'co', 'eu', 'ua', 'pl', 'de', 'nl', 'be', 'fr', 'it', 'es', 'pt', 'no', 'se', 'fi', 'dk', 'ee', 'lv', 'lt', 'cz', 'sk', 'hu', 'ro', 'md', 'bg', 'gr', 'tr', 'cy', 'mt', 'hr', 'si', 'at', 'ch', 'uk', 'ie', 'us', 'ca', 'cn', 'jp', 'kr', 'sg', 'in', 'ae', 'ge', 'az', 'kz', 'il', 'eg', 'online', 'site', 'tech', 'group', 'global', 'agency', 'marine', 'shipping'];
@@ -40,6 +41,7 @@ final class BusinessCardOcrService
         $script = $this->localPath(trim((string) Config::get('OCR_PADDLE_SCRIPT', 'ai/paddleocr_business_card.py')));
         $language = trim((string) Config::get('OCR_LANGUAGE', 'uk'));
         $device = trim((string) Config::get('OCR_DEVICE', 'gpu'));
+        $latinModel = trim((string) Config::get('OCR_LATIN_REC_MODEL', 'latin_PP-OCRv5_mobile_rec'));
         $modelDirectory = $this->localPath(trim((string) Config::get('OCR_MODEL_DIR', '.runtime/paddleocr-models')));
         $timeout = Config::int('OCR_TIMEOUT_SECONDS', 45);
         if (!is_file($script)) {
@@ -48,7 +50,7 @@ final class BusinessCardOcrService
         if (!is_dir($modelDirectory) && !mkdir($modelDirectory, 0770, true) && !is_dir($modelDirectory)) {
             throw new ApiException(500, 'model_storage_unavailable', 'Не удалось подготовить папку моделей PaddleOCR.');
         }
-        $recognition = $this->runPaddleOcr($python, $script, (string) $file['tmp_name'], $language, $device, $modelDirectory, $timeout);
+        $recognition = $this->runPaddleOcr($python, $script, (string) $file['tmp_name'], $language, $device, $modelDirectory, $latinModel, $timeout);
         $text = $recognition['text'];
         $classified = $this->classifyBusinessCard($text);
         $draft = $classified['draft'];
@@ -105,10 +107,11 @@ final class BusinessCardOcrService
         string $language,
         string $device,
         string $modelDirectory,
+        string $latinModel,
         int $timeout
     ): array
     {
-        $result = $this->runner->run([
+        $command = [
             $python,
             $script,
             '--input',
@@ -119,7 +122,11 @@ final class BusinessCardOcrService
             $device,
             '--model-dir',
             $modelDirectory,
-        ], $timeout);
+        ];
+        if ($latinModel !== '') {
+            array_push($command, '--latin-rec-model', $latinModel);
+        }
+        $result = $this->runner->run($command, $timeout);
         if ($result->exitCode !== 0) {
             throw new ApiException(503, 'ocr_engine_failed', 'PaddleOCR не смог обработать визитку.');
         }
@@ -188,6 +195,8 @@ final class BusinessCardOcrService
                 $rest = preg_replace(self::CONTACT_LABEL, ' ', $rest) ?? $rest;
             }
             // trim() is byte-based and would cut UTF-8 letters; strip separators with /u.
+            // "Address: 08870, Carrer San Sebastià": the label sits on the same line once words follow the baseline.
+            $rest = preg_replace(self::ADDRESS_LABEL, '', $rest) ?? $rest;
             $rest = preg_replace(['/\s+/u', '/^[\s,;|•·:\-–—\/]+|[\s,;|•·:\-–—\/]+$/u'], [' ', ''], $rest) ?? $rest;
             if (preg_match_all('/\p{L}/u', $rest) >= 2) {
                 $entries[] = ['text' => $rest, 'type' => $this->classifyText($rest)];
@@ -246,7 +255,7 @@ final class BusinessCardOcrService
             }
         }
 
-        [$firstName, $lastName] = $nameIndex !== null ? $this->splitName($this->cleanName($entries[$nameIndex]['text'])) : ['', ''];
+        [$firstName, $lastName] = $nameIndex !== null ? $this->splitName($this->cleanName($entries[$nameIndex]['text']), $email) : ['', ''];
         $address = implode(', ', array_map(
             static fn (array $entry): string => $entry['text'],
             array_values(array_filter($entries, static fn (array $entry): bool => in_array($entry['type'], ['address', 'location'], true)))
@@ -273,6 +282,10 @@ final class BusinessCardOcrService
 
     private function classifyText(string $text): string
     {
+        // "GÖTEBORG | SWEDEN TRIESTE | ITALY BARCELONA | SPAIN" lists offices, not this card's address.
+        if (count($this->countriesIn($text)) >= 2) {
+            return 'offices';
+        }
         if (preg_match(self::ADDRESS, $text) === 1) {
             return 'address';
         }
@@ -484,6 +497,18 @@ final class BusinessCardOcrService
         return preg_match($country, $folded) === 1 && count(preg_split('/\s+/u', trim($folded)) ?: []) <= 6;
     }
 
+    /** @return list<string> distinct country names found in the line */
+    private function countriesIn(string $text): array
+    {
+        static $pattern = null;
+        $pattern ??= '/(?<!\p{L})(?:' . implode('|', array_map(
+            fn (string $place): string => preg_quote($this->fold($place), '/'),
+            self::COUNTRIES
+        )) . ')(?!\p{L})/u';
+        preg_match_all($pattern, $this->fold($text), $matches);
+        return array_values(array_unique($matches[0]));
+    }
+
     private function hasLegalForm(string $text): bool
     {
         return preg_match(self::LEGAL_FORM, $text) === 1 || preg_match(self::LEGAL_FORM_UPPER, $text) === 1;
@@ -513,7 +538,7 @@ final class BusinessCardOcrService
     }
 
     /** @return array{0:string,1:string} */
-    private function splitName(string $name): array
+    private function splitName(string $name, string $email = ''): array
     {
         $parts = array_map(
             static fn (string $part): string => mb_strtoupper($part) === $part ? mb_convert_case(mb_strtolower($part), MB_CASE_TITLE) : $part,
@@ -531,7 +556,40 @@ final class BusinessCardOcrService
         if (count($parts) === 3 && preg_match($patronymic, $parts[1]) === 1) {
             return [$parts[0], $parts[2]];
         }
-        return [$parts[0], implode(' ', array_slice($parts, 1))];
+        $given = $this->givenNameWords($parts, $email);
+        if ($given === null && count($parts) === 4 && count(array_filter($parts, static fn (string $part): bool => preg_match('/^\p{Lu}/u', $part) === 1)) === 4) {
+            // Spanish / Portuguese "Jose Luis Linares Llamas": two given names, two surnames.
+            $given = 2;
+        }
+        $given ??= 1;
+        return [implode(' ', array_slice($parts, 0, $given)), implode(' ', array_slice($parts, $given))];
+    }
+
+    /**
+     * How many leading words form the given name, read from the email:
+     * "jl.linares@" or "joseluis.linares@" for "Jose Luis Linares Llamas" → 2.
+     *
+     * @param list<string> $parts
+     */
+    private function givenNameWords(array $parts, string $email): ?int
+    {
+        $tokens = array_values(array_filter(preg_split('/[._+\-\d]+/', strtolower(strstr($email, '@', true) ?: '')) ?: []));
+        if ($tokens === [] || count($parts) < 3) {
+            return null;
+        }
+        $words = array_map(fn (string $part): string => $this->latin($part), $parts);
+        for ($given = count($parts) - 1; $given >= 2; $given--) {
+            $leading = array_slice($words, 0, $given);
+            $initials = implode('', array_map(static fn (string $word): string => substr($word, 0, 1), $leading));
+            if (!in_array($tokens[0], [$initials, implode('', $leading)], true)) {
+                continue;
+            }
+            // The next token, when present, has to be the surname that follows.
+            if (!isset($tokens[1]) || ($words[$given] !== '' && str_starts_with($tokens[1], substr($words[$given], 0, 3)))) {
+                return $given;
+            }
+        }
+        return null;
     }
 
     /**

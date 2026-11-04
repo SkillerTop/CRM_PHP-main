@@ -62,6 +62,7 @@ final class Routes
 
         $r->add('GET', '/api/companies', fn (Request $request) => $companyController->index($request));
         $r->add('POST', '/api/companies', fn (Request $request) => $companyController->store($request));
+        $r->add('GET', '/api/companies/{id}/logo', fn (Request $_, array $p) => $companyController->logo((int) $p['id']));
         $r->add('GET', '/api/companies/{id}', fn (Request $_, array $p) => $companyController->show((int) $p['id']));
         $r->add('PUT', '/api/companies/{id}', fn (Request $request, array $p) => $companyController->update($request, (int) $p['id']));
         $r->add('POST', '/api/companies/{id}/archive', fn (Request $request, array $p) => $companyController->archive($request, (int) $p['id']));
@@ -71,6 +72,7 @@ final class Routes
 
         $r->add('GET', '/api/contacts', fn (Request $request) => $contactController->index($request));
         $r->add('POST', '/api/contacts', fn (Request $request) => $contactController->store($request));
+        $r->add('GET', '/api/contacts/{id}/photo', fn (Request $_, array $p) => $contactController->photo((int) $p['id']));
         $r->add('GET', '/api/contacts/{id}', fn (Request $_, array $p) => $contactController->show((int) $p['id']));
         $r->add('PUT', '/api/contacts/{id}', fn (Request $request, array $p) => $contactController->update($request, (int) $p['id']));
         $r->add('POST', '/api/contacts/{id}/archive', fn (Request $request, array $p) => $contactController->archive($request, (int) $p['id']));
@@ -98,6 +100,7 @@ final class Routes
         $r->add('GET', '/api/lookups/{type}/{id}/log', fn (Request $request, array $p) => $lookupController->log($request, (string) $p['type'], (int) $p['id']));
 
         $r->add('GET', '/api/users', fn (Request $request) => $userController->index($request));
+        $r->add('GET', '/api/users/{id}/photo', fn (Request $_, array $p) => $userController->photo((int) $p['id']));
         $r->add('POST', '/api/users', fn (Request $request) => $userController->store($request));
         $r->add('PUT', '/api/users/{id}', fn (Request $request, array $p) => $userController->update($request, (int) $p['id']));
         $r->add('POST', '/api/users/{id}/approve', fn (Request $request, array $p) => $userController->approve($request, (int) $p['id']));

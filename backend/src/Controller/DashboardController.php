@@ -19,7 +19,12 @@ final class DashboardController
             "SELECT
                 (SELECT COUNT(*) FROM companies WHERE is_archived = 0) AS companies,
                 (SELECT COUNT(*) FROM contacts k JOIN companies c ON c.id = k.company_id WHERE k.is_archived = 0 AND c.is_archived = 0) AS contacts,
+                (SELECT COUNT(*) FROM companies c WHERE c.is_archived = 0 AND EXISTS (
+                    SELECT 1 FROM contacts k WHERE k.company_id = c.id AND k.is_archived = 0
+                )) AS companies_with_contacts,
                 (SELECT COUNT(*) FROM tasks t JOIN companies c ON c.id = t.company_id WHERE t.is_archived = 0 AND c.is_archived = 0) AS tasks_total,
+                (SELECT COUNT(*) FROM tasks t JOIN companies c ON c.id = t.company_id JOIN lookups s ON s.id = t.status_lookup_id
+                 WHERE t.is_archived = 0 AND c.is_archived = 0 AND s.key_code = 'completed') AS completed_tasks,
                 (SELECT COUNT(*) FROM tasks t JOIN companies c ON c.id = t.company_id JOIN lookups s ON s.id = t.status_lookup_id
                  WHERE t.is_archived = 0 AND c.is_archived = 0 AND s.is_closed = 0) AS open_tasks,
                 (SELECT COUNT(*) FROM tasks t JOIN companies c ON c.id = t.company_id JOIN lookups s ON s.id = t.status_lookup_id
@@ -40,14 +45,17 @@ final class DashboardController
         }
         unset($row);
         $managers = $this->db->query(
-            "SELECT m.id AS manager_id, m.value AS manager, COUNT(t.id) AS task_count
+            "SELECT m.id AS manager_id, m.value AS manager, COUNT(t.id) AS task_count,
+                    SUM(s.is_closed = 0) AS open_count
              FROM tasks t JOIN companies c ON c.id = t.company_id AND c.is_archived = 0
              JOIN lookups m ON m.id = t.manager_lookup_id
+             JOIN lookups s ON s.id = t.status_lookup_id
              WHERE t.is_archived = 0 GROUP BY m.id, m.value ORDER BY task_count DESC, m.value"
         )->fetchAll();
         foreach ($managers as &$row) {
             $row['manager_id'] = (int) $row['manager_id'];
             $row['task_count'] = (int) $row['task_count'];
+            $row['open_count'] = (int) $row['open_count'];
         }
         Response::json(['data' => [
             'kpi' => array_map('intval', $kpi ?: []),

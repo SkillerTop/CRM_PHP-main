@@ -14,6 +14,12 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: true,
     },
     server: {
+      // Bind IPv4 explicitly and fail when the port is taken: with the default "localhost" Vite
+      // silently starts on [::1] only while another dev server answers 127.0.0.1:5173, and /api
+      // then returns that server's HTML ("The CRM server returned an invalid response").
+      host: "127.0.0.1",
+      port: 5173,
+      strictPort: true,
       proxy: {
         "/api": {
           target: backendUrl,

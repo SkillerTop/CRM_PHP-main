@@ -64,6 +64,11 @@ $cards = [
         "BLUE ANCHOR\nE. Kowalski\nOwner\ne.kowalski@gmail.com\n+48 600 100 200",
         ['first_name' => 'E.', 'last_name' => 'Kowalski', 'position' => 'Owner', 'phone' => '+48 600 100 200', 'email' => 'e.kowalski@gmail.com', 'company' => 'BLUE ANCHOR'],
     ],
+    [
+        // Office list header, Spanish two given names and two surnames confirmed by "jl." in the email.
+        "GÜTEBORG|SWEDEN TRIESTE|ITALY BARCELONA|SPAIN\nNAOS-BCN\nJose Luis Linares Llamas\nSHUPANO BOAT DESAGN\nTechnical Director | NAOS Ship & Boat Design\n+34 633 26 31\n08870,Carrer San Sebastia\nTel:\nBarcelona, Spain\nAddress\njl.linares@naos-bcn.com\nWebsite: www.naos-bcn.com\nEmail:\nEscola dEnginyeria de Barcelona Est - EEBE1 Alumnus",
+        ['first_name' => 'Jose Luis', 'last_name' => 'Linares Llamas', 'position' => 'Technical Director | NAOS Ship & Boat Design', 'phone' => '+34 633 26 31', 'email' => 'jl.linares@naos-bcn.com', 'website' => 'www.naos-bcn.com', 'company' => 'NAOS-BCN'],
+    ],
 ];
 
 foreach ($cards as [$text, $expected]) {
@@ -72,6 +77,26 @@ foreach ($cards as [$text, $expected]) {
     if ($draft != $expected) {
         throw new RuntimeException('OCR card was classified incorrectly: ' . json_encode($draft, JSON_UNESCAPED_UNICODE));
     }
+}
+
+// An office list names several countries; it is neither the address nor a location.
+$classify = (new ReflectionClass($service))->getMethod('classifyBusinessCard');
+$naos = $classify->invoke($service, end($cards)[0]);
+if ($naos['lines'][0]['type'] !== 'offices' || str_contains($naos['draft']['address'] ?? '', 'TRIESTE')) {
+    throw new RuntimeException('Office list was read as the card address: ' . json_encode($naos['lines'][0], JSON_UNESCAPED_UNICODE));
+}
+
+// Baseline-grouped lines keep labels with their values; the address label is not part of the address.
+$labelled = $classify->invoke($service, "GÖTEBORG | SWEDEN TRIESTE | ITALY BARCELONA SPAIN\nNAOS-BCN\nSHUP AND BOAT DESIGN\nJose Luis Linares Llamas\nTechnical Director | NAOS Ship & Boat Design\n+34 633 26 31\nTel:\nAddress: 08870, Carrer San Sebastià,\nBarcelona, Spain\nEmail: jl.linares@naos-bcn.com\nWebsite: www.naos-bcn.com\nEscola d'Enginyeria de Barcelona Est - EEBE \\ Alumnus");
+$expectedLabelled = ['first_name' => 'Jose Luis', 'last_name' => 'Linares Llamas', 'email' => 'jl.linares@naos-bcn.com', 'address' => '08870, Carrer San Sebastià, Barcelona, Spain'];
+if (array_intersect_key($labelled['draft'], $expectedLabelled) != $expectedLabelled) {
+    throw new RuntimeException('Labelled NAOS card was parsed incorrectly: ' . json_encode($labelled['draft'], JSON_UNESCAPED_UNICODE));
+}
+
+// Four capitalised words without an email hint: two given names, two surnames.
+$split = (new ReflectionClass($service))->getMethod('splitName');
+if ($split->invoke($service, 'Maria Jose Garcia Lopez') !== ['Maria Jose', 'Garcia Lopez']) {
+    throw new RuntimeException('Four-word name was split incorrectly.');
 }
 
 echo "Business-card OCR parsing passed.\n";

@@ -6,6 +6,7 @@ import ruDicUrl from "../../../node_modules/dictionary-ru/index.dic?url";
 import ukAffUrl from "../../../node_modules/dictionary-uk/index.aff?url";
 import ukDicUrl from "../../../node_modules/dictionary-uk/index.dic?url";
 import { findSpellingIssues, requiredSpellLanguages, type SpellChecker, type SpellLanguage } from "./spellcheck";
+import { retryableCachedPromise } from "./retryable-promise-cache";
 
 type SpellcheckRequest = { id: number; text: string };
 type SpellcheckResponse = { id: number; issues?: ReturnType<typeof findSpellingIssues>; error?: string };
@@ -24,13 +25,11 @@ async function fetchDictionaryFile(url: string) {
 }
 
 function loadChecker(language: SpellLanguage) {
-  const existing = checkerPromises.get(language);
-  if (existing) return existing;
-  const urls = dictionaryUrls[language];
-  const promise = Promise.all([fetchDictionaryFile(urls.aff), fetchDictionaryFile(urls.dic)])
-    .then(([aff, dic]) => nspell({ aff, dic }));
-  checkerPromises.set(language, promise);
-  return promise;
+  return retryableCachedPromise(checkerPromises, language, async () => {
+    const urls = dictionaryUrls[language];
+    const [aff, dic] = await Promise.all([fetchDictionaryFile(urls.aff), fetchDictionaryFile(urls.dic)]);
+    return nspell({ aff, dic });
+  });
 }
 
 self.onmessage = async (event: MessageEvent<SpellcheckRequest>) => {

@@ -13,7 +13,7 @@ Python-пакета и PHP-модуля с точной версией** нах�
 | --- | --- |
 | Frontend | Node.js `>=22.13` (здесь `24.18.0`), npm (здесь `11.16.0`), React и React DOM `19.2.6` для интерфейса; `nspell` `2.1.5` и словари `dictionary-en` `4.0.0`, `dictionary-ru` `3.0.0`, `dictionary-uk` `4.0.0` для проверки текста. |
 | Сборка frontend | Vite `8.0.13`, `@vitejs/plugin-react` `6.0.2`, TypeScript `5.9.3`, типы Node/React, ESLint `9.39.4`, `@eslint/js`, `typescript-eslint`, `eslint-plugin-react-hooks`, `globals`. Они перечислены в `frontend/package.json`; 175 фактически установленных пакетов и транзитивных зависимостей — в инвентаризации, а 207 записей lock-файла (включая пакеты для других платформ) — в `frontend/package-lock.json`. |
-| PHP backend | PHP `8.3` (здесь `8.3.33`), `pdo_mysql`, `mbstring`, `json`, `openssl`, `fileinfo`; для перевода используется `curl` либо разрешённый `allow_url_fopen`. Код загружает классы через `backend/src/autoload.php`; Composer-пакетов в проекте нет. |
+| PHP backend | PHP `8.3` (здесь `8.3.33`), `pdo_mysql`, `mbstring`, `json`, `openssl`, `fileinfo`; `curl` необязателен: без него перевод использует `allow_url_fopen`, а поиск данных компании по сайту — сокеты PHP с `openssl`. Код загружает классы через `backend/src/autoload.php`; Composer-пакетов в проекте нет. |
 | База и HTTP | MySQL `8.0+` с InnoDB (локально установлен `8.0.46`, Docker-образ `8.4`); веб-сервер Apache `2.4` либо локальный встроенный сервер PHP. Production-конфигурация Apache требует модули из `README.md`; в Docker включены `rewrite` и `headers`. |
 | Распознавание речи | Python `3.11/3.12` (текущее окружение `3.12`), `faster-whisper` `1.2.1`, `ctranslate2` `4.8.3`, `av`/PyAV `18.1.0`, модель `large-v3-turbo`. `av` декодирует аудио, поэтому отдельный FFmpeg для этого пути не требуется. В текущем окружении также есть `openai-whisper` и PyTorch для предусмотренного кодом резервного пути; они не входят в обязательный `requirements-speech.txt`. |
 | OCR | Отдельное Python-окружение с `paddlepaddle-gpu` `3.2.1`, `paddleocr` `3.7.0`, `paddlex` `3.7.2`, OpenCV, NumPy, Pillow и пятью локальными весами PP-OCRv5. Транзитивные NVIDIA CUDA-библиотеки перечислены в инвентаризации. |
@@ -126,7 +126,14 @@ OCR_PADDLE_SCRIPT=ai/paddleocr_business_card.py
 OCR_MODEL_DIR=ai/models/paddleocr
 OCR_DEVICE=gpu
 OCR_LANGUAGE=uk
+OCR_LATIN_REC_MODEL=latin_PP-OCRv5_mobile_rec
 ```
+
+Модель `uk` (East Slavic) искажает латиницу с диакритикой: «SHIP AND BOAT
+DESIGN» → «SHUPANO BOAT DESAGN». Если каталог
+`ai/models/paddleocr/official_models/<OCR_LATIN_REC_MODEL>` существует,
+визитка на латинице распознаётся повторно этой моделью и берётся результат с
+большей уверенностью. Без каталога работает только модель `uk`.
 
 Выполните проверки от той же учётной записи, что обслуживает PHP:
 

@@ -6,6 +6,7 @@ import importlib.util
 import contextlib
 import io
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,6 +54,33 @@ class UploadedImageTest(unittest.TestCase):
             self.assertEqual(captured["text_recognition_model_name"], "eslav_PP-OCRv5_mobile_rec")
             self.assertEqual(json.loads(output.getvalue())["text"], "CRM")
 
+    def test_latin_card_is_read_again_with_latin_model(self) -> None:
+        # The East Slavic model garbles Latin cards; the bundled Latin model wins on confidence.
+        readings = {
+            "eslav_PP-OCRv5_mobile_rec": ("SHUPANO BOAT DESAGN Barcelona", 0.96),
+            "latin_PP-OCRv5_mobile_rec": ("SHIP AND BOAT DESIGN Barcelona", 0.99),
+        }
+
+        class FakeOCR:
+            def __init__(self, **kwargs):
+                self.reading = readings[kwargs["text_recognition_model_name"]]
+
+            def predict(self, image):
+                return [{"rec_texts": [self.reading[0]], "rec_scores": [self.reading[1]]}]
+
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ["PP-OCRv5_server_det", *readings]:
+                (Path(directory) / "official_models" / name).mkdir(parents=True)
+            args = SimpleNamespace(model_dir=directory, language="uk", device="cpu", input="test.png",
+                                   latin_rec_model="latin_PP-OCRv5_mobile_rec")
+            output = io.StringIO()
+            with patch.object(module, "parse_args", return_value=args), \
+                 patch.object(module, "load_image", return_value=None), \
+                 patch.dict("sys.modules", {"paddleocr": SimpleNamespace(PaddleOCR=FakeOCR)}), \
+                 contextlib.redirect_stdout(output):
+                self.assertEqual(module.main(), 0)
+        self.assertEqual(json.loads(output.getvalue())["text"], "SHIP AND BOAT DESIGN Barcelona")
+
     def test_word_boxes_are_grouped_into_card_lines(self) -> None:
         # PP-OCRv5 returns words; a two-column card must keep its columns apart.
         texts = ["Gisle", "Thrane", "Mob.", "+47 481", "Vice", "President", "Sales", "&", "Department"]
@@ -65,6 +93,25 @@ class UploadedImageTest(unittest.TestCase):
         self.assertEqual(module.group_lines(texts, boxes), [
             "Gisle Thrane", "Mob. +47 481", "Vice President", "Sales & Department",
         ])
+
+    def test_words_on_a_tilted_card_are_grouped_along_the_baseline(self) -> None:
+        # A card photographed at about -18°: axis-aligned boxes of a short and a long word
+        # differ in height and centre, which split the name into "Jose" | "Luis Linares" | "Llamas".
+        angle = math.radians(-18)
+        along = (math.cos(angle), math.sin(angle))
+        across = (-math.sin(angle), math.cos(angle))
+
+        def quad(start: float, line: float, width: float, height: float = 40.0) -> list[list[float]]:
+            origin = (300 + start * along[0] + line * across[0], 500 + start * along[1] + line * across[1])
+            corner = lambda a, c: [origin[0] + a * along[0] + c * across[0], origin[1] + a * along[1] + c * across[1]]
+            return [corner(0, 0), corner(width, 0), corner(width, height), corner(0, height)]
+
+        texts = ["Llamas", "Luis Linares", "Jose", "Technical Director"]
+        polys = [quad(400, 0, 140), quad(130, 0, 250), quad(0, 0, 110), quad(0, 70, 330, 28)]
+        boxes = [[min(x for x, _ in poly), min(y for _, y in poly), max(x for x, _ in poly), max(y for _, y in poly)] for poly in polys]
+
+        self.assertEqual(module.group_lines(texts, polys), ["Jose Luis Linares Llamas", "Technical Director"])
+        self.assertNotIn("Jose Luis Linares Llamas", module.group_lines(texts, boxes))
 
     def test_unwarping_is_disabled_for_card_photos(self) -> None:
         captured = {}

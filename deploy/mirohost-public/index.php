@@ -26,6 +26,7 @@ $sendSecurityHeaders = static function (): void {
     header_remove('X-Powered-By');
     header('X-Frame-Options: DENY');
     header('X-Content-Type-Options: nosniff');
+    header('X-Robots-Tag: noindex, nofollow, noarchive');
     header('Referrer-Policy: same-origin');
     header('Permissions-Policy: camera=(self), microphone=(self), geolocation=()');
     header("Content-Security-Policy: default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'self'");

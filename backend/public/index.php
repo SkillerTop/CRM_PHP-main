@@ -2,6 +2,12 @@
 
 declare(strict_types=1);
 
+// The API answers JSON only: a warning printed into the body ("display_errors=1" in a
+// development php.ini) breaks every response it lands in. Errors go to the log instead.
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+ini_set('error_log', dirname(__DIR__) . '/storage/logs/php-errors.log');
+
 try {
     header_remove('X-Powered-By');
     /** @var CRM\App $app */

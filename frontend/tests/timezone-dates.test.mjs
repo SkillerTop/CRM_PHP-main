@@ -82,12 +82,12 @@ test("wires local deadlines to UTC API payloads and exposes a non-default timezo
   assert.doesNotMatch(app, /Deadline · \{CLIENT_TIME_ZONE\}/);
 });
 
-test("keeps the Relationship Board implementation while removing every route to it", async () => {
+test("removes the obsolete Relationship Board and every route to it", async () => {
   const [app, routes] = await Promise.all([
     readFile(new URL("../src/app/CRMApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../../backend/src/Http/Routes.php", import.meta.url), "utf8"),
   ]);
-  assert.match(app, /function Pipeline\(/);
+  assert.doesNotMatch(app, /function Pipeline\(/);
   assert.doesNotMatch(app, /\| "pipeline"|ALL_VIEWS[^\n]*"pipeline"|view === "pipeline"|navigate\("pipeline"\)|Open board/);
   assert.match(app, /const navPrimary: View\[\] = \["dashboard", "companies", "contacts", "activity"\]/);
   assert.doesNotMatch(routes, /add\('GET', '\/api\/pipeline'/);

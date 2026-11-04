@@ -8,6 +8,19 @@ use CRM\Http\ApiException;
 
 final class ImageDataUrl
 {
+    /** @return array{0:string,1:string} */
+    public static function decode(string $value): array
+    {
+        if (preg_match('/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+\/=]+)$/D', $value, $match) !== 1) {
+            throw new ApiException(404, 'image_not_found', 'Изображение не найдено.');
+        }
+        $content = base64_decode($match[2], true);
+        if ($content === false || $content === '') {
+            throw new ApiException(404, 'image_not_found', 'Изображение не найдено.');
+        }
+        return [$match[1], $content];
+    }
+
     /** @param list<string> $allowedMimeTypes */
     public static function validate(
         ?string $value,

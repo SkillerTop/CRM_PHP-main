@@ -18,6 +18,7 @@ use CRM\Support\Arr;
 use CRM\Support\Clock;
 use CRM\Support\Validator;
 use CRM\Support\Pagination;
+use CRM\Support\ImageDataUrl;
 use PDO;
 use Throwable;
 
@@ -40,11 +41,29 @@ final class UserController
         $this->auth->requireAdmin();
         $pagination = new Pagination($request->query);
         $total = (int) $this->db->query('SELECT COUNT(*) FROM users')->fetchColumn();
-        $stmt = $this->db->prepare('SELECT * FROM users ORDER BY pending_approval DESC, is_active DESC, full_name LIMIT :limit OFFSET :offset');
+        $stmt = $this->db->prepare('SELECT id, full_name, email, phone, role, is_active, pending_approval,
+                                          must_change_password, last_login_at, created_at, updated_at,
+                                          (photo_data_url IS NOT NULL) AS has_photo
+                                   FROM users ORDER BY pending_approval DESC, is_active DESC, full_name LIMIT :limit OFFSET :offset');
         $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
         $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
         $stmt->execute();
         Response::json(['data' => array_map([$this, 'map'], $stmt->fetchAll()), 'meta' => $pagination->meta($total)]);
+    }
+
+    public function photo(int $id): never
+    {
+        if ($id !== $this->auth->userId()) {
+            $this->auth->requireAdmin();
+        }
+        $stmt = $this->db->prepare('SELECT photo_data_url FROM users WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $image = $stmt->fetchColumn();
+        if (!is_string($image) || $image === '') {
+            throw new ApiException(404, 'image_not_found', 'Изображение не найдено.');
+        }
+        [$mime, $content] = ImageDataUrl::decode($image);
+        Response::image($content, $mime);
     }
 
     public function store(Request $request): never
@@ -328,7 +347,8 @@ final class UserController
     {
         return [
             'id' => (int) $row['id'], 'full_name' => (string) $row['full_name'], 'email' => (string) $row['email'],
-            'phone' => $row['phone'] ?? null, 'photo_data_url' => $row['photo_data_url'] ?? null,
+            'phone' => $row['phone'] ?? null,
+            'photo_data_url' => !empty($row['has_photo'] ?? $row['photo_data_url'] ?? null) ? '/api/users/' . (int) $row['id'] . '/photo' : null,
             'role' => (string) $row['role'], 'is_active' => (bool) $row['is_active'],
             'pending_approval' => (bool) $row['pending_approval'], 'must_change_password' => (bool) $row['must_change_password'],
             'last_login_at' => Clock::api($row['last_login_at'] ?? null), 'created_at' => Clock::api($row['created_at'] ?? null),

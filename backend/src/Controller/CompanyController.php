@@ -64,7 +64,8 @@ final class CompanyController
         $sort = $sorts[(string) ($request->query['sort'] ?? 'name')] ?? 'c.name';
         $direction = strtolower((string) ($request->query['dir'] ?? 'asc')) === 'desc' ? 'DESC' : 'ASC';
         $sql = "SELECT c.id, c.name, c.type_lookup_id, c.country, c.city, c.status_lookup_id,
-                       c.manager_lookup_id, c.last_contact_date, c.website, c.linkedin, c.nda_status, c.logo_data_url, c.description,
+                       c.manager_lookup_id, c.last_contact_date, c.website, c.linkedin, c.nda_status,
+                       (c.logo_data_url IS NOT NULL) AS has_logo, c.description,
                        c.is_archived, c.created_at, c.updated_at, c.created_by, c.updated_by,
                        ct.value AS type_value, cs.value AS status_value,
                        mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
@@ -91,6 +92,17 @@ final class CompanyController
     public function show(int $id): never
     {
         Response::json(['data' => EntityMapper::company($this->find($id, $this->canViewArchived()))]);
+    }
+
+    public function logo(int $id): never
+    {
+        $row = $this->find($id, $this->canViewArchived());
+        $image = $row['logo_data_url'] ?? null;
+        if (!is_string($image) || $image === '') {
+            throw new ApiException(404, 'image_not_found', 'Изображение не найдено.');
+        }
+        [$mime, $content] = ImageDataUrl::decode($image);
+        Response::image($content, $mime);
     }
 
     public function store(Request $request): never
@@ -239,10 +251,12 @@ final class CompanyController
             'website' => $website,
             'linkedin' => $linkedin,
             'nda_status' => $ndaStatus,
-            'logo_data_url' => ImageDataUrl::validate(
-                Arr::nullableString($input, 'logo_data_url'), 5 * 1024 * 1024, ['image/jpeg', 'image/png', 'image/webp'],
-                'invalid_company_logo', 'Логотип должен быть JPG, PNG или WebP размером не более 5 МБ.'
-            ),
+            'logo_data_url' => array_key_exists('logo_data_url', $input)
+                ? ImageDataUrl::validate(
+                    Arr::nullableString($input, 'logo_data_url'), 5 * 1024 * 1024, ['image/jpeg', 'image/png', 'image/webp'],
+                    'invalid_company_logo', 'Логотип должен быть JPG, PNG или WebP размером не более 5 МБ.'
+                )
+                : ($current['logo_data_url'] ?? null),
             'description' => Arr::nullableString($input, 'description'),
         ];
     }

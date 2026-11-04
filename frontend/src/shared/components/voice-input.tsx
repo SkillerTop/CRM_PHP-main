@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { apiMessage, apiRequest } from "../api/api-client";
 import { checkSpelling } from "../utils/spellcheck-client";
 import { replaceSpellingIssue, type SpellcheckIssue } from "../utils/spellcheck";
+import { appendVoiceText } from "../utils/voice-text";
 import {
   flushAndStopRecorder,
   isVoiceRecordingLongEnough,
@@ -89,6 +90,7 @@ export function VoiceInputButton({ onText, disabled = false }: { onText: (text: 
         "/speech/transcribe",
         { method: "POST", body },
         speechBackendUrl,
+        180_000,
       );
       const text = response.data.text.trim();
       if (text) onTextRef.current(text);
@@ -213,13 +215,6 @@ export function VoiceInputButton({ onText, disabled = false }: { onText: (text: 
       {error && <small role="alert">{error}</small>}
     </span>
   );
-}
-
-export function appendVoiceText(current: string, text: string, maxLength: number) {
-  const clean = text.trim();
-  if (!clean) return current;
-  const combined = current.trim() ? `${current.trim()}\n${clean}` : clean;
-  return combined.slice(0, maxLength);
 }
 
 export function VoiceTextTools({ value, onChange, maxLength, disabled = false, draftRestored = false }: {

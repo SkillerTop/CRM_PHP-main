@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -19,7 +20,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language", default="uk")
     parser.add_argument("--device", default="gpu")
     parser.add_argument("--model-dir", required=True)
+    parser.add_argument("--latin-rec-model", default="")
     return parser.parse_args()
+
+
+def mostly_latin(texts: list[str]) -> bool:
+    """The East Slavic model misreads Latin cards ("SHIP AND BOAT" → "SHUPANO BOAT")."""
+    letters = [char for text in texts for char in text if char.isalpha()]
+    cyrillic = sum(1 for char in letters if "Ѐ" <= char <= "ӿ")
+    return len(letters) >= 10 and cyrillic <= 0.1 * len(letters)
 
 
 def result_payload(result: Any) -> Any:
@@ -35,7 +44,11 @@ def collect_recognition(node: Any, texts: list[str], scores: list[float], boxes:
     if isinstance(node, dict):
         rec_texts = node.get("rec_texts")
         if isinstance(rec_texts, list):
-            rec_boxes = node.get("rec_boxes")
+            # Rotated quadrilaterals keep a tilted card's baselines; the
+            # axis-aligned boxes are the fallback.
+            rec_boxes = node.get("rec_polys")
+            if not (isinstance(rec_boxes, list) and len(rec_boxes) == len(rec_texts)):
+                rec_boxes = node.get("rec_boxes")
             aligned = isinstance(rec_boxes, list) and len(rec_boxes) == len(rec_texts)
             for index, item in enumerate(rec_texts):
                 if str(item).strip():
@@ -50,7 +63,7 @@ def collect_recognition(node: Any, texts: list[str], scores: list[float], boxes:
                 except (TypeError, ValueError):
                     pass
         for key, value in node.items():
-            if key not in {"rec_texts", "rec_scores", "rec_boxes"}:
+            if key not in {"rec_texts", "rec_scores", "rec_boxes", "rec_polys"}:
                 collect_recognition(value, texts, scores, boxes)
     elif isinstance(node, list):
         for item in node:
@@ -64,26 +77,57 @@ def group_lines(texts: list[str], boxes: list[Any]) -> list[str]:
     are chained left to right when they share a baseline, have a similar
     height, and sit close together; a wide gap starts a new line, so two-column
     cards ("Name ... Mob. +47 ...") keep their columns apart.
+
+    Boxes are rotated quadrilaterals (top-left, top-right, bottom-right,
+    bottom-left) or axis-aligned [x1, y1, x2, y2]. Distances are measured along
+    and across each word's own baseline: on a photo of a tilted card the
+    axis-aligned box of "Luis Linares" is much taller than the box of "Jose",
+    and comparing those split "Jose Luis Linares Llamas" into three lines.
     """
     items = []
     for text, box in zip(texts, boxes):
         try:
-            x1, y1, x2, y2 = (float(value) for value in box)
-        except (TypeError, ValueError):
+            points = [(float(x), float(y)) for x, y in box] if hasattr(box[0], "__len__") else None
+            if points is None:
+                x1, y1, x2, y2 = (float(value) for value in box)
+                points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+            if len(points) != 4:
+                return texts
+        except (TypeError, ValueError, IndexError):
             return texts
-        items.append({"text": text, "x1": x1, "x2": x2, "cy": (y1 + y2) / 2, "h": max(1.0, y2 - y1)})
+        (ax, ay), (bx, by), (cx, cy), (dx, dy) = points
+        angle = math.atan2((by - ay) + (cy - dy), (bx - ax) + (cx - dx))
+        items.append({
+            "text": text,
+            "angle": angle,
+            "center": ((ax + bx + cx + dx) / 4, (ay + by + cy + dy) / 4),
+            "w": max(1.0, (math.dist((ax, ay), (bx, by)) + math.dist((dx, dy), (cx, cy))) / 2),
+            "h": max(1.0, (math.dist((ax, ay), (dx, dy)) + math.dist((bx, by), (cx, cy))) / 2),
+        })
+    if not items:
+        return texts
 
+    def frame(item: dict[str, Any], angle: float) -> tuple[float, float]:
+        """Position along and across a baseline with the given angle."""
+        x, y = item["center"]
+        return x * math.cos(angle) + y * math.sin(angle), -x * math.sin(angle) + y * math.cos(angle)
+
+    card_angle = sorted(item["angle"] for item in items)[len(items) // 2]
     segments: list[list[dict[str, Any]]] = []
-    for item in sorted(items, key=lambda entry: entry["x1"]):
+    for item in sorted(items, key=lambda entry: frame(entry, card_angle)[0] - entry["w"] / 2):
         best = None
         best_gap = None
         for segment in segments:
             last = segment[-1]
+            if abs(item["angle"] - last["angle"]) > math.radians(12):
+                continue
+            last_along, last_across = frame(last, last["angle"])
+            item_along, item_across = frame(item, last["angle"])
             height = min(last["h"], item["h"])
-            gap = item["x1"] - last["x2"]
+            gap = (item_along - item["w"] / 2) - (last_along + last["w"] / 2)
             if (
                 -0.3 * height <= gap <= 1.2 * max(last["h"], item["h"])
-                and abs(item["cy"] - last["cy"]) <= 0.5 * height
+                and abs(item_across - last_across) <= 0.5 * height
                 and max(last["h"], item["h"]) <= 1.6 * height
                 and (best_gap is None or gap < best_gap)
             ):
@@ -93,8 +137,8 @@ def group_lines(texts: list[str], boxes: list[Any]) -> list[str]:
         else:
             best.append(item)
 
-    # Reading order: top to bottom; the classifier labels each line on its own.
-    segments.sort(key=lambda segment: (segment[0]["cy"], segment[0]["x1"]))
+    # Reading order: top to bottom across the card's baseline; the classifier labels each line on its own.
+    segments.sort(key=lambda segment: (frame(segment[0], card_angle)[1], frame(segment[0], card_angle)[0]))
     return [" ".join(item["text"] for item in segment) for segment in segments]
 
 
@@ -164,30 +208,52 @@ def main() -> int:
                     # cannot select PP-OCRv6 for our bundled PP-OCRv5 weights.
                     model_paths[parameter.removesuffix("_dir") + "_name"] = name
 
-            ocr = PaddleOCR(
-                lang=args.language,
-                ocr_version="PP-OCRv5",
-                device=device,
-                use_doc_orientation_classify=True,
-                # Unwarping is built for full-page scans; on phone photos of a
-                # card lying on a desk it distorts the card and loses most text.
-                use_doc_unwarping=False,
-                use_textline_orientation=True,
-                # Phone photos are ~4000 px; detecting at 1920 px keeps card
-                # text in the detector's sweet spot and is several times faster.
-                text_det_limit_side_len=1920,
-                text_det_limit_type="max",
-                **model_paths,
-            )
-            results = list(ocr.predict(load_image(args.input)))
-        texts: list[str] = []
-        scores: list[float] = []
-        boxes: list[Any] = []
-        for result in results:
-            collect_recognition(result_payload(result), texts, scores, boxes)
-        if texts and all(box is not None for box in boxes):
-            texts = group_lines(texts, boxes)
-        average = sum(scores) / len(scores) if scores else None
+            def recognize(paths: dict[str, str]) -> tuple[list[str], float | None]:
+                ocr = PaddleOCR(
+                    lang=args.language,
+                    ocr_version="PP-OCRv5",
+                    device=device,
+                    use_doc_orientation_classify=True,
+                    # Unwarping is built for full-page scans; on phone photos of a
+                    # card lying on a desk it distorts the card and loses most text.
+                    use_doc_unwarping=False,
+                    use_textline_orientation=True,
+                    # Phone photos are ~4000 px; detecting at 1920 px keeps card
+                    # text in the detector's sweet spot and is several times faster.
+                    text_det_limit_side_len=1920,
+                    text_det_limit_type="max",
+                    **paths,
+                )
+                results = list(ocr.predict(image))
+                texts: list[str] = []
+                scores: list[float] = []
+                boxes: list[Any] = []
+                for result in results:
+                    collect_recognition(result_payload(result), texts, scores, boxes)
+                if texts and all(box is not None for box in boxes):
+                    texts = group_lines(texts, boxes)
+                return texts, (sum(scores) / len(scores) if scores else None)
+
+            image = load_image(args.input)
+            texts, average = recognize(model_paths)
+
+            # A Latin card read by the bundled East Slavic model is read again
+            # with the bundled Latin model; the more confident reading wins.
+            latin_model = getattr(args, "latin_rec_model", "")
+            latin_directory = bundled / latin_model if latin_model else None
+            if (
+                "text_recognition_model_dir" in model_paths
+                and latin_directory is not None
+                and latin_directory.is_dir()
+                and mostly_latin(texts)
+            ):
+                latin_texts, latin_average = recognize({
+                    **model_paths,
+                    "text_recognition_model_dir": str(latin_directory.resolve()),
+                    "text_recognition_model_name": latin_model,
+                })
+                if latin_texts and (average is None or (latin_average or 0.0) > average):
+                    texts, average = latin_texts, latin_average
         # ASCII-safe JSON avoids Windows service/console code-page failures;
         # PHP's JSON decoder restores the original Unicode text.
         print(json.dumps({"text": "\n".join(texts), "average_confidence": average, "device": device}, ensure_ascii=True))

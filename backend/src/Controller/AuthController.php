@@ -46,7 +46,10 @@ final class AuthController
 
         $rateKey = $request->ip();
         $this->limiter->ensureAllowed('login_ip', $rateKey);
-        $stmt = $this->db->prepare('SELECT * FROM users WHERE email = :email LIMIT 1');
+        $stmt = $this->db->prepare('SELECT id, full_name, email, phone, password_hash, role, is_active,
+                                          pending_approval, must_change_password, last_login_at, updated_at,
+                                          (photo_data_url IS NOT NULL) AS has_photo
+                                   FROM users WHERE email = :email LIMIT 1');
         $stmt->execute(['email' => $email]);
         $user = $stmt->fetch();
         $valid = $user && (bool) $user['is_active'] && !(bool) $user['pending_approval'] && Password::verify($password, $user['password_hash']);
@@ -266,7 +269,7 @@ final class AuthController
             'full_name' => (string) $user['full_name'],
             'email' => (string) $user['email'],
             'phone' => $user['phone'] ?? null,
-            'photo_data_url' => $user['photo_data_url'] ?? null,
+            'photo_data_url' => !empty($user['has_photo']) ? '/api/users/' . (int) $user['id'] . '/photo' : null,
             'role' => (string) $user['role'],
             'is_active' => (bool) $user['is_active'],
             'pending_approval' => (bool) $user['pending_approval'],

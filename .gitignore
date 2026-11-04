@@ -8,6 +8,9 @@ deploy/*-with-models*.zip
 __pycache__/
 *.pyc
 storage/tmp/
+backend/storage/tmp/
+backend/.env*
+!backend/.env.example
 **/storage/logs/*.log
 **/storage/uploads/**/*
 !**/storage/logs/.gitkeep

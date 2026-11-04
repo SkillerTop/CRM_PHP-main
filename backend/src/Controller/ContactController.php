@@ -51,7 +51,8 @@ final class ContactController
         $stmt = $this->db->prepare(
             "SELECT k.id, k.company_id, k.first_name, k.last_name, k.position, k.phone, k.email, k.linkedin,
                     k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id, k.contact_status,
-                    k.manager_lookup_id, k.initiated_by_text, k.photo_data_url, k.is_archived, k.created_at, k.updated_at,
+                    k.manager_lookup_id, k.initiated_by_text, (k.photo_data_url IS NOT NULL) AS has_photo,
+                    k.is_archived, k.created_at, k.updated_at,
                     k.created_by, k.updated_by, c.name AS company_name, src.value AS source_value, ini.value AS initiated_by_value,
                     mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                     creator.full_name AS created_by_name, creator.email AS created_by_email
@@ -84,7 +85,8 @@ final class ContactController
         $stmt = $this->db->prepare(
             'SELECT k.id, k.company_id, k.first_name, k.last_name, k.position, k.phone, k.email, k.linkedin,
                     k.source_lookup_id, k.source_detail, k.referred_by, k.initiated_by_lookup_id, k.contact_status,
-                    k.manager_lookup_id, k.initiated_by_text, k.photo_data_url, k.is_archived, k.created_at, k.updated_at,
+                    k.manager_lookup_id, k.initiated_by_text, (k.photo_data_url IS NOT NULL) AS has_photo,
+                    k.is_archived, k.created_at, k.updated_at,
                     k.created_by, k.updated_by, c.name AS company_name, src.value AS source_value, ini.value AS initiated_by_value,
                     mgr.value AS manager_value, COALESCE(manager_user.email, mgr.email) AS manager_email,
                     creator.full_name AS created_by_name, creator.email AS created_by_email
@@ -109,18 +111,31 @@ final class ContactController
         Response::json(['data' => EntityMapper::contact($this->find($id, $this->canViewArchived()))]);
     }
 
+    public function photo(int $id): never
+    {
+        $row = $this->find($id, $this->canViewArchived());
+        $image = $row['photo_data_url'] ?? null;
+        if (!is_string($image) || $image === '') {
+            throw new ApiException(404, 'image_not_found', 'Изображение не найдено.');
+        }
+        [$mime, $content] = ImageDataUrl::decode($image);
+        Response::image($content, $mime);
+    }
+
     public function store(Request $request): never
     {
         $this->auth->requireWrite();
         $input = $request->json();
-        if ((string) Arr::nullableString($input, 'business_card_data_url') !== '') {
-            $this->resources->consume('upload', $this->auth->userId(), Config::int('UPLOAD_MAX_REQUESTS_PER_HOUR', 100));
+        foreach (['business_card_data_url', 'business_card_back_data_url'] as $field) {
+            if ((string) Arr::nullableString($input, $field) !== '') {
+                $this->resources->consume('upload', $this->auth->userId(), Config::int('UPLOAD_MAX_REQUESTS_PER_HOUR', 100));
+            }
         }
         $data = $this->validated($input);
         // Name first: an outright refusal must come before any "save anyway" question.
         $this->similarNameGuard($data, null, Arr::bool($input, 'allow_duplicate'));
         $this->duplicateGuard($data['email'], null, Arr::bool($input, 'allow_duplicate'));
-        $storedBusinessCardPath = null;
+        $storedBusinessCardPaths = [];
         $this->db->beginTransaction();
         try {
             $now = Clock::dbNow();
@@ -139,15 +154,27 @@ final class ContactController
             ]);
             $id = (int) $this->db->lastInsertId();
             $label = trim($data['first_name'] . ' ' . ($data['last_name'] ?? ''));
-            $storedBusinessCardPath = $this->storeBusinessCardAttachment($id, $label, $input);
+            // Front and, when scanned, back of the card.
+            foreach (['business_card' => 'business-card', 'business_card_back' => 'business-card-back'] as $field => $fallbackName) {
+                $path = $this->storeBusinessCardAttachment(
+                    $id,
+                    $label,
+                    Arr::nullableString($input, $field . '_data_url'),
+                    Arr::nullableString($input, $field . '_file_name'),
+                    $fallbackName
+                );
+                if ($path !== null) {
+                    $storedBusinessCardPaths[] = $path;
+                }
+            }
             $this->audit->log('CREATE', 'Contact', $id, $label, detail: ['company_id' => $data['company_id']]);
             $this->db->commit();
         } catch (Throwable $error) {
             if ($this->db->inTransaction()) {
                 $this->db->rollBack();
             }
-            if ($storedBusinessCardPath !== null) {
-                @unlink($storedBusinessCardPath);
+            foreach ($storedBusinessCardPaths as $path) {
+                @unlink($path);
             }
             throw $error;
         }
@@ -306,10 +333,12 @@ final class ContactController
             'manager_id' => $managerId,
             'contact_status' => $contactStatus,
             'initiated_by_text' => $initiatedById === null ? $initiatedByText : null,
-            'photo_data_url' => ImageDataUrl::validate(
-                Arr::nullableString($input, 'photo_data_url'), 5 * 1024 * 1024, ['image/jpeg', 'image/png', 'image/webp'],
-                'invalid_contact_photo', 'Фото должно быть JPG, PNG или WebP размером не более 5 МБ.'
-            ),
+            'photo_data_url' => array_key_exists('photo_data_url', $input)
+                ? ImageDataUrl::validate(
+                    Arr::nullableString($input, 'photo_data_url'), 5 * 1024 * 1024, ['image/jpeg', 'image/png', 'image/webp'],
+                    'invalid_contact_photo', 'Фото должно быть JPG, PNG или WebP размером не более 5 МБ.'
+                )
+                : ($current['photo_data_url'] ?? null),
         ];
     }
 
@@ -424,10 +453,8 @@ final class ContactController
         }
     }
 
-    /** @param array<string, mixed> $input */
-    private function storeBusinessCardAttachment(int $contactId, string $label, array $input): ?string
+    private function storeBusinessCardAttachment(int $contactId, string $label, ?string $dataUrl, ?string $fileName, string $fallbackName): ?string
     {
-        $dataUrl = Arr::nullableString($input, 'business_card_data_url');
         if ($dataUrl === null || $dataUrl === '') {
             return null;
         }
@@ -445,7 +472,7 @@ final class ContactController
             'image/tiff' => 'tiff',
             default => 'img',
         };
-        $original = basename((string) (Arr::nullableString($input, 'business_card_file_name') ?? 'business-card.' . $extension));
+        $original = basename($fileName !== null && $fileName !== '' ? $fileName : $fallbackName . '.' . $extension);
         return $this->resources->storeWithinQuota($size, function () use ($contactId, $label, $mime, $content, $size, $extension, $original): string {
             $relativeDirectory = 'contacts/' . $contactId . '/business-cards/' . gmdate('Y/m');
             $baseUpload = Config::root((string) Config::get('UPLOAD_DIR', 'storage/uploads'));

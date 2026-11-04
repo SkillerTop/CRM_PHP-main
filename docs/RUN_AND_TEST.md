@@ -19,6 +19,8 @@ npm install
 npm run dev
 ```
 
+Vite слушает строго `http://127.0.0.1:5173`. Если порт занят другим dev-сервером, `npm run dev` завершается с ошибкой «Port 5173 is in use»: остановите другой сервер. Иначе `/api/*` получит HTML чужого приложения, а CRM покажет «The CRM server returned an invalid response».
+
 Локальный Vite-сервер принимает запросы `/api/*` на своём origin и проксирует их на `CRM_BACKEND_URL` из `frontend/.env.local` (по умолчанию `http://127.0.0.1:8080`). Production-сборка не содержит этого адреса и обращается к `/api/*` напрямую.
 Долгий голосовой запрос в development обходит Vite-прокси и обращается напрямую к порту `8080` на том же имени хоста, на котором открыт frontend. Backend разрешает такой credentialed CORS только для локальных origin `localhost:5173` и `127.0.0.1:5173`; production-сборка по-прежнему использует same-origin `/api` и не содержит локального адреса.
 

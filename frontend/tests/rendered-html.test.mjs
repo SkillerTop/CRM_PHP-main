@@ -18,12 +18,28 @@ test("builds the CRM as a static SPA shell", async () => {
 
   assert.match(html, /<html[^>]*lang="en"/i);
   assert.match(html, /<title>Client Data CRM<\/title>/i);
+  assert.match(html, /<meta name="robots" content="noindex, nofollow, noarchive"/i);
   assert.match(html, /width=device-width/i);
   assert.match(html, /<div id="root"><\/div>/i);
   assert.match(html, /\/assets\/[^"']+\.js/i);
   assert.match(assets, /Connecting to CRM/i);
   assert.doesNotMatch(html, /ChatGPT|OpenAI|Google/i);
   await assert.rejects(access(new URL("dist/server/", root)));
+});
+
+test("marks private CRM pages as non-indexable across deployment routes", async () => {
+  const [robots, frontendRules, backendRules, vhost, mirohost] = await Promise.all([
+    readFile(new URL("dist/robots.txt", root), "utf8"),
+    readFile(new URL("public/.htaccess", root), "utf8"),
+    readFile(new URL("../backend/public/.htaccess", root), "utf8"),
+    readFile(new URL("../deploy/apache-vhost.conf.example", root), "utf8"),
+    readFile(new URL("../deploy/mirohost-public/index.php", root), "utf8"),
+  ]);
+  assert.match(robots, /Disallow: \/api\//);
+  assert.match(robots, /Disallow: \/assets\//);
+  for (const config of [frontendRules, backendRules, vhost, mirohost]) {
+    assert.match(config, /X-Robots-Tag.{0,10}noindex, nofollow, noarchive/);
+  }
 });
 
 test("connects the static application directly to the same-origin PHP API", async () => {

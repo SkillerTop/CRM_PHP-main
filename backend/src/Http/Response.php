@@ -37,6 +37,16 @@ final class Response
         exit;
     }
 
+    public static function image(string $content, string $mime): never
+    {
+        http_response_code(200);
+        header('Content-Type: ' . $mime);
+        header('Content-Length: ' . (string) strlen($content));
+        header('X-Content-Type-Options: nosniff');
+        echo $content;
+        exit;
+    }
+
     public static function download(string $path, string $downloadName, string $mime): never
     {
         if (!is_file($path)) {

@@ -23,7 +23,8 @@ final class CompanyWebsiteLookupService
     private const LOGO_MAX_BYTES = 1024 * 1024;
     private const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml', 'image/x-icon', 'image/vnd.microsoft.icon'];
     private const ORGANIZATION_TYPES = ['organization', 'corporation', 'localbusiness', 'professionalservice', 'store', 'ngo', 'educationalorganization', 'governmentorganization'];
-    private const CONTACT_LINK = '/(?:contact|kontakt|impressum|imprint|about|om-oss|o-nas|о-нас|контакт|про-нас|where|address|location)/iu';
+    private const STREET_WORD = '/(?<!\p{L})(?:(?:ul|al|str|ave|avda|av|vul|вул|ул|pl|pza|c)[.\/]|(?:street|straße|strasse|road|avenue|carrer|calle|avenida|plaza|plaça|passeig|paseo|via|viale|rue|rua|strada|gata|gate|vej|weg|straat|laan|ulica|aleja|вулиця|улица|проспект)(?!\p{L}))|\d/iu';
+    private const CONTACT_LINK ='/(?:contact|kontakt|impressum|imprint|about|om-oss|o-nas|о-нас|контакт|про-нас|where|address|location)/iu';
 
     private float $deadline = 0.0;
 
@@ -248,7 +249,15 @@ final class CompanyWebsiteLookupService
     private function cityAfterPostal(string $line, string $postalCode): ?string
     {
         $after = trim(substr($line, (int) strpos($line, $postalCode) + strlen($postalCode)), " ,");
-        return preg_match('/^(\p{L}[\p{L}\s\'-]{1,40}?)(?:,|$)/u', $after, $match) === 1 ? trim($match[1]) : null;
+        // "08870, Carrer San Sebastià, Barcelona": skip the street that follows some postal codes.
+        foreach (explode(',', $after) as $part) {
+            $part = trim($part);
+            if (preg_match(self::STREET_WORD, $part) === 1) {
+                continue;
+            }
+            return preg_match('/^\p{L}[\p{L}\s\'-]{1,40}$/u', $part) === 1 ? $part : null;
+        }
+        return null;
     }
 
     /** @return array{0: ?string, 1: ?string, 2: ?string} */

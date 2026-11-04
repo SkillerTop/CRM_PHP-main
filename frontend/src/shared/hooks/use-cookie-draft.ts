@@ -26,6 +26,18 @@ export function useCookieDraft(key: string, initialValue: string): [string, Disp
       dirty: false,
     };
   });
+  let currentDraft = draft;
+  if (draft.identity !== identity) {
+    const restored = readFormDraft(scope, secureKey)?.value?.[0] ?? null;
+    currentDraft = {
+      identity,
+      value: restored ?? initialValue,
+      restored: restored !== null,
+      ready: !scope || restored !== null,
+      dirty: false,
+    };
+    setDraft(currentDraft);
+  }
 
   const enqueueCookieOperation = useCallback((operation: () => Promise<unknown> | unknown) => {
     const generation = ++cookieOperationRef.current;
@@ -44,18 +56,7 @@ export function useCookieDraft(key: string, initialValue: string): [string, Disp
   }, [key]);
 
   useEffect(() => {
-    const restored = readFormDraft(scope, secureKey)?.value?.[0] ?? null;
-    setDraft((current) => current.identity === identity ? current : {
-      identity,
-      value: restored ?? initialValue,
-      restored: restored !== null,
-      ready: !scope || restored !== null,
-      dirty: false,
-    });
-  }, [identity, initialValue, scope, secureKey]);
-
-  useEffect(() => {
-    if (!scope || draft.identity !== identity || draft.ready) return;
+    if (!scope || currentDraft.identity !== identity || currentDraft.ready) return;
     let active = true;
     void readSecureVoiceDraft(scope, secureKey).then((restored) => {
       if (!active) return;
@@ -71,7 +72,7 @@ export function useCookieDraft(key: string, initialValue: string): [string, Disp
       if (active) setDraft((current) => current.identity === identity ? { ...current, ready: true } : current);
     });
     return () => { active = false; };
-  }, [draft.identity, draft.ready, identity, initialValue, scope, secureKey]);
+  }, [currentDraft.identity, currentDraft.ready, identity, initialValue, scope, secureKey]);
 
   const setValue: Dispatch<SetStateAction<string>> = useCallback((next) => {
     setDraft((current) => ({
@@ -84,19 +85,19 @@ export function useCookieDraft(key: string, initialValue: string): [string, Disp
   }, []);
 
   useEffect(() => {
-    if (draft.identity !== identity || !draft.ready || !scope) return;
+    if (currentDraft.identity !== identity || !currentDraft.ready || !scope) return;
     if (skipPersistenceRef.current) {
       skipPersistenceRef.current = false;
       return;
     }
-    if (!draft.restored && draft.value === initialValue) {
+    if (!currentDraft.restored && currentDraft.value === initialValue) {
       clearFormDraft(scope, secureKey);
       enqueueCookieOperation(() => clearSecureVoiceDraft(scope, secureKey));
       return;
     }
-    writeFormDraft(scope, secureKey, { value: [draft.value] });
-    enqueueCookieOperation(() => writeSecureVoiceDraft(scope, secureKey, draft.value));
-  }, [draft.identity, draft.ready, draft.restored, draft.value, enqueueCookieOperation, identity, initialValue, scope, secureKey]);
+    writeFormDraft(scope, secureKey, { value: [currentDraft.value] });
+    enqueueCookieOperation(() => writeSecureVoiceDraft(scope, secureKey, currentDraft.value));
+  }, [currentDraft.identity, currentDraft.ready, currentDraft.restored, currentDraft.value, enqueueCookieOperation, identity, initialValue, scope, secureKey]);
 
   const clear = useCallback(() => {
     skipPersistenceRef.current = true;
@@ -105,5 +106,5 @@ export function useCookieDraft(key: string, initialValue: string): [string, Disp
     setDraft((current) => ({ ...current, restored: false, dirty: false }));
   }, [enqueueCookieOperation, scope, secureKey]);
 
-  return [draft.value, setValue, clear, draft.restored];
+  return [currentDraft.value, setValue, clear, currentDraft.restored];
 }

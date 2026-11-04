@@ -31,10 +31,6 @@ final class SafeHttpClient
      */
     public function get(string $url, int $maxBytes, array $acceptedTypes): array
     {
-        if (!function_exists('curl_init')) {
-            throw new ApiException(503, 'lookup_unavailable', 'На сервере не установлено расширение PHP curl.');
-        }
-
         for ($redirects = 0; ; $redirects++) {
             [$host, $port, $address] = $this->publicTarget($url);
             $response = $this->request($url, $host, $port, $address, $maxBytes, $acceptedTypes);
@@ -153,6 +149,32 @@ final class SafeHttpClient
      */
     private function request(string $url, string $host, int $port, string $address, int $maxBytes, array $acceptedTypes): array
     {
+        // ext-curl is optional: without it the same pinned request goes over a PHP socket stream.
+        $response = function_exists('curl_init')
+            ? $this->curlRequest($url, $host, $port, $address, $maxBytes, $acceptedTypes)
+            : $this->streamRequest($url, $host, $port, $address, $maxBytes, $acceptedTypes);
+        if (!in_array($response['status'], self::REDIRECT_STATUSES, true)) {
+            if ($response['status'] < 200 || $response['status'] >= 300) {
+                throw new ApiException(502, 'lookup_http_error', "Сайт ответил с кодом {$response['status']}.");
+            }
+            $accepted = false;
+            foreach ($acceptedTypes as $type) {
+                $accepted = $accepted || str_starts_with($response['content_type'], $type);
+            }
+            if (!$accepted) {
+                throw new ApiException(502, 'lookup_unexpected_content', 'Сайт вернул данные неожиданного типа.');
+            }
+        }
+
+        return ['url' => $url, ...$response];
+    }
+
+    /**
+     * @param list<string> $acceptedTypes
+     * @return array{status: int, content_type: string, body: string, location: string}
+     */
+    private function curlRequest(string $url, string $host, int $port, string $address, int $maxBytes, array $acceptedTypes): array
+    {
         $body = '';
         $tooLarge = false;
         $status = 0;
@@ -175,7 +197,7 @@ final class SafeHttpClient
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_ENCODING => '',
             CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; ClientDataCRM company lookup)',
-            CURLOPT_HTTPHEADER => ['Accept: ' . (in_array('text/html', $acceptedTypes, true) ? 'text/html,application/xhtml+xml;q=0.9' : 'image/*'), 'Accept-Language: en;q=1, *;q=0.5'],
+            CURLOPT_HTTPHEADER => ['Accept: ' . $this->acceptHeader($acceptedTypes), 'Accept-Language: en;q=1, *;q=0.5'],
             CURLOPT_HEADERFUNCTION => static function ($handle, string $header) use (&$status, &$contentType, &$location): int {
                 if (preg_match('#^HTTP/\S+\s+(\d{3})#', $header, $match) === 1) {
                     [$status, $contentType, $location] = [(int) $match[1], '', ''];
@@ -211,19 +233,132 @@ final class SafeHttpClient
         if ($completed === false) {
             throw new ApiException(502, 'lookup_unreachable', 'Сайт недоступен: ' . ($error !== '' ? $error : 'нет ответа') . '.');
         }
-        if (!in_array($status, self::REDIRECT_STATUSES, true)) {
-            if ($status < 200 || $status >= 300) {
-                throw new ApiException(502, 'lookup_http_error', "Сайт ответил с кодом {$status}.");
-            }
-            $accepted = false;
-            foreach ($acceptedTypes as $type) {
-                $accepted = $accepted || str_starts_with($contentType, $type);
-            }
-            if (!$accepted) {
-                throw new ApiException(502, 'lookup_unexpected_content', 'Сайт вернул данные неожиданного типа.');
-            }
+
+        return ['status' => $status, 'content_type' => $contentType, 'body' => $body, 'location' => $location];
+    }
+
+    /**
+     * HTTP/1.1 GET over a socket opened to the checked address; TLS still
+     * verifies the certificate against the site's host name (SNI + peer_name).
+     *
+     * @param list<string> $acceptedTypes
+     * @return array{status: int, content_type: string, body: string, location: string}
+     */
+    private function streamRequest(string $url, string $host, int $port, string $address, int $maxBytes, array $acceptedTypes): array
+    {
+        $parts = parse_url($url);
+        $https = strtolower((string) ($parts['scheme'] ?? '')) === 'https';
+        $context = stream_context_create(['ssl' => [
+            'peer_name' => $host,
+            'SNI_enabled' => true,
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+        ]]);
+        $deadline = microtime(true) + $this->timeoutSeconds;
+        $target = ($https ? 'ssl://' : 'tcp://') . (str_contains($address, ':') ? '[' . $address . ']' : $address) . ':' . $port;
+        $socket = @stream_socket_client($target, $errorCode, $errorMessage, min(5, $this->timeoutSeconds), STREAM_CLIENT_CONNECT, $context);
+        if ($socket === false) {
+            throw new ApiException(502, 'lookup_unreachable', 'Сайт недоступен: ' . ($errorMessage !== '' ? $errorMessage : 'нет ответа') . '.');
         }
 
-        return ['url' => $url, 'status' => $status, 'content_type' => $contentType, 'body' => $body, 'location' => $location];
+        $path = ($parts['path'] ?? '') !== '' ? $parts['path'] : '/';
+        $hostHeader = filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? '[' . $host . ']' : $host;
+        if ($port !== ($https ? 443 : 80)) {
+            $hostHeader .= ':' . $port;
+        }
+        fwrite($socket, implode("\r\n", [
+            'GET ' . $path . (isset($parts['query']) ? '?' . $parts['query'] : '') . ' HTTP/1.1',
+            'Host: ' . $hostHeader,
+            'User-Agent: Mozilla/5.0 (compatible; ClientDataCRM company lookup)',
+            'Accept: ' . $this->acceptHeader($acceptedTypes),
+            'Accept-Language: en;q=1, *;q=0.5',
+            'Accept-Encoding: identity',
+            'Connection: close',
+            '', '',
+        ]));
+
+        // Headers and chunk framing may add to the body; the decoded body is checked again below.
+        $rawLimit = $maxBytes + 65536;
+        $raw = '';
+        try {
+            while (!feof($socket)) {
+                $remaining = $deadline - microtime(true);
+                if ($remaining <= 0) {
+                    throw new ApiException(502, 'lookup_unreachable', 'Сайт недоступен: превышено время ожидания.');
+                }
+                stream_set_timeout($socket, (int) ceil($remaining));
+                // Many sites close TLS without close_notify; PHP reports that as a warning, not an error.
+                $chunk = @fread($socket, 8192);
+                if ($chunk === false || ($chunk === '' && stream_get_meta_data($socket)['timed_out'])) {
+                    throw new ApiException(502, 'lookup_unreachable', 'Сайт недоступен: нет ответа.');
+                }
+                $raw .= $chunk;
+                if (strlen($raw) > $rawLimit) {
+                    throw new ApiException(502, 'lookup_response_too_large', 'Ответ сайта слишком большой.');
+                }
+            }
+        } finally {
+            fclose($socket);
+        }
+
+        $separator = strpos($raw, "\r\n\r\n");
+        if ($separator === false || preg_match('#^HTTP/\S+\s+(\d{3})#', $raw, $match) !== 1) {
+            throw new ApiException(502, 'lookup_unreachable', 'Сайт вернул некорректный ответ.');
+        }
+        $status = (int) $match[1];
+        $contentType = '';
+        $location = '';
+        $chunked = false;
+        $encoding = '';
+        foreach (explode("\r\n", substr($raw, 0, $separator)) as $header) {
+            [$name, $value] = array_pad(explode(':', $header, 2), 2, '');
+            $value = trim($value);
+            match (strtolower(trim($name))) {
+                'content-type' => $contentType = strtolower(trim(explode(';', $value)[0])),
+                'location' => $location = $value,
+                'transfer-encoding' => $chunked = stripos($value, 'chunked') !== false,
+                'content-encoding' => $encoding = strtolower($value),
+                default => null,
+            };
+        }
+        $body = substr($raw, $separator + 4);
+        if ($chunked) {
+            $body = $this->dechunk($body);
+        }
+        if (in_array($encoding, ['gzip', 'x-gzip', 'deflate'], true)) {
+            // "identity" was requested; a server that compresses anyway is decoded within the same limit.
+            $decoded = !function_exists('gzdecode') ? false
+                : ($encoding === 'deflate' ? @gzuncompress($body, $maxBytes + 1) : @gzdecode($body, $maxBytes + 1));
+            if ($decoded === false) {
+                throw new ApiException(502, 'lookup_unreachable', 'Сайт вернул некорректный ответ.');
+            }
+            $body = $decoded;
+        }
+        if (strlen($body) > $maxBytes) {
+            throw new ApiException(502, 'lookup_response_too_large', 'Ответ сайта слишком большой.');
+        }
+
+        return ['status' => $status, 'content_type' => $contentType, 'body' => $body, 'location' => $location];
+    }
+
+    private function dechunk(string $body): string
+    {
+        $decoded = '';
+        $offset = 0;
+        while (($lineEnd = strpos($body, "\r\n", $offset)) !== false) {
+            $size = hexdec(trim(explode(';', substr($body, $offset, $lineEnd - $offset))[0]));
+            if (!is_int($size) || $size <= 0) {
+                break;
+            }
+            $decoded .= substr($body, $lineEnd + 2, $size);
+            $offset = $lineEnd + 2 + $size + 2;
+        }
+        return $decoded;
+    }
+
+    /** @param list<string> $acceptedTypes */
+    private function acceptHeader(array $acceptedTypes): string
+    {
+        return in_array('text/html', $acceptedTypes, true) ? 'text/html,application/xhtml+xml;q=0.9' : 'image/*';
     }
 }

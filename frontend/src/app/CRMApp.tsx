@@ -1,9 +1,9 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, apiDownload, apiMessage, apiRequest, setCsrfToken } from "../shared/api/api-client";
+import { FormEvent, ReactNode, Suspense, type RefObject, lazy, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { ApiError, apiDownload, apiMessage, apiRequest, loadAllPages, setCsrfToken } from "../shared/api/api-client";
 import { Avatar, EntityLogo } from "../shared/components/identity";
-import { appendVoiceText, VoiceInputButton } from "../shared/components/voice-input";
+import { appendVoiceText } from "../shared/utils/voice-text";
 import { useCookieDraft } from "../shared/hooks/use-cookie-draft";
 import { DraftScopeContext, useFormDraft } from "../shared/hooks/use-form-draft";
 import { useUrlStringState } from "../shared/hooks/use-url-string-state";
@@ -12,6 +12,14 @@ import { clearAccountDrafts, clearFormDraft, clearOtherAccountDrafts, draftScope
 import { clearAllSecureVoiceDrafts, clearAllVoiceDrafts, clearOtherSecureVoiceDrafts } from "../shared/utils/voice-draft";
 import { loadReadNotificationIds, saveReadNotificationIds, updateReadNotificationAccount } from "../shared/utils/notification-storage";
 import { readUrlFilter, urlWithFilter } from "../shared/utils/url-filters.mjs";
+
+const LazyVoiceInputButton = lazy(() => import("../shared/components/voice-input").then(({ VoiceInputButton }) => ({ default: VoiceInputButton })));
+
+function VoiceInputButton(props: { onText: (text: string) => void; disabled?: boolean }) {
+  return <Suspense fallback={null}><LazyVoiceInputButton {...props} /></Suspense>;
+}
+
+const focusHistory: HTMLElement[] = [];
 
 type View =
   | "dashboard"
@@ -69,6 +77,8 @@ type Contact = {
   photoDataUrl?: string;
   businessCardDataUrl?: string;
   businessCardFileName?: string;
+  businessCardBackDataUrl?: string;
+  businessCardBackFileName?: string;
   firstName?: string;
   lastName?: string;
   sourceId?: number;
@@ -229,6 +239,8 @@ type ContactDraft = {
   photoDataUrl?: string;
   businessCardDataUrl?: string;
   businessCardFileName?: string;
+  businessCardBackDataUrl?: string;
+  businessCardBackFileName?: string;
 };
 
 type ContactCreationResult = {
@@ -241,11 +253,31 @@ type ToastState = { message: string; tone: "success" | "warning" };
 type GlobalSearchResult = { type: "Company" | "Contact" | "Task"; label: string; meta: string; id: string };
 const GLOBAL_SEARCH_PAGE_SIZE = 10;
 type OcrDraft = { first_name?: string; last_name?: string; position?: string; phone?: string; email?: string; linkedin?: string; website?: string; company?: string; address?: string };
-type OcrLineType = "name" | "position" | "company" | "email" | "phone" | "website" | "linkedin" | "address" | "location" | "registry" | "other";
+type OcrLineType = "name" | "position" | "company" | "email" | "phone" | "website" | "linkedin" | "address" | "location" | "offices" | "registry" | "other";
 type OcrResult = { raw_text: string; draft: OcrDraft; confidence: "low" | "medium" | "high"; lines?: { text: string; type: OcrLineType }[]; company_candidates?: string[]; company_domain?: string | null };
 
-const OCR_LINE_LABELS: Record<OcrLineType, string> = { name: "Name", position: "Position", company: "Company", email: "Email", phone: "Phone", website: "Website", linkedin: "LinkedIn", address: "Address", location: "Location", registry: "Reg. no.", other: "Other" };
+const OCR_LINE_LABELS: Record<OcrLineType, string> = { name: "Name", position: "Position", company: "Company", email: "Email", phone: "Phone", website: "Website", linkedin: "LinkedIn", address: "Address", location: "Location", offices: "Offices", registry: "Reg. no.", other: "Other" };
 const OCR_FILLED_LINE_TYPES = new Set<OcrLineType>(["name", "position", "company", "email", "phone", "linkedin"]);
+const OCR_CARD_TYPES = ["image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff"];
+type CardSide = { dataUrl: string; name: string; result: OcrResult | null };
+const CARD_IMAGES_MAX_CHARS = 28 * 1024 * 1024;
+
+// One reading of a two-sided card: the front wins, the back fills what the front lacks.
+function mergeOcrResults(results: (OcrResult | null | undefined)[]): OcrResult | null {
+  const present = results.filter((result): result is OcrResult => Boolean(result));
+  if (present.length <= 1) return present[0] ?? null;
+  const draft: OcrDraft = {};
+  for (const result of [...present].reverse()) Object.assign(draft, Object.fromEntries(Object.entries(result.draft).filter(([, value]) => value)));
+  const rank = { low: 0, medium: 1, high: 2 } as const;
+  return {
+    raw_text: present.map((result) => result.raw_text).join("\n"),
+    draft,
+    confidence: present.reduce((best, result) => rank[result.confidence] > rank[best] ? result.confidence : best, present[0].confidence),
+    lines: present.flatMap((result) => result.lines ?? result.raw_text.split("\n").map((text) => ({ text, type: "other" as const }))),
+    company_candidates: [...new Set(present.flatMap((result) => result.company_candidates ?? []))],
+    company_domain: present.find((result) => result.company_domain)?.company_domain ?? null,
+  };
+}
 
 const DEFAULT_PREFERENCES: Preferences = { deadlineReminders: true, overdueNotifications: true, workspaceSummary: true };
 const OCR_INPUT_ENABLED = true;
@@ -281,21 +313,6 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   "Read-only": [],
 };
 
-const CJN_MANAGER_VALUES = [
-  "Andrey Zherebetsky",
-  "Olga Kalnauz",
-  "Vitalii Vyshnevskyi",
-  "Mikhail Bardin",
-  "Maksym Zarvanskyi",
-  "Yurii Maksymov",
-  "Dmytro Volik",
-  "Ivan Tatko",
-  "Mykhailo Balanovskyi",
-  "Mariia Klimova",
-  "Oleksandr Zherebetskyi",
-  "Olga Kucherenko",
-];
-
 const RELATIONSHIP_STATUSES = [
   "New Lead",
   "Quotation Sent",
@@ -304,16 +321,6 @@ const RELATIONSHIP_STATUSES = [
   "Lost / Declined",
   "Black List",
 ] as const;
-
-const LOOKUP_SEED: LookupGroup[] = [
-  { type: "company-type", label: "Company Type", items: ["Shipyard", "Ship design", "Equipment", "Equipment provider", "Software developer"].map((value, index) => ({ id: `company-type-${index + 1}`, value, active: true })) },
-  { type: "client-status", label: "Relationship Status", items: RELATIONSHIP_STATUSES.map((value, index) => ({ id: `client-status-${index + 1}`, value, active: true })) },
-  { type: "task-status", label: "Task Status", items: ["Not Started", "Started", "Completed", "Canceled", "Deferred"].map((value, index) => ({ id: `task-status-${index + 1}`, value, active: true })) },
-  { type: "outcome-status", label: "Outcome Status", items: ["Positive / interested", "Neutral / pending", "Negative / not interested", "No response"].map((value, index) => ({ id: `outcome-status-${index + 1}`, value, active: true })) },
-  { type: "contact-source", label: "Contact Source", items: ["Exhibition / Conference", "Referral (word of mouth)", "Inbound LinkedIn", "Outbound LinkedIn", "Inbound (website / email)", "Outbound (cold outreach)", "Partner", "Other"].map((value, index) => ({ id: `contact-source-${index + 1}`, value, active: true })) },
-  { type: "reminder-lead", label: "Reminder Advance Notice", items: ["1 week before", "1 day before", "2 hours before", "1 hour before"].map((value, index) => ({ id: `reminder-lead-${index + 1}`, value, active: true })) },
-  { type: "cjn-manager", label: "CJN Manager", items: CJN_MANAGER_VALUES.map((value, index) => ({ id: `cjn-manager-${index + 1}`, value, active: true })) },
-];
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
 
@@ -335,179 +342,6 @@ function isStrongPassword(value: string) {
   return value.length >= 8 && /[A-Za-z]/.test(value) && /\d/.test(value);
 }
 
-const INITIAL_COMPANIES: Company[] = [
-  {
-    id: "C-0001",
-    name: "Jun Engineering",
-    kind: "Ship design",
-    country: "South Korea",
-    city: "Jinju-si",
-    status: "Quotation Sent",
-    contacts: 2,
-    lastContact: "2026-07-24",
-    owner: "Vitalii Vyshnevskyi",
-    website: "jun-eng.kr",
-    description:
-      "Offshore renewables, electrical and structural design, ship design and additive manufacturing.",
-  },
-  {
-    id: "C-0002",
-    name: "Keppel AmFELS",
-    kind: "Shipyard",
-    country: "USA",
-    city: "Brownsville",
-    status: "Lost / Declined",
-    contacts: 1,
-    lastContact: "2026-06-18",
-    owner: "Andrey Zherebetsky",
-    website: "seatrium.com",
-    description:
-      "Offshore fabrication and shipbuilding yard at the Port of Brownsville, Texas.",
-  },
-  {
-    id: "C-0003",
-    name: "CONRAD Shipyard",
-    kind: "Shipyard",
-    country: "USA",
-    city: "Morgan City",
-    status: "Active Client",
-    contacts: 3,
-    lastContact: "2026-07-29",
-    owner: "Mikhail Bardin",
-    website: "conradindustries.com",
-    description:
-      "Civil and government vessels, autonomous platforms, barges, dredges and repair services.",
-  },
-  {
-    id: "C-0004",
-    name: "Thoma-Sea Marine",
-    kind: "Shipyard",
-    country: "USA",
-    city: "Houma",
-    status: "New Lead",
-    contacts: 2,
-    lastContact: "2026-07-28",
-    owner: "Mikhail Bardin",
-    website: "thoma-sea.com",
-    description:
-      "Research vessels, ferries and diesel-electric platforms for public and private operators.",
-  },
-  {
-    id: "C-0005",
-    name: "Eastern Shipbuilding Group",
-    kind: "Shipyard",
-    country: "USA",
-    city: "Panama City",
-    status: "New Lead",
-    contacts: 2,
-    lastContact: "2026-07-21",
-    owner: "Mikhail Bardin",
-    website: "easternshipbuilding.com",
-    description:
-      "Builder of escort tugs, ferries, dredges and offshore support vessels.",
-  },
-  {
-    id: "C-0006",
-    name: "Fincantieri Marine Group",
-    kind: "Shipyard",
-    country: "USA",
-    city: "Green Bay",
-    status: "New Lead",
-    contacts: 2,
-    lastContact: "2026-07-30",
-    owner: "Vitalii Vyshnevskyi",
-    website: "fincantierimarinegroup.com",
-    description:
-      "Naval and civil shipbuilding group with three US yards and engineering centers.",
-  },
-  {
-    id: "C-0007",
-    name: "ICE Marine Design",
-    kind: "Ship design",
-    country: "United Kingdom",
-    city: "London",
-    status: "New Lead",
-    contacts: 2,
-    lastContact: "2026-07-25",
-    owner: "Olga Kalnauz",
-    website: "icedesign.info",
-    description:
-      "International marine engineering group with design teams in Romania, Croatia and the UK.",
-  },
-  {
-    id: "C-0008",
-    name: "Norsepower",
-    kind: "Equipment",
-    country: "Finland",
-    city: "Helsinki",
-    status: "New Lead",
-    contacts: 2,
-    lastContact: "2026-07-27",
-    owner: "Olga Kalnauz",
-    website: "norsepower.com",
-    description:
-      "Rotor Sail wind-assisted propulsion systems for merchant shipping.",
-  },
-  {
-    id: "C-0009",
-    name: "Baltic Workboats",
-    kind: "Shipyard",
-    country: "Estonia",
-    city: "Nasva",
-    status: "Active Client",
-    contacts: 3,
-    lastContact: "2026-07-30",
-    owner: "Vitalii Vyshnevskyi",
-    website: "bwb.ee",
-    description:
-      "High-speed workboats, patrol vessels and ferries for international operators.",
-  },
-];
-
-const INITIAL_CONTACTS: Contact[] = [
-  { id: "K01", companyId: "C-0001", name: "Seonju Moon", position: "External Relations Manager", email: "junglobal@jun-eng.kr", phone: "+82 10 4845 4889", source: "Exhibition / Conference", sourceDetail: "SMM Hamburg", owner: "Vitalii Vyshnevskyi" },
-  { id: "K02", companyId: "C-0001", name: "Hyeong Jin Jeon", position: "CEO", email: "juneng0214@gmail.com", phone: "+82 55 761 0634", source: "Referral (word of mouth)", owner: "Vitalii Vyshnevskyi" },
-  { id: "K03", companyId: "C-0002", name: "Bernardino Salinas", position: "Engineering Manager", email: "bernardino.salinas@keppelamfels.com", phone: "+1 956 592 6175", source: "Outbound (cold outreach)", owner: "Andrey Zherebetsky" },
-  { id: "K04", companyId: "C-0003", name: "Rene J. Leonard", position: "Vice President", email: "rjleonard@conradindustries.com", phone: "+1 985 665 9057", source: "Referral (word of mouth)", owner: "Mikhail Bardin" },
-  { id: "K05", companyId: "C-0003", name: "Shaun D. Hunter", position: "General Manager", email: "sdhunter@conradindustries.com", phone: "+1 985 413 9709", source: "Referral (word of mouth)", owner: "Mikhail Bardin" },
-  { id: "K06", companyId: "C-0006", name: "Terrence Hickey", position: "Director Engineering", email: "terrence.hickey@us.fincantieri.com", phone: "—", source: "Outbound LinkedIn", owner: "Vitalii Vyshnevskyi" },
-  { id: "K07", companyId: "C-0007", name: "Jason Nunn", position: "External Relations Director", email: "jason.nunn@icedesign.info", phone: "—", source: "Outbound LinkedIn", owner: "Olga Kalnauz" },
-  { id: "K08", companyId: "C-0008", name: "Dirk Höflich", position: "Director, Client Relations", email: "dirk.hoflich@norsepower.com", phone: "+49 151 2910 0117", source: "Inbound (website / email)", owner: "Olga Kalnauz" },
-  { id: "K09", companyId: "C-0009", name: "Karl-Gustav Kalm", position: "External Relations Director", email: "karl.kalm@bwb.ee", phone: "+372 45 21 140", source: "Exhibition / Conference", sourceDetail: "Industry conference", owner: "Vitalii Vyshnevskyi" },
-];
-
-const INITIAL_TASKS: Task[] = [
-  { id: "T-0001", companyId: "C-0001", title: "SMM 2026 — confirm meeting slot", deadline: "2026-08-03T10:00", owner: "Vitalii Vyshnevskyi", status: "Started", priority: "High", note: "Confirm stand visit and share the updated engineering capability deck." },
-  { id: "T-0002", companyId: "C-0004", title: "Review technical scope before call", deadline: "2026-08-01T15:30", owner: "Mikhail Bardin", status: "Started", priority: "High", note: "Prepare three delivery scenarios and clarify vessel class requirements." },
-  { id: "T-0003", companyId: "C-0006", title: "Follow up with engineering director", deadline: "2026-07-28T10:00", owner: "Vitalii Vyshnevskyi", status: "Not Started", priority: "High", note: "Previous contact changed role; re-establish the engineering relationship." },
-  { id: "T-0004", companyId: "C-0005", title: "Solution brief feedback", deadline: "2026-08-04T11:00", owner: "Mikhail Bardin", status: "Not Started", priority: "Medium", note: "Ask whether the delivery scope, responsibilities and timing assumptions are clear." },
-  { id: "T-0005", companyId: "C-0007", title: "Send mutual NDA", deadline: "2026-08-07T12:00", owner: "Olga Kalnauz", status: "Not Started", priority: "Low", note: "Use the approved 2026 NDA template." },
-  { id: "T-0006", companyId: "C-0008", title: "Rotor Sail integration workshop", deadline: "2026-08-10T09:00", owner: "Olga Kalnauz", status: "Started", priority: "Medium", note: "Align available CAD formats and engineering work packages." },
-  { id: "T-0007", companyId: "C-0003", title: "Monthly delivery check-in", deadline: "2026-07-30T16:00", owner: "Mikhail Bardin", status: "Completed", priority: "Low", note: "Meeting held, action points circulated." },
-  { id: "T-0008", companyId: "C-0009", title: "Prepare repeat-client engagement plan", deadline: "2026-08-02T14:00", owner: "Vitalii Vyshnevskyi", status: "Started", priority: "High", note: "Include the agreed delivery approach and relevant prior-project context." },
-];
-
-const INITIAL_AUDIT: AuditEvent[] = [
-  { id: "E-1048", at: "2026-07-31 10:42", actor: "Vitalii Vyshnevskyi", action: "FIELD CHANGE", entity: "Task · T-0001", detail: "Deadline: 2026-08-01 10:00 → 2026-08-03 10:00" },
-  { id: "E-1047", at: "2026-07-31 10:18", actor: "Mikhail Bardin", action: "COMMENT", entity: "Company · C-0004", detail: "Added note after technical alignment call" },
-  { id: "E-1046", at: "2026-07-30 16:04", actor: "Mikhail Bardin", action: "STATUS CHANGE", entity: "Task · T-0007", detail: "Started → Completed" },
-  { id: "E-1045", at: "2026-07-30 14:33", actor: "Andrey Zherebetsky", action: "FIELD CHANGE", entity: "Contact · K08", detail: "Phone number updated" },
-  { id: "E-1044", at: "2026-07-30 09:51", actor: "Vitalii Vyshnevskyi", action: "FIELD CHANGE", entity: "Task · T-0008", detail: "Reminder advance notice: — → 1 day before" },
-];
-
-const INITIAL_TASK_COMMENTS: TaskComment[] = [
-  { id: "CM-001", taskId: "T-0001", author: "Vitalii Vyshnevskyi", createdAt: "2026-07-31 10:44", text: "The meeting request was sent. Waiting for the final stand number." },
-  { id: "CM-002", taskId: "T-0002", author: "Mikhail Bardin", createdAt: "2026-07-31 10:20", text: "Technical scope and delivery scenarios are ready for review." },
-];
-
-const INITIAL_USERS: CRMUser[] = [
-  { name: "Andrey Zherebetsky", email: "admin@cjn.example", role: "Admin", state: "Active", lastLogin: "2026-07-31 08:54" },
-  { name: "Mikhail Bardin", email: "m.bardin@cjn.example", role: "Manager", state: "Active", lastLogin: "2026-07-31 09:17" },
-  { name: "Vitalii Vyshnevskyi", email: "v.vyshnevskyi@cjn.example", role: "Editor", state: "Active", lastLogin: "2026-07-31 10:31" },
-  { name: "Olga Kalnauz", email: "o.kalnauz@cjn.example", role: "Editor", state: "Active", lastLogin: "2026-07-30 15:42" },
-  { name: "Yurii Maksymov", email: "y.maksymov@cjn.example", role: "Read-only", state: "Active", lastLogin: "2026-07-29 11:02" },
-];
-
 type ApiRecord = Record<string, unknown>;
 type WorkspacePayload = {
   identity: ApiRecord;
@@ -524,13 +358,18 @@ type WorkspacePayload = {
   countries?: string[];
 };
 
-type PagedRecords = { data: ApiRecord[]; meta: ApiMeta };
 
 type ApiMeta = {
   page: number;
   per_page: number;
   total: number;
   pages: number;
+};
+
+type DashboardSummary = {
+  kpi: { companies: number; contacts: number; companies_with_contacts: number; tasks_total: number; completed_tasks: number; open_tasks: number; overdue: number };
+  funnel: Array<{ status: string; count: number }>;
+  manager_activity: Array<{ manager: string; task_count: number; open_count: number }>;
 };
 
 const apiString = (record: ApiRecord, key: string) => String(record[key] ?? "");
@@ -694,7 +533,34 @@ function matchOcrCompany(companies: Company[], result: OcrResult) {
   return undefined;
 }
 
-type CompanyPrefill = { name: string; country: string; city: string; website: string; linkedin: string; description: string };
+type CompanyPrefill = { name: string; country: string; city: string; website: string; linkedin: string; description: string; kind: string; cardImages: string[] };
+
+// "NAOS-BCN, S.L." → "NAOS-BCN"; "ТОВ «Морські системи»" → "Морські системи". The CRM keeps the brand name.
+const TRAILING_LEGAL_FORM = /[\s,.]+(?:s\.?\s?l\.?(?:\s?u\.?)?|s\.?\s?a\.?(?:\s?u\.?)?|s\.?\s?r\.?\s?l\.?|s\.?\s?p\.?\s?a\.?|sp\.?\s?z\s?o\.?\s?o\.?|gmbh(?:\s?&\s?co\.?\s?kg)?|ag|kg|llc|l\.l\.c\.|ltd\.?|limited|inc\.?|corp\.?|plc|b\.?\s?v\.?|n\.?\s?v\.?|a\/s|as|asa|aps|ab|oy|oyj|oü|uab|sia|kft|s\.?r\.?o\.?|d\.?o\.?o\.?|тов|тзов|прат|пат|ооо|фоп)\.?$/iu;
+const LEADING_LEGAL_FORM = /^(?:тов|тзов|прат|пат|ооо|оао|зао|пао|фоп)\s+/iu;
+
+function companyBrandName(name: string) {
+  const brand = name.trim().replace(TRAILING_LEGAL_FORM, "").replace(LEADING_LEGAL_FORM, "").replace(/^[«"“]+|[»"”]+$/gu, "").trim();
+  return brand.length >= 2 ? brand : name.trim();
+}
+
+// Company type suggested from words on the card; only values present in the CRM lookup are used.
+const COMPANY_KIND_HINTS: [string, RegExp][] = [
+  ["Ship design", /design|naval architect|engineering|ingenier|consult|проект|конструктор/iu],
+  ["Shipyard", /shipyard|(?<!\p{L})yard(?!\p{L})|astillero|verft|stocznia|cantiere|werft|верф|суднобуд/iu],
+  ["Software developer", /software|(?<!\p{L})it(?!\p{L})|digital|developer|програм/iu],
+  ["Equipment", /equipment|machinery|propulsion|systems|обладнан|оборудован/iu],
+  ["Supplier", /supplier|supply|trading|distribut|постач|поставщ/iu],
+];
+
+function cardCompanyKind(result: OcrResult, kinds: string[]) {
+  const text = (result.lines ?? []).filter((line) => !["name", "email", "phone", "website", "linkedin"].includes(line.type)).map((line) => line.text).join(" ");
+  for (const [kind, pattern] of COMPANY_KIND_HINTS) {
+    const known = kinds.find((value) => value.toLocaleLowerCase() === kind.toLocaleLowerCase());
+    if (known && pattern.test(text)) return known;
+  }
+  return "";
+}
 
 // Native and short spellings seen on cards → names used in the CRM country list.
 const COUNTRY_ALIASES: Record<string, string> = {
@@ -725,57 +591,86 @@ function titleCaseIfUpper(value: string) {
   return value === value.toLocaleUpperCase() ? value.toLocaleLowerCase().replace(/(^|[\s-])(\p{L})/gu, (_, gap: string, letter: string) => gap + letter.toLocaleUpperCase()) : value;
 }
 
-// Country from the card: an explicit address line wins, then the phone prefix, then the web domain.
-function cardCountry(result: OcrResult, countries: string[]) {
+// CRM countries named in a line, in the order the card prints them.
+function countriesInLine(line: string, countries: string[]) {
   const known = (name: string) => countries.length === 0 ? name : countries.find((country) => country.toLocaleLowerCase() === name.toLocaleLowerCase()) ?? "";
-  for (const line of ocrLinesOfType(result, "location", "address")) {
-    const lower = ` ${line.toLocaleLowerCase().replace(/[(),.]/g, " ")} `;
-    for (const country of countries) if (lower.includes(` ${country.toLocaleLowerCase()} `)) return country;
-    for (const [alias, country] of Object.entries(COUNTRY_ALIASES)) if (lower.includes(` ${alias} `) && known(country)) return known(country);
-  }
-  for (const phone of contactPhones(result.draft.phone)) {
-    const digits = phone.trim().startsWith("+") ? phone.replace(/\D/g, "") : "";
-    const match = PHONE_COUNTRY_PREFIXES.find(([prefix]) => digits.startsWith(prefix));
-    if (match && known(match[1])) return known(match[1]);
-  }
-  const tld = (result.company_domain ?? "").split(".").pop() ?? "";
-  return DOMAIN_COUNTRIES[tld] && known(DOMAIN_COUNTRIES[tld]) ? known(DOMAIN_COUNTRIES[tld]) : "";
+  const lower = ` ${line.toLocaleLowerCase().replace(/[(),.|/]/g, " ")} `;
+  const found = new Map<string, number>();
+  const note = (name: string, country: string) => {
+    const at = lower.indexOf(` ${name.toLocaleLowerCase()} `);
+    const previous = found.get(country);
+    if (at >= 0 && country && (previous === undefined || at < previous)) found.set(country, at);
+  };
+  for (const country of countries) note(country, country);
+  for (const [alias, country] of Object.entries(COUNTRY_ALIASES)) note(alias, known(country));
+  return [...found.entries()].sort((left, right) => left[1] - right[1]).map(([country]) => country);
 }
 
-// City: "GDANSK, POLAND", "El Astillero (Cantabria) SPAIN", "6090 Fosnavaag, Norway" or "80-175 Gdansk".
-// Country lines are read first; lines that still carry a house number are streets.
+// Country from the card: an address line naming one country wins, then the phone prefix, then the web
+// domain. Office lists ("GÖTEBORG | SWEDEN TRIESTE | ITALY BARCELONA | SPAIN") name several countries;
+// they only confirm a phone or domain country, never pick one on their own.
+function cardCountry(result: OcrResult, countries: string[]) {
+  const known = (name: string) => countries.length === 0 ? name : countries.find((country) => country.toLocaleLowerCase() === name.toLocaleLowerCase()) ?? "";
+  const phoneCountry = contactPhones(result.draft.phone)
+    .map((phone) => phone.trim().startsWith("+") ? phone.replace(/\D/g, "") : "")
+    .map((digits) => known(PHONE_COUNTRY_PREFIXES.find(([prefix]) => digits.startsWith(prefix))?.[1] ?? ""))
+    .find(Boolean) ?? "";
+  const tld = (result.company_domain ?? "").split(".").pop() ?? "";
+  const domainCountry = DOMAIN_COUNTRIES[tld] ? known(DOMAIN_COUNTRIES[tld]) : "";
+  const named = ocrLinesOfType(result, "location", "address", "offices").map((line) => countriesInLine(line, countries));
+  const single = named.filter((found) => found.length === 1).map(([country]) => country);
+  if (single.length > 0) return [phoneCountry, domainCountry].find((country) => country && single.includes(country)) ?? single[0];
+  return phoneCountry || domainCountry;
+}
+
+const CARD_STREET_PATTERN = /(?<!\p{L})(?:(?:ul|al|str|ave|avda|av|vul|вул|ул|pl|pza|c)[./]|(?:street|straße|strasse|road|avenue|carrer|calle|avenida|plaza|plaça|passeig|paseo|via|viale|rue|rua|strada|gata|gate|vej|weg|straat|laan|ulica|aleja|вулиця|улица|проспект)(?!\p{L}))/iu;
+
+// City: "GDANSK, POLAND", "El Astillero (Cantabria) SPAIN", "6090 Fosnavaag, Norway", "80-175 Gdansk" or
+// "08870, Carrer San Sebastià, Barcelona, Spain". The part with or right before the country is read first;
+// streets and parts that still carry a house number are skipped.
 function cardCity(result: OcrResult, country: string) {
   const countryNames = [country, ...Object.entries(COUNTRY_ALIASES).filter(([, name]) => name === country).map(([alias]) => alias)].filter(Boolean);
   const countryPattern = countryNames.length > 0 ? new RegExp(`(?<!\\p{L})(?:${countryNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?!\\p{L})`, "giu") : null;
   const lines = [...ocrLinesOfType(result, "location"), ...ocrLinesOfType(result, "address")];
   for (const line of lines) {
-    if (/(?:^|\s)(?:ul|al|str|ave|vul|вул|ул)\.|street|straße|strasse|road|avenue/iu.test(line)) continue;
-    let text = line.replace(/\([^)]*\)/g, " ").replace(/(?<!\d)\d{2}-\d{3}(?!\d)|(?<!\d)\d{4,6}(?!\d)/g, " ");
-    if (countryPattern) text = text.replace(countryPattern, " ");
-    if (/\d/.test(text)) continue;
-    const city = text.split(",").map((part) => part.trim()).find(Boolean) ?? "";
-    if (/^\p{L}[\p{L}\s'-]{1,40}$/u.test(city) && city.split(/\s+/).length <= 3) return titleCaseIfUpper(city);
+    const parts = line.replace(/\([^)]*\)/g, " ").split(",").map((part) => part.trim()).filter(Boolean);
+    const countryAt = countryPattern ? parts.findIndex((part) => part.search(countryPattern) >= 0) : -1;
+    const ordered = countryAt >= 0 ? [parts[countryAt], parts[countryAt - 1]].filter((part): part is string => Boolean(part)) : parts;
+    for (const part of ordered) {
+      if (CARD_STREET_PATTERN.test(part)) continue;
+      let text = part.replace(/(?<!\d)\d{2}-\d{3}(?!\d)|(?<!\d)\d{4,6}(?!\d)/g, " ");
+      if (countryPattern) text = text.replace(countryPattern, " ");
+      text = text.replace(/\s+/g, " ").trim();
+      if (!text || /\d/.test(text)) continue;
+      if (/^\p{L}[\p{L}\s'-]{1,40}$/u.test(text) && text.split(/\s+/).length <= 3) return titleCaseIfUpper(text);
+    }
   }
   return "";
 }
 
-function companyPrefillFromCard(name: string, result: OcrResult | null, countries: string[]): CompanyPrefill {
-  if (!result) return { name, country: "", city: "", website: "", linkedin: "", description: "" };
+function companyPrefillFromCard(name: string, result: OcrResult | null, countries: string[], kinds: string[], cardImages: string[]): CompanyPrefill {
+  const brand = companyBrandName(name);
+  if (!result) return { name: brand, country: "", city: "", website: "", linkedin: "", description: brand !== name.trim() ? `Legal name: ${name.trim()}` : "", kind: "", cardImages };
   const country = cardCountry(result, countries);
   const address = ocrLinesOfType(result, "address", "location").join(", ");
   const registry = ocrLinesOfType(result, "registry").join("; ");
+  const offices = ocrLinesOfType(result, "offices").join("; ");
   const description = [
+    brand !== name.trim() && `Legal name: ${name.trim()}`,
     address && `Address: ${address}`,
+    offices && `Offices: ${offices}`,
     registry && `Registration: ${registry}`,
     "Created from a scanned business card.",
   ].filter(Boolean).join("\n");
   return {
-    name,
+    name: brand,
     country,
     city: cardCity(result, country),
     website: result.draft.website ?? result.company_domain ?? "",
     linkedin: result.draft.linkedin?.includes("/company/") ? result.draft.linkedin : "",
     description,
+    kind: cardCompanyKind(result, kinds),
+    cardImages,
   };
 }
 
@@ -1055,14 +950,6 @@ function companyWebsiteLabel(value: string) {
     : value;
 }
 
-function contactCount(contacts: Contact[], companyId: string) {
-  return contacts.filter((contact) => contact.companyId === companyId).length;
-}
-
-function openTaskLabel(count: number) {
-  return `${count} open ${count === 1 ? "task" : "tasks"}`;
-}
-
 function nextActivityLabel(tasks: Task[], companyId?: string) {
   const nextTask = tasks
     .filter((task) => (!companyId || task.companyId === companyId) && isOpenTask(task) && Boolean(task.deadline))
@@ -1215,6 +1102,72 @@ function ImageField({ label, name, value, onChange, onProcessingChange, kind = "
         <input ref={inputRef} className="image-input" name={name} type="file" accept="image/jpeg,image/png,image/webp" onChange={chooseImage} aria-describedby={`${name}-image-help`} />
         <span className="sr-only" id={`${name}-image-help`}>Accepted formats are JPG, PNG, and WebP, up to 5 MB.</span>
         {error && <small className="image-error" role="alert">{error}</small>}
+      </div>
+    </div>
+  );
+}
+
+// "Take logo from card": drag a rectangle over the scanned card; the selection becomes the company logo.
+function CardLogoCrop({ images, onLogo, onProcessingChange }: { images: string[]; onLogo: (logo: string) => void; onProcessingChange: (processing: boolean) => void }) {
+  const [open, setOpen] = useState(false);
+  const [imageIndex, setImageIndex] = useState(0);
+  const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [error, setError] = useState("");
+  const imageRef = useRef<HTMLImageElement>(null);
+  const startRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Pointer position as a fraction of the displayed image, so the crop is resolution independent.
+  function point(event: React.PointerEvent) {
+    const box = imageRef.current?.getBoundingClientRect();
+    if (!box) return { x: 0, y: 0 };
+    return { x: Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)), y: Math.min(1, Math.max(0, (event.clientY - box.top) / box.height)) };
+  }
+
+  function drag(event: React.PointerEvent) {
+    const start = startRef.current;
+    if (!start) return;
+    const current = point(event);
+    setSelection({ x: Math.min(start.x, current.x), y: Math.min(start.y, current.y), width: Math.abs(current.x - start.x), height: Math.abs(current.y - start.y) });
+  }
+
+  async function applySelection() {
+    const image = imageRef.current;
+    if (!image || !selection || selection.width < 0.02 || selection.height < 0.02) {
+      setError("Drag a rectangle around the logo first.");
+      return;
+    }
+    onProcessingChange(true);
+    setError("");
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(selection.width * image.naturalWidth));
+      canvas.height = Math.max(1, Math.round(selection.height * image.naturalHeight));
+      canvas.getContext("2d")?.drawImage(image, selection.x * image.naturalWidth, selection.y * image.naturalHeight, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) throw new Error("The selected area could not be read.");
+      onLogo(await processImageFile(new File([blob], "card-logo.png", { type: "image/png" }), "company"));
+      setOpen(false);
+      setSelection(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The selected area could not be used as a logo.");
+    } finally {
+      onProcessingChange(false);
+    }
+  }
+
+  if (!open) return <div className="field-full"><button className="text-button" type="button" onClick={() => setOpen(true)}>✂ Take logo from the business card</button></div>;
+  return (
+    <div className="logo-crop field-full">
+      <small>Drag a rectangle around the logo on the card.</small>
+      <div className="logo-crop-stage" onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); startRef.current = point(event); setSelection(null); }} onPointerMove={drag} onPointerUp={(event) => { drag(event); startRef.current = null; }}>
+        <img ref={imageRef} src={images[imageIndex]} alt="Business card" draggable={false} />
+        {selection && <span className="logo-crop-selection" style={{ left: `${selection.x * 100}%`, top: `${selection.y * 100}%`, width: `${selection.width * 100}%`, height: `${selection.height * 100}%` }} />}
+      </div>
+      {error && <small className="image-error" role="alert">{error}</small>}
+      <div className="logo-crop-actions">
+        <button className="secondary-button" type="button" onClick={() => void applySelection()}>Use as logo</button>
+        {images.length > 1 && <button className="text-button" type="button" onClick={() => { setImageIndex((index) => (index + 1) % images.length); setSelection(null); }}>Show {imageIndex === 0 ? "back" : "front"} side</button>}
+        <button className="text-button" type="button" onClick={() => { setOpen(false); setSelection(null); setError(""); }}>Cancel</button>
       </div>
     </div>
   );
@@ -1387,8 +1340,7 @@ function CountBadge({ count, label, detail }: { count: number; label: string; de
   );
 }
 
-function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll = "top" }: { title: string; eyebrow?: ReactNode; onClose: () => void; children: ReactNode; wide?: boolean; initialScroll?: "top" | "bottom" }) {
-  const dialogRef = useRef<HTMLElement>(null);
+function useDialogFocusTrap(dialogRef: RefObject<HTMLElement | null>, onClose: () => void, active = true, returnFocusRef?: RefObject<HTMLElement | null>) {
   const onCloseRef = useRef(onClose);
 
   useEffect(() => {
@@ -1396,10 +1348,16 @@ function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll 
   }, [onClose]);
 
   useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (!active) return;
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousFocus = returnFocusRef?.current ?? (
+      activeElement && !dialogRef.current?.contains(activeElement)
+        ? activeElement
+        : [...focusHistory].reverse().find((element) => element.isConnected && !dialogRef.current?.contains(element)) ?? null
+    );
     const focusableSelector = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])';
     const initialFocusFrame = window.requestAnimationFrame(() => {
-      const preferred = dialogRef.current?.querySelector<HTMLElement>("[autofocus]");
+      const preferred = dialogRef.current?.querySelector<HTMLElement>("[data-dialog-initial-focus], [autofocus]");
       const first = dialogRef.current?.querySelector<HTMLElement>(focusableSelector);
       (preferred ?? first)?.focus();
     });
@@ -1433,11 +1391,25 @@ function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll 
       window.cancelAnimationFrame(initialFocusFrame);
       window.removeEventListener("keydown", handleKeyDown);
       window.requestAnimationFrame(() => {
-        const anotherModalIsOpen = Boolean(document.querySelector('[role="dialog"][aria-modal="true"]'));
-        if (!anotherModalIsOpen && previousFocus?.isConnected) previousFocus.focus();
+        const remainingDialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+        const remainingDialog = remainingDialogs[remainingDialogs.length - 1];
+        if (previousFocus?.isConnected && (!remainingDialog || remainingDialog.contains(previousFocus))) previousFocus.focus();
       });
     };
-  }, []);
+  }, [active, dialogRef, returnFocusRef]);
+}
+
+// Forms pass closeOnBackdrop={false}: a stray click beside a half-filled form must not hide it.
+function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll = "top", closeOnBackdrop = true }: { title: string; eyebrow?: ReactNode; onClose: () => void; children: ReactNode; wide?: boolean; initialScroll?: "top" | "bottom"; closeOnBackdrop?: boolean }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const [nudged, setNudged] = useState(false);
+  useDialogFocusTrap(dialogRef, onClose);
+
+  useEffect(() => {
+    if (!nudged) return;
+    const timer = window.setTimeout(() => setNudged(false), 2400);
+    return () => window.clearTimeout(timer);
+  }, [nudged]);
 
   useEffect(() => {
     const initialScrollFrame = window.requestAnimationFrame(() => {
@@ -1448,10 +1420,10 @@ function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll 
   }, [initialScroll]);
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className="modal-backdrop" role="presentation" onMouseDown={() => closeOnBackdrop ? onClose() : setNudged(true)}>
       <section
         ref={dialogRef}
-        className={`modal-card${wide ? " modal-wide" : ""}`}
+        className={`modal-card${wide ? " modal-wide" : ""}${nudged ? " modal-nudged" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -1464,6 +1436,7 @@ function Modal({ title, eyebrow, onClose, children, wide = false, initialScroll 
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close dialog">×</button>
         </header>
+        {nudged && <p className="modal-stay-hint" role="status">The form stays open so nothing is lost. Close it with × or Cancel.</p>}
         <div className="modal-body">{children}</div>
       </section>
     </div>
@@ -1483,6 +1456,9 @@ function AuthScreen({ onLogin, onRegister, onRecover }: {
   const [submitting, setSubmitting] = useState(false);
   const signInTabRef = useRef<HTMLButtonElement>(null);
   const registerTabRef = useRef<HTMLButtonElement>(null);
+  const recoveryDialogRef = useRef<HTMLElement>(null);
+  const recoveryTriggerRef = useRef<HTMLButtonElement>(null);
+  useDialogFocusTrap(recoveryDialogRef, () => setRecoveryOpen(false), recoveryOpen, recoveryTriggerRef);
 
   function selectMode(nextMode: "signin" | "signup", focusTab = false) {
     setMode(nextMode);
@@ -1574,7 +1550,7 @@ function AuthScreen({ onLogin, onRegister, onRecover }: {
                 <label><span>Work email</span><input name="email" type="email" autoComplete="email" required maxLength={254} autoFocus defaultValue={mode === "signin" ? "" : ""} placeholder="name@company.com" /></label>
                 <label><span>Password</span><span className="password-field"><input name="password" type={showPassword ? "text" : "password"} autoComplete={mode === "signin" ? "current-password" : "new-password"} required minLength={8} maxLength={128} placeholder="8+ characters, letters and numbers" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? "Hide" : "Show"}</button></span></label>
                 {mode === "signup" && <label><span>Confirm password</span><input name="confirmPassword" type={showPassword ? "text" : "password"} autoComplete="new-password" required minLength={8} maxLength={128} placeholder="Repeat your password" /></label>}
-                <div className="auth-form-options auth-form-options-end">{mode === "signin" && <button type="button" onClick={() => { setRecoveryOpen(true); setMessage(""); }}>Forgot password?</button>}</div>
+                <div className="auth-form-options auth-form-options-end">{mode === "signin" && <button ref={recoveryTriggerRef} type="button" onClick={() => { setRecoveryOpen(true); setMessage(""); }}>Forgot password?</button>}</div>
                 <button className="primary-button auth-submit" type="submit" disabled={submitting}>{submitting ? "Please wait…" : mode === "signin" ? "Sign in to CRM" : "Submit registration"}<span>→</span></button>
               </form>
             </div>
@@ -1585,7 +1561,7 @@ function AuthScreen({ onLogin, onRegister, onRecover }: {
         </div>
       </section>
       {recoveryOpen && (
-        <div className="auth-recovery-backdrop" role="presentation" onMouseDown={() => setRecoveryOpen(false)}><section className="auth-recovery" role="dialog" aria-modal="true" aria-label="Password recovery" onMouseDown={(event) => event.stopPropagation()}><header><div><p className="eyebrow">Password recovery</p><h2>Reset password</h2></div><button className="icon-button" type="button" onClick={() => setRecoveryOpen(false)} aria-label="Close">×</button></header><p>Enter your work email and the CRM will send the available recovery instructions.</p><form onSubmit={recover}><label><span>Work email</span><input name="recoveryEmail" type="email" required autoFocus placeholder="name@company.com" /></label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setRecoveryOpen(false)}>Cancel</button><button className="primary-button" type="submit">Continue</button></div></form></section></div>
+        <div className="auth-recovery-backdrop" role="presentation" onMouseDown={() => setRecoveryOpen(false)}><section ref={recoveryDialogRef} className="auth-recovery" role="dialog" aria-modal="true" aria-label="Password recovery" onMouseDown={(event) => event.stopPropagation()}><header><div><p className="eyebrow">Password recovery</p><h2>Reset password</h2></div><button className="icon-button" type="button" onClick={() => setRecoveryOpen(false)} aria-label="Close">×</button></header><p>Enter your work email and the CRM will send the available recovery instructions.</p><form onSubmit={recover}><label><span>Work email</span><input name="recoveryEmail" type="email" required autoFocus data-dialog-initial-focus placeholder="name@company.com" /></label><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setRecoveryOpen(false)}>Cancel</button><button className="primary-button" type="submit">Continue</button></div></form></section></div>
       )}
     </main>
   );
@@ -1664,12 +1640,28 @@ function PasswordResetScreen({ token }: { token: string }) {
 
 export function CRMApp() {
   useEffect(() => { clearAllVoiceDrafts(); }, []);
+  useEffect(() => {
+    const rememberFocus = (event: FocusEvent) => {
+      if (!(event.target instanceof HTMLElement)) return;
+      focusHistory.push(event.target);
+      if (focusHistory.length > 20) focusHistory.shift();
+    };
+    document.addEventListener("focusin", rememberFocus, true);
+    return () => document.removeEventListener("focusin", rememberFocus, true);
+  }, []);
   const [passwordResetToken] = useState(() => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("token") ?? "");
   const [view, setView] = useUrlStringState<View>("view", "dashboard", ALL_VIEWS);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [recordsError, setRecordsError] = useState("");
+  const recordsLoadedRef = useRef(false);
+  const recordsLoadingRef = useRef<Promise<void> | null>(null);
+  const recordsEpochRef = useRef(0);
+  const managerEmailsRef = useRef(new Map<string, string>());
   const [taskComments, setTaskComments] = useState<TaskComment[]>([]);
   const [taskAttachments, setTaskAttachments] = useState<TaskAttachment[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
@@ -1716,6 +1708,7 @@ export function CRMApp() {
   const notificationReadAccountKey = identity?.id ? `user:${identity.id}` : (notificationAccountKey ? `email:${notificationAccountKey}` : "");
   const readNotificationIds = readNotificationIdsByAccount[notificationReadAccountKey] ?? [];
   const preferences = preferencesByAccount[notificationAccountKey] ?? DEFAULT_PREFERENCES;
+  const loadRecordsInEffect = useEffectEvent(loadRecords);
 
   useEffect(() => {
     if (!draftScope) return;
@@ -1725,9 +1718,13 @@ export function CRMApp() {
 
   useEffect(() => {
     if (!identity || !draftScope || restoredDraftWindowScopeRef.current === draftScope) return;
-    restoredDraftWindowScopeRef.current = draftScope;
     const draft = readFormDraft(draftScope, "open-window");
     const kind = draft?.kind?.[0] ?? "";
+    if (["company-detail", "contact-detail", "task-detail"].includes(kind) && !recordsLoadedRef.current) {
+      void loadRecordsInEffect(identity.role === "Admin").catch((error) => notify(apiMessage(error), "warning"));
+      return;
+    }
+    restoredDraftWindowScopeRef.current = draftScope;
     const id = draft?.id?.[0] ?? "";
     const companyId = draft?.companyId?.[0] || undefined;
     const parentTaskId = draft?.parentTaskId?.[0] || undefined;
@@ -1759,30 +1756,24 @@ export function CRMApp() {
   }, [draftScope, modal, modalCompanyId, modalParentTaskId, selectedCompany, selectedContact, selectedTask, selectedUser]);
 
   async function loadWorkspace() {
-    const response = await apiRequest<{ data: WorkspacePayload }>("/app/bootstrap?include_records=0");
+    const epoch = recordsEpochRef.current;
+    const [response, dashboardResponse] = await Promise.all([
+      apiRequest<{ data: WorkspacePayload }>("/app/bootstrap?include_records=0"),
+      apiRequest<{ data: DashboardSummary }>("/dashboard"),
+    ]);
+    if (epoch !== recordsEpochRef.current) return;
     const payload = response.data;
     const includeArchived = apiString(payload.identity, "role") === "admin";
-    const [companiesResponse, contactsResponse, tasksResponse] = await Promise.all([
-      loadAllPages("/companies", "name", "asc", includeArchived),
-      loadAllPages("/contacts", "last_name", "asc", includeArchived),
-      loadAllPages("/tasks?state=all", "contact_date", "desc", includeArchived),
-    ]);
     setCsrfToken(payload.csrf_token);
-    const mappedContacts = contactsResponse.map(mapContact);
-    const mappedCompanies = companiesResponse.map(mapCompany).map((company) => ({
-      ...company,
-      contacts: mappedContacts.filter((contact) => contact.companyId === company.id && !contact.isArchived).length,
-    }));
+    setDashboardSummary(dashboardResponse.data);
     const lookupGroups = Object.entries(payload.lookups).map(([type, items]) => ({
       type: lookupTypeToUi(type),
       label: ({ company_type: "Company Type", client_status: "Relationship Status", task_status: "Task Status", outcome_status: "Outcome Status", contact_source: "Contact Source", reminder_lead_time: "Reminder Advance Notice", cjn_manager: "CJN Manager" } as Record<string, string>)[type] ?? type,
       items: items.map((item) => ({ id: apiString(item, "id"), value: apiString(item, "value"), active: apiBoolean(item, "is_active"), keyCode: apiString(item, "key"), updatedAt: apiString(item, "updated_at"), userId: apiNumber(item, "user_id"), email: apiString(item, "email") || undefined })),
     }));
     const managerEmails = new Map((payload.lookups.cjn_manager ?? []).map((manager) => [apiString(manager, "value"), apiString(manager, "email").toLowerCase()]));
+    managerEmailsRef.current = managerEmails;
     const mappedUsers = payload.users.map(mapUser);
-    setCompanies(mappedCompanies);
-    setContacts(mappedContacts.map((contact) => ({ ...contact, initiatedByUserEmail: managerEmails.get(contact.initiatedBy ?? "") || undefined })));
-    setTasks(tasksResponse.map(mapTask));
     setTaskComments([]);
     setTaskAttachments([]);
     setLookups(lookupGroups);
@@ -1794,33 +1785,62 @@ export function CRMApp() {
       if (requestedUserId) setSelectedUser(mappedUsers.find((user) => user.id === requestedUserId) ?? null);
     }
     setAudit(payload.audit.map(mapAuditEvent));
-    setArchivedCompanyIds(mappedCompanies.filter((company) => company.isArchived).map((company) => company.id));
-    setArchivedContactIds(mappedContacts.filter((contact) => contact.isArchived).map((contact) => contact.id));
-    setArchivedTaskIds(tasksResponse.map(mapTask).filter((task) => task.isArchived).map((task) => task.id));
     setIdentity(mapIdentity(payload.identity));
     setPasswordChangeRequired(false);
+    const requestedView = typeof window === "undefined" ? view : readUrlFilter(window.location.search, "view", "dashboard", ALL_VIEWS);
+    if (recordsLoadedRef.current || ["companies", "contacts", "activity", "lookups"].includes(requestedView)) {
+      await loadRecords(includeArchived, true).catch((error) => notify(apiMessage(error), "warning"));
+    }
   }
 
-  async function loadAllPages(path: string, sort: string, dir: "asc" | "desc", includeArchived = false): Promise<ApiRecord[]> {
-    const records: ApiRecord[] = [];
-    let page = 1;
-    let pages = 1;
-    do {
-      const separator = path.includes("?") ? "&" : "?";
-      const response = await apiRequest<PagedRecords>(`${path}${separator}page=${page}&sort=${sort}&dir=${dir}${includeArchived ? "&include_archived=1" : ""}`);
-      records.push(...response.data);
-      pages = response.meta.pages;
-      page += 1;
-    } while (page <= pages);
-    return records;
+  async function loadRecords(includeArchived: boolean, refresh = false): Promise<void> {
+    if (recordsLoadingRef.current) return recordsLoadingRef.current;
+    if (recordsLoadedRef.current && !refresh) return;
+    setRecordsLoading(true);
+    setRecordsError("");
+    const epoch = recordsEpochRef.current;
+    const loading = (async () => {
+      const [companiesResponse, contactsResponse, tasksResponse] = await Promise.all([
+        loadAllPages<ApiRecord>("/companies", "name", "asc", includeArchived),
+        loadAllPages<ApiRecord>("/contacts", "last_name", "asc", includeArchived),
+        loadAllPages<ApiRecord>("/tasks?state=all", "contact_date", "desc", includeArchived),
+      ]);
+      if (epoch !== recordsEpochRef.current) return;
+      const mappedContacts = contactsResponse.map(mapContact);
+      const contactCounts = new Map<string, number>();
+      for (const contact of mappedContacts) {
+        if (!contact.isArchived) contactCounts.set(contact.companyId, (contactCounts.get(contact.companyId) ?? 0) + 1);
+      }
+      const mappedCompanies = companiesResponse.map(mapCompany).map((company) => ({ ...company, contacts: contactCounts.get(company.id) ?? 0 }));
+      const mappedTasks = tasksResponse.map(mapTask);
+      setCompanies(mappedCompanies);
+      setContacts(mappedContacts.map((contact) => ({ ...contact, initiatedByUserEmail: managerEmailsRef.current.get(contact.initiatedBy ?? "") || undefined })));
+      setTasks(mappedTasks);
+      setArchivedCompanyIds(mappedCompanies.filter((company) => company.isArchived).map((company) => company.id));
+      setArchivedContactIds(mappedContacts.filter((contact) => contact.isArchived).map((contact) => contact.id));
+      setArchivedTaskIds(mappedTasks.filter((task) => task.isArchived).map((task) => task.id));
+      recordsLoadedRef.current = true;
+    })();
+    recordsLoadingRef.current = loading;
+    try {
+      await loading;
+    } catch (error) {
+      if (epoch !== recordsEpochRef.current) return;
+      setRecordsError(apiMessage(error));
+      throw error;
+    } finally {
+      if (recordsLoadingRef.current === loading) {
+        recordsLoadingRef.current = null;
+        setRecordsLoading(false);
+      }
+    }
   }
 
-  async function openTaskDetail(task: Task) {
+  async function openTaskDetail(task: Task, detailRecord?: ApiRecord) {
     const targetTask = task;
     setSelectedTask(targetTask);
     try {
-      const response = await apiRequest<{ data: ApiRecord }>(`/tasks/${targetTask.id}`);
-      const detail = response.data;
+      const detail = detailRecord ?? (await apiRequest<{ data: ApiRecord }>(`/tasks/${targetTask.id}`)).data;
       const mapped = mapTask(detail);
       setTasks((current) => current.map((item) => item.id === mapped.id ? mapped : item));
       setTaskComments((detail.comments as ApiRecord[] | undefined ?? []).map((comment) => ({
@@ -1850,13 +1870,28 @@ export function CRMApp() {
       }
       await loadWorkspace();
     } catch {
+      recordsEpochRef.current += 1;
+      recordsLoadedRef.current = false;
+      recordsLoadingRef.current = null;
+      setCompanies([]);
+      setContacts([]);
+      setTasks([]);
+      setDashboardSummary(null);
+      setRecordsError("");
       setIdentity(null);
     }
   }
 
+  const restoreSessionInEffect = useEffectEvent(restoreSession);
   useEffect(() => {
-    void Promise.resolve().then(restoreSession).finally(() => setSessionLoading(false));
+    void Promise.resolve().then(() => restoreSessionInEffect()).finally(() => setSessionLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!identity || passwordChangeRequired || recordsLoadedRef.current || recordsLoadingRef.current || recordsError) return;
+    if (!["companies", "contacts", "activity", "lookups"].includes(view) && !notificationsOpen && !globalSearch.trim() && !modal) return;
+    void loadRecordsInEffect(identity.role === "Admin").catch((error) => notify(apiMessage(error), "warning"));
+  }, [identity, view, notificationsOpen, globalSearch, modal, passwordChangeRequired, recordsError]);
 
   const forbiddenAdminView = Boolean(identity && (
     (view === "lookups" && !hasPermission(identity.role, "lookup.manage"))
@@ -1882,11 +1917,19 @@ export function CRMApp() {
   const isMobileNavigation = useMediaQuery("(max-width: 900px)");
   const overlayOpen = Boolean(modal || selectedCompany || selectedContact || selectedTask || selectedUser || (sidebarOpen && isMobileNavigation));
 
-  const liveCompanies = companies.filter((company) => !archivedCompanyIds.includes(company.id));
-  const liveContacts = contacts.filter((contact) => !archivedContactIds.includes(contact.id) && !archivedCompanyIds.includes(contact.companyId));
-  const liveTasks = tasks.filter((task) => !archivedTaskIds.includes(task.id) && !archivedCompanyIds.includes(task.companyId));
-  const openTasks = liveTasks.filter(isOpenTask);
-  const overdueTasks = openTasks.filter(isOverdue);
+  const archivedCompanyIdSet = useMemo(() => new Set(archivedCompanyIds), [archivedCompanyIds]);
+  const archivedContactIdSet = useMemo(() => new Set(archivedContactIds), [archivedContactIds]);
+  const archivedTaskIdSet = useMemo(() => new Set(archivedTaskIds), [archivedTaskIds]);
+  const liveCompanies = useMemo(() => companies.filter((company) => !archivedCompanyIdSet.has(company.id)), [companies, archivedCompanyIdSet]);
+  const liveContacts = useMemo(() => contacts.filter((contact) => !archivedContactIdSet.has(contact.id) && !archivedCompanyIdSet.has(contact.companyId)), [contacts, archivedContactIdSet, archivedCompanyIdSet]);
+  const liveTasks = useMemo(() => tasks.filter((task) => !archivedTaskIdSet.has(task.id) && !archivedCompanyIdSet.has(task.companyId)), [tasks, archivedTaskIdSet, archivedCompanyIdSet]);
+  const companyById = useMemo(() => new Map(companies.map((company) => [company.id, company])), [companies]);
+  const liveCompanyById = useMemo(() => new Map(liveCompanies.map((company) => [company.id, company])), [liveCompanies]);
+  const contactCountsByCompany = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const contact of liveContacts) counts.set(contact.companyId, (counts.get(contact.companyId) ?? 0) + 1);
+    return counts;
+  }, [liveContacts]);
   const currentRole = identity?.role ?? "Read-only";
   const canViewAudit = hasPermission(currentRole, "audit.view");
   const lookupValues = (type: string, activeOnly = true) => lookups.find((group) => group.type === type)?.items.filter((item) => !activeOnly || item.active).map((item) => item.value) ?? [];
@@ -1905,7 +1948,7 @@ export function CRMApp() {
     ?? "";
   const userEmailForName = (name: string) => users.find((user) => user.name === name)?.email.toLowerCase();
   const lookupId = (type: string, value?: string) => Number(lookups.find((group) => group.type === type)?.items.find((item) => item.value === value)?.id || 0) || null;
-  const companyPayload = (company: Company) => ({ name: company.name, type_id: lookupId("company-type", company.kind), country: company.country, city: company.city || null, status_id: lookupId("client-status", company.status), manager_id: lookupId("cjn-manager", company.owner), website: company.website || null, linkedin: company.linkedin || null, nda_status: company.ndaStatus ?? NDA_STATUSES[0], logo_data_url: company.logoDataUrl || null, description: company.description || null, updated_at: company.updatedAt });
+  const companyPayload = (company: Company) => ({ name: company.name, type_id: lookupId("company-type", company.kind), country: company.country, city: company.city || null, status_id: lookupId("client-status", company.status), manager_id: lookupId("cjn-manager", company.owner), website: company.website || null, linkedin: company.linkedin || null, nda_status: company.ndaStatus ?? NDA_STATUSES[0], ...(company.logoDataUrl?.startsWith("/api/") ? {} : { logo_data_url: company.logoDataUrl || null }), description: company.description || null, updated_at: company.updatedAt });
   const contactPayload = (contact: Contact) => {
     // Edits only change `name`; trust the stored first/last parts only while they still compose that name.
     const fullName = contact.name.trim().replace(/\s+/g, " ");
@@ -1914,7 +1957,7 @@ export function CRMApp() {
       ? [contact.firstName, contact.lastName ?? ""]
       : [fullName.split(" ")[0] ?? "", fullName.split(" ").slice(1).join(" ")];
     const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
-    return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, status: contact.contactStatus ?? "active", manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), photo_data_url: contact.photoDataUrl || null, business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, updated_at: contact.updatedAt };
+    return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, status: contact.contactStatus ?? "active", manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), ...(contact.photoDataUrl?.startsWith("/api/") ? {} : { photo_data_url: contact.photoDataUrl || null }), business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, business_card_back_data_url: contact.businessCardBackDataUrl || null, business_card_back_file_name: contact.businessCardBackFileName || null, updated_at: contact.updatedAt };
   };
   const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), parent_task_id: null, name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatusId ?? (task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null), outcome_notes: task.outcomeNotes || null, deadline: localDateTimeToUtc(task.deadline), reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
   const reportServerError = (error: unknown) => { notify(apiMessage(error), "warning"); void loadWorkspace().catch(() => undefined); };
@@ -2054,32 +2097,32 @@ export function CRMApp() {
   const filteredContacts = useMemo(() => {
     const query = contactQuery.trim().toLowerCase();
     return liveContacts.filter((contact) =>
-      !query || [contact.name, contact.email, contact.phone, contact.position, contact.source, contact.initiatedBy ?? "", contact.linkedin ?? "", companyName(liveCompanies, contact.companyId)].some((value) => value.toLowerCase().includes(query)),
+      !query || [contact.name, contact.email, contact.phone, contact.position, contact.source, contact.initiatedBy ?? "", contact.linkedin ?? "", liveCompanyById.get(contact.companyId)?.name ?? "Unknown company"].some((value) => value.toLowerCase().includes(query)),
     );
-  }, [liveContacts, contactQuery, liveCompanies]);
+  }, [liveContacts, contactQuery, liveCompanyById]);
 
   useEffect(() => {
     const query = globalSearch.trim();
     if (companySearchSyllables(query).length < 1) return;
     const timer = window.setTimeout(() => {
       const companyResults = companies
-        .filter((company) => !archivedCompanyIds.includes(company.id) && searchTextMatches(company.name, query))
+        .filter((company) => !archivedCompanyIdSet.has(company.id) && searchTextMatches(company.name, query))
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((company): GlobalSearchResult => ({ type: "Company", id: company.id, label: company.name, meta: companyLocation(company) }));
       const contactResults = contacts
-        .filter((contact) => !archivedContactIds.includes(contact.id) && searchTextMatches(contact.name, query))
+        .filter((contact) => !archivedContactIdSet.has(contact.id) && searchTextMatches(contact.name, query))
         .sort((a, b) => a.name.localeCompare(b.name))
-        .map((contact): GlobalSearchResult => ({ type: "Contact", id: contact.id, label: contact.name, meta: [companyName(companies, contact.companyId), contact.position, contact.email].filter(Boolean).join(" · ") }));
+        .map((contact): GlobalSearchResult => ({ type: "Contact", id: contact.id, label: contact.name, meta: [companyById.get(contact.companyId)?.name ?? "Unknown company", contact.position, contact.email].filter(Boolean).join(" · ") }));
       const taskResults = tasks
-        .filter((task) => !archivedTaskIds.includes(task.id) && searchTextMatches(task.title, query))
+        .filter((task) => !archivedTaskIdSet.has(task.id) && searchTextMatches(task.title, query))
         .sort((a, b) => a.title.localeCompare(b.title))
-        .map((task): GlobalSearchResult => ({ type: "Task", id: task.id, label: task.title, meta: [companyName(companies, task.companyId), task.contactPerson].filter(Boolean).join(" · ") }));
+        .map((task): GlobalSearchResult => ({ type: "Task", id: task.id, label: task.title, meta: [companyById.get(task.companyId)?.name ?? "Unknown company", task.contactPerson].filter(Boolean).join(" · ") }));
       setGlobalResults([...companyResults, ...contactResults, ...taskResults]);
       setGlobalSearchIndex(-1);
       setGlobalSearchPage(1);
     }, 200);
     return () => window.clearTimeout(timer);
-  }, [archivedCompanyIds, archivedContactIds, archivedTaskIds, companies, contacts, globalSearch, tasks]);
+  }, [archivedCompanyIdSet, archivedContactIdSet, archivedTaskIdSet, companies, contacts, companyById, globalSearch, tasks]);
   const globalSearchOpen = companySearchSyllables(globalSearch).length >= 1;
   const globalSearchPageCount = Math.max(1, Math.ceil(globalResults.length / GLOBAL_SEARCH_PAGE_SIZE));
   const currentGlobalSearchPage = Math.min(globalSearchPage, globalSearchPageCount);
@@ -2150,6 +2193,18 @@ export function CRMApp() {
       setPasswordChangeRequired(false);
       setIdentity(null);
       setCurrentManagerId(null);
+      recordsEpochRef.current += 1;
+      recordsLoadedRef.current = false;
+      recordsLoadingRef.current = null;
+      setRecordsLoading(false);
+      setCompanies([]);
+      setContacts([]);
+      setTasks([]);
+      setArchivedCompanyIds([]);
+      setArchivedContactIds([]);
+      setArchivedTaskIds([]);
+      setDashboardSummary(null);
+      setRecordsError("");
       setProfileOpen(false);
       signingOutRef.current = false;
       setSigningOut(false);
@@ -2191,14 +2246,26 @@ export function CRMApp() {
     setSelectedCompany(company);
   }
 
-  function openGlobalResult(result: { type: string; id: string }) {
-    if (result.type === "Company") {
-      setSelectedCompany(companies.find((company) => company.id === result.id) ?? null);
-    } else if (result.type === "Contact") {
-      setSelectedContact(contacts.find((item) => item.id === result.id) ?? null);
-    } else {
-      setSelectedTask(tasks.find((task) => task.id === result.id) ?? null);
+  async function openRecordById(type: string, id: string) {
+    try {
+      if (!recordsLoadedRef.current) await loadRecords(currentRole === "Admin");
+      if (type === "Company") {
+        const response = await apiRequest<{ data: ApiRecord }>(`/companies/${id}`);
+        setSelectedCompany(mapCompany(response.data));
+      } else if (type === "Contact") {
+        const response = await apiRequest<{ data: ApiRecord }>(`/contacts/${id}`);
+        setSelectedContact(mapContact(response.data));
+      } else if (type === "Task") {
+        const response = await apiRequest<{ data: ApiRecord }>(`/tasks/${id}`);
+        await openTaskDetail(mapTask(response.data), response.data);
+      }
+    } catch (error) {
+      notify(apiMessage(error), "warning");
     }
+  }
+
+  function openGlobalResult(result: { type: string; id: string }) {
+    void openRecordById(result.type, result.id);
     setGlobalSearch("");
   }
 
@@ -2220,18 +2287,16 @@ export function CRMApp() {
 
   function openAuditEntity(event: AuditEvent) {
     const [entityType, id] = event.entity.split(" · ");
-    if (entityType === "Company") setSelectedCompany(companies.find((company) => company.id === id) ?? null);
-    else if (entityType === "Contact") setSelectedContact(contacts.find((contact) => contact.id === id) ?? null);
-    else if (entityType === "Task") setSelectedTask(tasks.find((task) => task.id === id) ?? null);
+    if (["Company", "Contact", "Task"].includes(entityType)) void openRecordById(entityType, id);
     else if (hasPermission(currentRole, "audit.view")) navigate("audit");
   }
 
   function openNotification(item: AppNotification) {
     updateReadNotificationIds((current) => current.includes(item.id) ? current : [...current, item.id]);
     setNotificationsOpen(false);
-    if (item.target === "task") setSelectedTask(tasks.find((task) => task.id === item.targetId) ?? null);
-    else if (item.target === "company") setSelectedCompany(companies.find((company) => company.id === item.targetId) ?? null);
-    else if (item.target === "contact") setSelectedContact(contacts.find((contact) => contact.id === item.targetId) ?? null);
+    if (item.target === "task") void openRecordById("Task", item.targetId ?? "");
+    else if (item.target === "company") void openRecordById("Company", item.targetId ?? "");
+    else if (item.target === "contact") void openRecordById("Contact", item.targetId ?? "");
     else if (item.target === "activity") navigate("activity");
     else if (hasPermission(currentRole, "audit.view")) navigate("audit");
   }
@@ -2354,6 +2419,8 @@ export function CRMApp() {
       photoDataUrl: draft.photoDataUrl?.startsWith("data:image/") ? draft.photoDataUrl : undefined,
       businessCardDataUrl: draft.businessCardDataUrl?.startsWith("data:image/") ? draft.businessCardDataUrl : undefined,
       businessCardFileName: draft.businessCardFileName,
+      businessCardBackDataUrl: draft.businessCardBackDataUrl?.startsWith("data:image/") ? draft.businessCardBackDataUrl : undefined,
+      businessCardBackFileName: draft.businessCardBackFileName,
     };
     if (!["Exhibition / Conference", "Other"].includes(contact.source)) contact.sourceDetail = "";
     if (contact.source !== "Referral (word of mouth)") contact.referredBy = "";
@@ -2401,6 +2468,8 @@ export function CRMApp() {
       photoDataUrl,
       businessCardDataUrl: String(data.get("businessCardDataUrl") ?? ""),
       businessCardFileName: String(data.get("businessCardFileName") ?? ""),
+      businessCardBackDataUrl: String(data.get("businessCardBackDataUrl") ?? ""),
+      businessCardBackFileName: String(data.get("businessCardBackFileName") ?? ""),
     });
     if (result.error) {
       const field = result.field === "companyId" ? "companyName" : result.field;
@@ -2666,7 +2735,7 @@ export function CRMApp() {
     const body = new FormData();
     body.set("file", file);
     try {
-      const { data } = await apiRequest<{ data: ApiRecord }>(`/tasks/${taskId}/attachments`, { method: "POST", body });
+      const { data } = await apiRequest<{ data: ApiRecord }>(`/tasks/${taskId}/attachments`, { method: "POST", body }, "", 120_000);
       setTaskAttachments((current) => [...current, { id: Number(data.id), taskId: apiString(data, "task_id"), name: apiString(data, "original_name"), mimeType: apiString(data, "mime_type"), sizeBytes: Number(data.size_bytes ?? 0), authorUserId: Number(data.author_user_id), author: apiString(data, "author_name"), createdAt: formatUserDateTime(apiString(data, "created_at")) }]);
       notify("Attachment uploaded");
       return true;
@@ -2893,17 +2962,6 @@ export function CRMApp() {
     setModal("task");
   }
 
-  function moveCompany(companyId: string, nextStatus: string) {
-    if (!requirePermission("pipeline.move", "change relationship status")) return;
-    if (!clientStatusOrder.includes(nextStatus)) return notify("Select a valid client status.", "warning");
-    const current = companies.find((company) => company.id === companyId);
-    if (!current || current.status === nextStatus) return;
-    setCompanies((items) => items.map((company) => company.id === companyId ? { ...company, status: nextStatus } : company));
-    notify(`${current.name}: ${nextStatus}`);
-    const updated = { ...current, status: nextStatus };
-    void apiRequest(`/companies/${companyId}`, { method: "PUT", body: JSON.stringify(companyPayload(updated)) }).then(() => loadWorkspace()).catch(reportServerError);
-  }
-
   function updateTaskStatus(task: Task, nextStatus: Task["status"]) {
     if (!requirePermission("task.edit", "update task status")) return;
     if (companies.find((company) => company.id === task.companyId)?.status === "Black List") {
@@ -2927,7 +2985,7 @@ export function CRMApp() {
     setModal(null);
     notify("Profile is being saved");
     void (async () => {
-      await apiRequest("/profile", { method: "PUT", body: JSON.stringify({ full_name: nextIdentity.name, email: nextIdentity.email, phone: nextIdentity.phone || null, photo_data_url: nextIdentity.photoDataUrl || null, current_password: currentPassword || undefined }) });
+      await apiRequest("/profile", { method: "PUT", body: JSON.stringify({ full_name: nextIdentity.name, email: nextIdentity.email, phone: nextIdentity.phone || null, ...(nextIdentity.photoDataUrl?.startsWith("/api/") ? {} : { photo_data_url: nextIdentity.photoDataUrl || null }), current_password: currentPassword || undefined }) });
       if (newPassword) await apiRequest("/profile/password", { method: "PUT", body: JSON.stringify({ current_password: currentPassword, password: newPassword, password_confirmation: newPassword }) });
       await loadWorkspace();
       notify(newPassword ? "Profile and password updated" : "Profile updated");
@@ -2986,6 +3044,8 @@ export function CRMApp() {
     ...(hasPermission(currentRole, "user.manage") ? ["users" as View] : []),
     ...(hasPermission(currentRole, "audit.view") ? ["audit" as View] : []),
   ];
+  const retryRecords = () => { void loadRecords(currentRole === "Admin").catch((error) => notify(apiMessage(error), "warning")); };
+  const recordLoadState = (label: string) => <div className="auth-message" role="status">{recordsError ? <>Could not load {label}: {recordsError} <button type="button" onClick={retryRecords}>Retry</button></> : `Loading ${label}…`}</div>;
 
   return (
     <DraftScopeContext.Provider value={draftScope}>
@@ -3026,8 +3086,9 @@ export function CRMApp() {
                   </button>;
                 })}</section>;
               })}
-              {globalResults.length === 0 && <button type="button" role="option" aria-selected="false" disabled>No matches found</button>}
+              {globalResults.length === 0 && <button type="button" role="option" aria-selected="false" disabled>{recordsError ? "Search unavailable" : recordsLoading || !recordsLoadedRef.current ? "Loading search index…" : "No matches found"}</button>}
               </div>
+              {recordsError && <button type="button" onClick={retryRecords}>Retry search</button>}
               {globalResults.length > GLOBAL_SEARCH_PAGE_SIZE && <nav className="search-pagination" aria-label="Search result pages"><button type="button" aria-label="Previous search page" disabled={currentGlobalSearchPage === 1} onClick={() => { setGlobalSearchPage((page) => Math.max(1, page - 1)); setGlobalSearchIndex(-1); }}>‹</button>{Array.from({ length: globalSearchPageCount }, (_, index) => index + 1).map((page) => <button className={page === currentGlobalSearchPage ? "active" : ""} type="button" key={page} aria-current={page === currentGlobalSearchPage ? "page" : undefined} onClick={() => { setGlobalSearchPage(page); setGlobalSearchIndex(-1); }}>{page}</button>)}<button type="button" aria-label="Next search page" disabled={currentGlobalSearchPage === globalSearchPageCount} onClick={() => { setGlobalSearchPage((page) => Math.min(globalSearchPageCount, page + 1)); setGlobalSearchIndex(-1); }}>›</button></nav>}
             </div>
           )}
@@ -3037,11 +3098,11 @@ export function CRMApp() {
             ref={notificationButtonRef}
             className={`topbar-icon notification-button${notificationsOpen ? " active" : ""}`}
             type="button"
-            aria-label={`Notifications, ${unreadNotifications.length} unread`}
+            aria-label={recordsLoadedRef.current ? `Notifications, ${unreadNotifications.length} unread` : "Notifications, load to view"}
             aria-expanded={notificationsOpen}
             aria-controls="notifications-popover"
             onClick={() => { setNotificationsOpen((open) => !open); setProfileOpen(false); }}
-          >♢{unreadNotifications.length > 0 && <span>{unreadNotifications.length}</span>}</button>
+          >♢{recordsLoadedRef.current && unreadNotifications.length > 0 && <span>{unreadNotifications.length}</span>}</button>
           <button
             ref={profileButtonRef}
             className={`profile-button${profileOpen ? " active" : ""}`}
@@ -3056,14 +3117,14 @@ export function CRMApp() {
           </button>
           {notificationsOpen && (
             <div className="topbar-popover notifications-popover" id="notifications-popover" role="dialog" aria-label="Notifications">
-              <div className="popover-heading"><div><b>Notifications</b><small>{unreadNotifications.length === 0 ? "You're all caught up" : `${unreadNotifications.length} ${unreadNotifications.length === 1 ? "item needs" : "items need"} attention`}</small></div><button type="button" disabled={unreadNotifications.length === 0} onClick={() => { updateReadNotificationIds((current) => Array.from(new Set([...current, ...notifications.map((item) => item.id)]))); notify("All notifications marked as read"); }}>Mark all as read</button></div>
+              <div className="popover-heading"><div><b>Notifications</b><small>{recordsError ? "Notifications unavailable" : !recordsLoadedRef.current ? "Loading notifications…" : unreadNotifications.length === 0 ? "You're all caught up" : `${unreadNotifications.length} ${unreadNotifications.length === 1 ? "item needs" : "items need"} attention`}</small></div><button type="button" disabled={!recordsLoadedRef.current || unreadNotifications.length === 0} onClick={() => { updateReadNotificationIds((current) => Array.from(new Set([...current, ...notifications.map((item) => item.id)]))); notify("All notifications marked as read"); }}>Mark all as read</button></div>
               <div className="notification-logic"><b>Only activity connected to you</b><small>Unread items from tasks you own or created, records you manage, their changes, and your activity summary. The list is capped at 10.</small></div>
               <div className="notification-list">
                 {notifications.map((item) => {
                   const isRead = readNotificationIds.includes(item.id);
                   return <button type="button" className={`notification-item${isRead ? " read" : ""}`} key={item.id} onClick={() => openNotification(item)}><span className={`notification-icon ${item.kind}`}>{item.kind === "overdue" ? "!" : item.kind === "update" ? "↻" : "✓"}</span><span><b>{item.title}</b><small>{item.detail}</small></span>{!isRead && <i className="unread-dot" aria-label="Unread" />}</button>;
                 })}
-                {notifications.length === 0 && <div className="notification-empty"><b>No notifications</b><small>New tasks and record changes will appear here.</small></div>}
+                {notifications.length === 0 && <div className="notification-empty" role="status"><b>{recordsError ? "Could not load notifications" : recordsLoadedRef.current ? "No notifications" : "Loading notifications…"}</b><small>{recordsError ? recordsError : recordsLoadedRef.current ? "New tasks and record changes will appear here." : "Fetching your CRM activity."}</small>{recordsError && <button type="button" onClick={retryRecords}>Retry</button>}</div>}
               </div>
               <button type="button" className="popover-footer-button" onClick={() => navigate("activity")}>Open Activity →</button>
             </div>
@@ -3121,12 +3182,7 @@ export function CRMApp() {
           {forbiddenAdminView ? <section className="empty-state forbidden-state" role="alert"><b>403 · Access forbidden</b><span>This administration section is available only to Admin users.</span><button className="primary-button" type="button" onClick={() => navigate("dashboard")}>Return to Dashboard</button></section> : <>
           {view === "dashboard" && (
             <Dashboard
-              companies={liveCompanies}
-              contacts={liveContacts}
-              tasks={liveTasks}
-              statusOrder={clientStatusOrder}
-              openTasks={openTasks}
-              overdueTasks={overdueTasks}
+              summary={dashboardSummary}
               audit={audit}
               canViewAudit={canViewAudit}
               identity={identity}
@@ -3138,7 +3194,8 @@ export function CRMApp() {
               openTasksForManager={(manager) => { setTaskManagerFilter(manager); setTaskFilter("All"); navigate("activity"); }}
             />
           )}
-          {view === "companies" && (
+          {view === "companies" && !recordsLoadedRef.current && recordLoadState("companies")}
+          {view === "companies" && recordsLoadedRef.current && (
             <Companies
               companies={filteredCompanies}
               tasks={liveTasks}
@@ -3146,7 +3203,7 @@ export function CRMApp() {
               setQuery={setCompanyQuery}
               status={companyStatus}
               setStatus={setCompanyStatus}
-              contacts={liveContacts}
+              contactCounts={contactCountsByCompany}
               statusOptions={clientStatusOrder}
               showInternalIds={currentRole === "Admin"}
               canCreate={hasPermission(currentRole, "company.create")}
@@ -3166,7 +3223,8 @@ export function CRMApp() {
               add={() => { if (requirePermission("company.create", "create companies")) setModal("company"); }}
             />
           )}
-          {view === "contacts" && (
+          {view === "contacts" && !recordsLoadedRef.current && recordLoadState("contacts")}
+          {view === "contacts" && recordsLoadedRef.current && (
             <Contacts
               contacts={filteredContacts}
               companies={liveCompanies}
@@ -3178,7 +3236,8 @@ export function CRMApp() {
               openContact={setSelectedContact}
             />
           )}
-          {view === "activity" && (
+          {view === "activity" && !recordsLoadedRef.current && recordLoadState("tasks")}
+          {view === "activity" && recordsLoadedRef.current && (
             <Activity
               tasks={liveTasks}
               companies={liveCompanies}
@@ -3197,7 +3256,8 @@ export function CRMApp() {
               openCompany={openCompanyInCompanies}
             />
           )}
-          {view === "lookups" && hasPermission(currentRole, "lookup.manage") && <Lookups groups={administrationLookups} archivedRecords={[
+          {view === "lookups" && hasPermission(currentRole, "lookup.manage") && !recordsLoadedRef.current && recordLoadState("archived records")}
+          {view === "lookups" && hasPermission(currentRole, "lookup.manage") && recordsLoadedRef.current && <Lookups groups={administrationLookups} archivedRecords={[
             ...companies.filter((company) => archivedCompanyIds.includes(company.id)).map((company) => ({ entity: "Company" as const, id: company.id, label: company.name })),
             ...contacts.filter((contact) => archivedContactIds.includes(contact.id)).map((contact) => ({ entity: "Contact" as const, id: contact.id, label: contact.name })),
             ...tasks.filter((task) => archivedTaskIds.includes(task.id)).map((task) => ({ entity: "Task" as const, id: task.id, label: task.title })),
@@ -3293,10 +3353,11 @@ export function CRMApp() {
         />
       )}
 
-      {modal === "company" && <CompanyForm companies={liveCompanies} countries={countries} statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} openExistingCompany={(company) => { setModal(null); setSelectedCompany(company); }} onClose={() => setModal(null)} onSubmit={addCompany} />}
-      {modal === "contact" && <ContactForm companies={liveCompanies} sourceOptions={contactSourceOptions} initiatorOptions={users.filter((user) => user.state === "Active")} initialCompanyId={modalCompanyId} currentUserEmail={identity.accountEmail} onClose={() => { setCardCompany(null); setModal(null); }} onSubmit={addContact} onCreateCompany={hasPermission(currentRole, "company.create") ? (name, card, onCreated) => setCardCompany({ prefill: companyPrefillFromCard(name, card, countries), onCreated }) : undefined} />}
+      {modal && ["company", "contact", "task"].includes(modal) && !recordsLoadedRef.current && <Modal title="Loading form data" onClose={() => setModal(null)}>{recordLoadState("form data")}</Modal>}
+      {modal === "company" && recordsLoadedRef.current && <CompanyForm companies={liveCompanies} countries={countries} statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} openExistingCompany={(company) => { setModal(null); setSelectedCompany(company); }} onClose={() => setModal(null)} onSubmit={addCompany} />}
+      {modal === "contact" && recordsLoadedRef.current && <ContactForm companies={liveCompanies} sourceOptions={contactSourceOptions} initiatorOptions={users.filter((user) => user.state === "Active")} initialCompanyId={modalCompanyId} currentUserEmail={identity.accountEmail} onClose={() => { setCardCompany(null); setModal(null); }} onSubmit={addContact} onCreateCompany={hasPermission(currentRole, "company.create") ? (name, card, cardImages, onCreated) => setCardCompany({ prefill: companyPrefillFromCard(name, card, countries, companyTypeOptions, cardImages), onCreated }) : undefined} />}
       {modal === "contact" && cardCompany && <CompanyForm companies={liveCompanies} countries={countries} statusOptions={activeClientStatuses} companyTypeOptions={companyTypeOptions} defaultOwner={defaultManager} prefill={cardCompany.prefill} openExistingCompany={(company) => { cardCompany.onCreated(company); setCardCompany(null); }} onClose={() => setCardCompany(null)} onSubmit={(event, logoDataUrl) => addCompany(event, logoDataUrl, (company) => { cardCompany.onCreated(company); setCardCompany(null); })} />}
-      {modal === "task" && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} defaultOwner={defaultManager} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
+      {modal === "task" && recordsLoadedRef.current && <TaskForm companies={liveCompanies} contacts={liveContacts} taskStatusOptions={taskStatusOptions} reminderLeadOptions={reminderLeadOptions} managerOptions={managerOptions} defaultOwner={defaultManager} initiatorOptions={users.filter((user) => user.state === "Active")} currentUserEmail={identity.accountEmail} initialCompanyId={modalCompanyId} canAddContact={hasPermission(currentRole, "contact.create")} onAddContact={createContact} onClose={() => setModal(null)} onSubmit={addTask} />}
       {modal === "user" && <UserForm onClose={() => setModal(null)} onSubmit={inviteUser} />}
       {modal === "profile" && <ProfileModal identity={identity} onClose={() => setModal(null)} onSave={updateProfile} />}
       {modal === "settings" && <SettingsModal preferences={preferences} systemSettings={currentRole === "Admin" ? systemSettings : null} onClose={() => setModal(null)} onSave={updatePreferences} />}
@@ -3309,13 +3370,8 @@ export function CRMApp() {
   );
 }
 
-function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdueTasks, audit, canViewAudit, identity, openCompanies, openContacts, openTaskList, openAuditEntity, openCompaniesForStatus, openTasksForManager }: {
-  companies: Company[];
-  contacts: Contact[];
-  tasks: Task[];
-  statusOrder: string[];
-  openTasks: Task[];
-  overdueTasks: Task[];
+function Dashboard({ summary, audit, canViewAudit, identity, openCompanies, openContacts, openTaskList, openAuditEntity, openCompaniesForStatus, openTasksForManager }: {
+  summary: DashboardSummary | null;
   audit: AuditEvent[];
   canViewAudit: boolean;
   identity: AuthIdentity;
@@ -3326,11 +3382,10 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
   openCompaniesForStatus: (status: string) => void;
   openTasksForManager: (manager: string) => void;
 }) {
-  const stageCounts = statusOrder.map((status) => ({ status, count: companies.filter((company) => company.status === status).length })).filter((item) => item.count > 0);
+  const kpi = summary?.kpi;
+  const stageCounts = summary?.funnel ?? [];
   const max = Math.max(...stageCounts.map((item) => item.count), 1);
-  const managerActivity = Array.from(new Set(tasks.map((task) => task.owner)))
-    .map((manager) => ({ manager, count: tasks.filter((task) => task.owner === manager).length, open: openTasks.filter((task) => task.owner === manager).length }))
-    .sort((a, b) => b.count - a.count);
+  const managerActivity = summary?.manager_activity ?? [];
 
   return (
     <>
@@ -3345,23 +3400,23 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
       <section className="kpi-grid" aria-label="Key metrics">
         <button className="kpi-card" type="button" onClick={openCompanies}>
           <span className="kpi-icon blue">▦</span>
-          <span><small>Companies</small><b>{companies.length}</b><em>All active CRM records</em></span>
+          <span><small>Companies</small><b>{kpi?.companies ?? 0}</b><em>All active CRM records</em></span>
         </button>
         <button className="kpi-card" type="button" onClick={openContacts}>
           <span className="kpi-icon cyan">◎</span>
-          <span><small>Contacts</small><b>{contacts.length}</b><em>Across {companies.filter((company) => contactCount(contacts, company.id) > 0).length} companies</em></span>
+          <span><small>Contacts</small><b>{kpi?.contacts ?? 0}</b><em>Across {kpi?.companies_with_contacts ?? 0} companies</em></span>
         </button>
         <button className="kpi-card" type="button" onClick={() => openTaskList("All")}>
           <span className="kpi-icon green">≡</span>
-          <span><small>Tasks total</small><b>{tasks.length}</b><em>{tasks.filter((task) => task.status === "Completed").length} completed</em></span>
+          <span><small>Tasks total</small><b>{kpi?.tasks_total ?? 0}</b><em>{kpi?.completed_tasks ?? 0} completed</em></span>
         </button>
         <button className="kpi-card kpi-open" type="button" onClick={() => openTaskList("Open")}>
           <span className="kpi-icon amber">✓</span>
-          <span><small>Open tasks</small><b>{openTasks.length}</b><em>Current work queue</em></span>
+          <span><small>Open tasks</small><b>{kpi?.open_tasks ?? 0}</b><em>Current work queue</em></span>
         </button>
         <button className="kpi-card kpi-overdue" type="button" onClick={() => openTaskList("Overdue")}>
           <span className="kpi-icon red">!</span>
-          <span><small>Overdue</small><b>{overdueTasks.length}</b><em>{overdueTasks.length ? "Needs attention" : "No overdue tasks"}</em></span>
+          <span><small>Overdue</small><b>{kpi?.overdue ?? 0}</b><em>{kpi?.overdue ? "Needs attention" : "No overdue tasks"}</em></span>
         </button>
       </section>
 
@@ -3389,9 +3444,9 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
       </section>
 
       <section className="panel manager-activity-panel">
-        <div className="panel-heading"><div><p className="eyebrow">Team load</p><h2>Activity by manager</h2></div><CountBadge count={tasks.length} label="tasks" detail={`${tasks.length} active task records are included in this view.`} /></div>
+        <div className="panel-heading"><div><p className="eyebrow">Team load</p><h2>Activity by manager</h2></div><CountBadge count={kpi?.tasks_total ?? 0} label="tasks" detail={`${kpi?.tasks_total ?? 0} active task records are included in this view.`} /></div>
         <div className="manager-activity-list">
-          {managerActivity.map((item) => <button type="button" key={item.manager} onClick={() => openTasksForManager(item.manager)}><span className="mini-avatar">{item.manager.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><span><b>{item.manager}</b><small>{item.open} open</small></span><strong>{item.count}</strong><span className="row-arrow">›</span></button>)}
+          {managerActivity.map((item) => <button type="button" key={item.manager} onClick={() => openTasksForManager(item.manager)}><span className="mini-avatar">{item.manager.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><span><b>{item.manager}</b><small>{item.open_count} open</small></span><strong>{item.task_count}</strong><span className="row-arrow">›</span></button>)}
           {managerActivity.length === 0 && <div className="empty-state compact"><b>No manager activity</b><span>Tasks will appear here after creation.</span></div>}
         </div>
       </section>
@@ -3399,45 +3454,9 @@ function Dashboard({ companies, contacts, tasks, statusOrder, openTasks, overdue
   );
 }
 
-function Pipeline({ companies, contacts, tasks, statusOrder, canMove, showInternalIds, moveCompany, openCompany }: { companies: Company[]; contacts: Contact[]; tasks: Task[]; statusOrder: string[]; canMove: boolean; showInternalIds: boolean; moveCompany: (id: string, status: string) => void; openCompany: (company: Company) => void }) {
-  return (
-    <>
-      <div className="page-actions-row">
-        <p className="page-description">{canMove ? "Use the status selector to move a company between relationship stages. On mobile, the board scrolls horizontally." : "Browse every stage of the relationship workflow. Your role has view-only access."}</p>
-        <div className="legend"><span><i className="legend-dot hot" /> Active</span><span><i className="legend-dot quiet" /> No open activity</span></div>
-      </div>
-      <section className="kanban" aria-label="Relationship workflow board">
-        {statusOrder.map((status) => {
-          const items = companies.filter((company) => company.status === status);
-          const columnOpenTasks = items.reduce((sum, company) => sum + tasks.filter((task) => task.companyId === company.id && isOpenTask(task)).length, 0);
-          return (
-            <div className="kanban-column" key={status}>
-              <header><span><i className={`stage-dot stage-${status.toLowerCase().replace(/[^a-z]+/g, "-")}`} />{status}</span><CountBadge count={items.length} label="companies" detail={`${status} column: ${items.length} companies and ${columnOpenTasks} open tasks.`} /></header>
-              <p className="column-total">{openTaskLabel(columnOpenTasks)}</p>
-              <div className="kanban-stack">
-                {items.map((company) => (
-                  <article key={company.id} className="pipeline-card" tabIndex={0} onClick={() => openCompany(company)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openCompany(company); }}>
-                    <div className="pipeline-card-top">{showInternalIds && <span>{company.id}</span>}<button type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></div>
-                    <h3>{company.name}</h3>
-                    <p>{companyLocation(company)}</p>
-                    <div className="pipeline-card-meta"><span>{openTaskLabel(tasks.filter((task) => task.companyId === company.id && isOpenTask(task)).length)}</span><CountBadge count={contactCount(contacts, company.id)} label="contacts" detail={`Contact people at ${company.name}. Open the card to view the full list.`} /></div>
-                    {canMove && <select className="pipeline-stage-select" value={company.status} aria-label={`Relationship status for ${company.name}`} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); moveCompany(company.id, event.target.value); }}>{statusOrder.map((stage) => <option key={stage}>{stage}</option>)}</select>}
-                    <footer><span className="mini-avatar">{company.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><span>Next activity: {nextActivityLabel(tasks, company.id)}</span></footer>
-                  </article>
-                ))}
-                {items.length === 0 && <div className="kanban-empty">No companies</div>}
-              </div>
-            </div>
-          );
-        })}
-      </section>
-    </>
-  );
-}
-
-function Companies({ companies, contacts, tasks, statusOptions, query, setQuery, status, setStatus, showInternalIds, canCreate, canEdit, managerOptions, updateCompany, updateTask, openCompanyContacts, openCompany, add }: {
+function Companies({ companies, contactCounts, tasks, statusOptions, query, setQuery, status, setStatus, showInternalIds, canCreate, canEdit, managerOptions, updateCompany, updateTask, openCompanyContacts, openCompany, add }: {
   companies: Company[];
-  contacts: Contact[];
+  contactCounts: Map<string, number>;
   tasks: Task[];
   statusOptions: string[];
   query: string;
@@ -3524,7 +3543,7 @@ function Companies({ companies, contacts, tasks, statusOptions, query, setQuery,
                 <td data-label="Location"><span className="company-card-value"><b className="normal-weight">{company.city}</b><small className="cell-sub">{company.country}</small></span></td>
                 <td data-label="Client status"><span className="company-card-value">{canEdit ? <select className="table-inline-select" aria-label={`Relationship status for ${company.name}`} value={company.status} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); void updateCompany({ ...company, status: event.target.value }); }}>{Array.from(new Set([...statusOptions, company.status])).map((value) => <option key={value}>{value}</option>)}</select> : <StatusBadge value={company.status} />}</span></td>
                 <td data-label="Priority"><span className="company-card-value">{company.status === "Black List" ? <span className="priority-unavailable" title="Priority is unavailable for Black List companies">—</span> : latestTaskByCompany.has(company.id) ? (canEdit ? <select className={`table-inline-select priority-select ${priorityToneClass(latestTaskByCompany.get(company.id)!.priority)}`} aria-label={`Latest task priority for ${company.name}`} value={latestTaskByCompany.get(company.id)!.priority} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); void updateTask({ ...latestTaskByCompany.get(company.id)!, priority: event.target.value as Task["priority"] }); }}>{TASK_PRIORITIES.map((value) => <option key={value} value={value}>{value}</option>)}</select> : <StatusBadge value={`${latestTaskByCompany.get(company.id)!.priority} priority`} />) : "—"}</span></td>
-                <td data-label="Contacts"><span className="company-card-value"><button className="count-badge company-contact-filter" type="button" title={`Show contacts for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompanyContacts(company.id); }}>{contactCount(contacts, company.id)}</button></span></td>
+                <td data-label="Contacts"><span className="company-card-value"><button className="count-badge company-contact-filter" type="button" title={`Show contacts for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompanyContacts(company.id); }}>{contactCounts.get(company.id) ?? 0}</button></span></td>
                 <td data-label="Last contact"><span className="company-card-value">{company.lastContact}</span></td>
                 <td data-label="Owner"><span className="company-card-value">{canEdit ? <select className="table-inline-select owner-select" aria-label={`Owner for ${company.name}`} value={company.owner} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); void updateCompany({ ...company, owner: event.target.value }); }}>{Array.from(new Set([...managerOptions, company.owner])).map((value) => <option key={value}>{value}</option>)}</select> : <span className="owner-cell"><span className="mini-avatar">{company.owner.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>{company.owner}</span>}</span></td>
                 <td data-label="Actions"><button className="row-menu" type="button" aria-label={`Open details for ${company.name}`} onClick={(event) => { event.stopPropagation(); openCompany(company); }}>•••</button></td>
@@ -3555,6 +3574,7 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
   const [companyFilter, setCompanyFilter] = useUrlStringState("contact_company", "All companies");
   const [linkedinFilter, setLinkedinFilter] = useUrlStringState("contact_linkedin", "Any LinkedIn", CONTACT_LINKEDIN_VALUES);
   const [page, setPage] = useState(1);
+  const companyById = useMemo(() => new Map(companies.map((company) => [company.id, company])), [companies]);
   const filtered = contacts.filter((contact) =>
     (sourceFilter === "All sources" || contact.source === sourceFilter) &&
     (initiatorFilter === "All initiators" || contact.initiatedBy === initiatorFilter) &&
@@ -3597,7 +3617,7 @@ function Contacts({ contacts, companies, query, setQuery, canCreate, add, openCo
           <thead><tr><th>Contact</th><th>Company</th><th>Position</th><th>Phone</th><th>Source</th><th>Initiated by</th><th aria-label="Actions" /></tr></thead>
           <tbody>
             {visibleContacts.map((contact) => {
-              const company = companies.find((item) => item.id === contact.companyId);
+              const company = companyById.get(contact.companyId);
               return (
                 <tr key={contact.id} className={contact.contactStatus === "inactive" ? "inactive-contact" : ""} tabIndex={0} onClick={() => openContact(contact)} onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) openContact(contact); }}>
                   <td data-label="Contact"><span className="contact-person"><Avatar name={contact.name} src={contact.photoDataUrl} className="person-avatar" lazy /><span><b>{contact.name}</b>{contact.email ? <a className="inline-data-link compact" href={`mailto:${contact.email}`} onClick={(event) => event.stopPropagation()}>{contact.email}</a> : <small>No email</small>}<StatusBadge value={contact.contactStatus === "inactive" ? "Inactive" : "Active"} /></span></span></td>
@@ -3653,6 +3673,7 @@ function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFi
   openTask: (task: Task) => void;
   openCompany: (company: Company) => void;
 }) {
+  const companyById = useMemo(() => new Map(companies.map((company) => [company.id, company])), [companies]);
   const filters = [...taskStatusOptions.filter((item) => item !== "Open"), "Open", "Overdue", "All"];
   const [visibleTaskCounts, setVisibleTaskCounts] = useState<Record<string, number>>({});
   const managers = Array.from(new Set(tasks.map((task) => task.owner))).sort();
@@ -3694,7 +3715,7 @@ function Activity({ tasks, companies, comments, taskStatusOptions, filter, setFi
       </div>
       <section className="task-board">
         {visibleCompanySequences.map(({ companyId, tasks: sequence }) => {
-          const company = companies.find((item) => item.id === companyId);
+          const company = companyById.get(companyId);
           const blacklisted = company?.status === "Black List";
           const visibleTaskCount = sequence.length > 5 ? Math.min(visibleTaskCounts[companyId] ?? 2, sequence.length) : sequence.length;
           const visibleSequence = sequence.slice(0, visibleTaskCount);
@@ -4399,13 +4420,14 @@ function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, 
   });
   const duplicateCompanies = companyNameDraft.trim().length < 2 ? [] : companies.filter((company) => searchTextMatches(company.name, companyNameDraft)).slice(0, 6);
   return (
-    <Modal title={prefill ? "New company from business card" : "New company"} eyebrow={prefill ? "Contacts · business card" : "Companies"} onClose={onClose}>
+    <Modal title={prefill ? "New company from business card" : "New company"} eyebrow={prefill ? "Contacts · business card" : "Companies"} onClose={onClose} closeOnBackdrop={false}>
       <form ref={formRef} {...(prefill ? {} : companyCreateDraft.formProps)} onSubmit={(event) => { if (imageProcessing) event.preventDefault(); else { setSubmitting(true); setRetry(false); void onSubmit(event, logoDataUrl).then((saved) => { if (saved) { companyCreateDraft.clear(); clearDescriptionDraft(); } setRetry(!saved); }).finally(() => setSubmitting(false)); } }} className="entity-form">
         {prefill && <div className="reminder-note field-full"><span>i</span><p><b>Filled from the scanned card</b><small>Check the details, then save: you return to the contact with this company selected.</small></p></div>}
         <ImageField label="Company logo" name="companyLogo" value={logoDataUrl} onChange={setLogoDataUrl} onProcessingChange={setImageProcessing} kind="company" />
+        {prefill && prefill.cardImages.length > 0 && <CardLogoCrop images={prefill.cardImages} onLogo={setLogoDataUrl} onProcessingChange={setImageProcessing} />}
         <div className="field field-full company-duplicate-field"><label><span>Company name *</span><input name="name" value={companyNameDraft} onChange={(event) => setCompanyNameDraft(event.target.value)} required minLength={2} maxLength={255} autoFocus placeholder="For example, Baltic Engineering" autoComplete="off" /></label>{duplicateCompanies.length > 0 && <div className="company-duplicate-suggestions" role="listbox" aria-label="Existing companies with a similar name">{duplicateCompanies.map((company) => <button key={company.id} type="button" onClick={() => openExistingCompany(company)}><EntityLogo name={company.name} src={company.logoDataUrl} /><span><b>{company.name}</b><small>{companyLocation(company)} · open existing company</small></span></button>)}</div>}</div>
-        <label className="field"><span>Company type *</span><select name="kind" required>{companyTypeOptions.map((kind) => <option key={kind}>{kind}</option>)}</select></label>
-        <label className="field"><span>Relationship status *</span><select name="status" required>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label className="field field-align-end"><span>Company type *{prefill?.kind && <small> · suggested from the card</small>}</span><select name="kind" required defaultValue={prefill?.kind ?? ""}><option value="" disabled>Select a type…</option>{companyTypeOptions.map((kind) => <option key={kind}>{kind}</option>)}</select></label>
+        <label className="field field-align-end"><span>Relationship status *</span><select name="status" required>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
         <label className="field"><span>Country *</span><input name="country" list="company-country-options" required maxLength={100} placeholder="Select or type a country" defaultValue={prefill?.country} /><datalist id="company-country-options">{countries.map((country) => <option key={country} value={country} />)}</datalist></label>
         <label className="field"><span>City</span><input name="city" maxLength={100} placeholder="Kyiv" defaultValue={prefill?.city} /></label>
         <div className="field website-lookup-field"><label><span>Website</span><input name="website" inputMode="url" maxLength={255} placeholder="example.com" defaultValue={prefill?.website} /></label><div className="website-lookup"><button className="text-button" type="button" disabled={websiteLookup.state === "loading"} onClick={() => void lookupWebsite()}>{websiteLookup.state === "loading" ? "Reading website…" : "🔎 Fill from website"}</button>{websiteLookup.message && <small className={websiteLookup.state === "error" ? "website-lookup-error" : ""} role="status">{websiteLookup.message}</small>}</div></div>
@@ -4420,10 +4442,14 @@ function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, 
   );
 }
 
-function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompanyId, currentUserEmail, onClose, onSubmit, onCreateCompany }: { companies: Company[]; sourceOptions: string[]; initiatorOptions: CRMUser[]; initialCompanyId?: string; currentUserEmail: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, photoDataUrl: string) => Promise<boolean>; onCreateCompany?: (name: string, card: OcrResult | null, onCreated: (company: Company) => void) => void }) {
+function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompanyId, currentUserEmail, onClose, onSubmit, onCreateCompany }: { companies: Company[]; sourceOptions: string[]; initiatorOptions: CRMUser[]; initialCompanyId?: string; currentUserEmail: string; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, photoDataUrl: string) => Promise<boolean>; onCreateCompany?: (name: string, card: OcrResult | null, cardImages: string[], onCreated: (company: Company) => void) => void }) {
   const contactCreateDraft = useFormDraft("contact-create");
   const formRef = useRef<HTMLFormElement>(null);
   const cardInputRef = useRef<HTMLInputElement>(null);
+  // Touch devices get a separate button that opens the rear camera directly; desktop browsers ignore `capture`.
+  const cardCameraRef = useRef<HTMLInputElement>(null);
+  const canUseCamera = useMediaQuery("(pointer: coarse)");
+  const cardSideRef = useRef<0 | 1>(0);
   const initialCompany = companies.find((company) => company.id === initialCompanyId) ?? companies[0];
   const [companyId, setCompanyId] = useState(initialCompany?.id ?? "");
   const [companyQuery, setCompanyQuery] = useState(initialCompany?.name ?? "");
@@ -4431,14 +4457,25 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
   const [photoDataUrl, setPhotoDataUrl] = useState("");
   const [imageProcessing, setImageProcessing] = useState(false);
   const [cardScanning, setCardScanning] = useState(false);
-  const [cardResult, setCardResult] = useState<OcrResult | null>(null);
+  // Front and (optionally) back of the card, each with its own recognition.
+  const [cardSides, setCardSides] = useState<CardSide[]>([]);
   const [cardError, setCardError] = useState("");
-  const [businessCardFile, setBusinessCardFile] = useState({ dataUrl: "", name: "" });
+  const [cardDropActive, setCardDropActive] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(contactCreateDraft.restored);
+  const submitAfterCompanyRef = useRef(false);
   const normalizedCurrentUserEmail = currentUserEmail.toLowerCase();
   const defaultInitiator = initiatorOptions.some((user) => user.email.toLowerCase() === normalizedCurrentUserEmail) ? normalizedCurrentUserEmail : "manual";
   const [initiatorChoice, setInitiatorChoice] = useState(defaultInitiator);
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
+  const cardResult = mergeOcrResults(cardSides.map((side) => side.result));
+
+  // "Create contact" with a new company opens the company form first; once the company exists the contact is saved.
+  useEffect(() => {
+    if (!submitAfterCompanyRef.current || !companies.some((company) => company.id === companyId)) return;
+    submitAfterCompanyRef.current = false;
+    formRef.current?.requestSubmit();
+  }, [companies, companyId]);
 
   function selectCompany(value: string) {
     const match = companyByName(companies, value);
@@ -4446,10 +4483,11 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
     setCompanyId(match?.id ?? "");
   }
 
-  function fillField(name: string, value?: string) {
+  function fillField(name: string, value: string | undefined, onlyIfEmpty: boolean) {
     if (!value || !formRef.current) return;
     const element = formRef.current.elements.namedItem(name);
     if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
+      if (onlyIfEmpty && element.value.trim()) return;
       element.value = value;
       element.dispatchEvent(new Event("input", { bubbles: true }));
       element.dispatchEvent(new Event("change", { bubbles: true }));
@@ -4457,32 +4495,33 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
   }
 
   // Opens "New company" over this form; the contact keeps everything entered and gets the new company selected.
-  function createCompany(name: string, card: OcrResult | null = cardResult) {
-    onCreateCompany?.(name.trim(), card, (company) => {
+  function createCompany(name: string, submitAfter = false) {
+    onCreateCompany?.(name.trim(), cardResult, cardSides.map((side) => side.dataUrl), (company) => {
       setCompanyId(company.id);
       setCompanyQuery(company.name);
+      submitAfterCompanyRef.current = submitAfter;
     });
   }
 
-  function applyOcrResult(result: OcrResult) {
+  // The front fills the form; a back side only fills what is still empty.
+  function applyOcrResult(result: OcrResult, merged: OcrResult, onlyIfEmpty: boolean) {
     const { draft } = result;
-    fillField("firstName", draft.first_name);
-    fillField("lastName", draft.last_name);
-    fillField("position", draft.position);
-    fillField("phone", draft.phone);
-    fillField("email", draft.email);
-    fillField("linkedin", draft.linkedin);
-    const match = matchOcrCompany(companies, result);
+    fillField("firstName", draft.first_name, onlyIfEmpty);
+    fillField("lastName", draft.last_name, onlyIfEmpty);
+    fillField("position", draft.position, onlyIfEmpty);
+    fillField("phone", draft.phone, onlyIfEmpty);
+    fillField("email", draft.email, onlyIfEmpty);
+    fillField("linkedin", draft.linkedin, onlyIfEmpty);
+    if (initialCompanyId || (onlyIfEmpty && companies.some((company) => company.id === companyId))) return;
+    const match = matchOcrCompany(companies, merged);
     if (match) {
       setCompanyId(match.id);
       setCompanyQuery(match.name);
-    } else if (draft.company && !initialCompanyId) {
-      // Never leave the previously selected company on a card from another firm;
-      // the recognized name stays visible and submit asks for an existing company.
+    } else if (merged.draft.company) {
+      // Never leave the previously selected company on a card from another firm; the panel
+      // under the scan offers to create it, and "Create contact" does so too.
       setCompanyId("");
-      setCompanyQuery(draft.company);
-      // The card's company is not in the CRM yet: go straight to creating it from the card.
-      createCompany(draft.company, result);
+      setCompanyQuery(merged.draft.company);
     }
   }
 
@@ -4490,6 +4529,10 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
     event.preventDefault();
     if (imageProcessing || cardScanning) return;
     if (!companies.some((company) => company.id === companyId)) {
+      if (onCreateCompany && companyQuery.trim().length >= 2) {
+        createCompany(companyQuery, true);
+        return;
+      }
       setFieldError(event.currentTarget, "companyName", "Select an existing company from the list.");
       return;
     }
@@ -4501,25 +4544,51 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
     setSubmitting(false);
   }
 
-  async function scanCard(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = "";
-    if (!file) return;
+  function chooseCardFile(side: 0 | 1, camera = false) {
+    cardSideRef.current = side;
+    (camera ? cardCameraRef : cardInputRef).current?.click();
+  }
+
+  // Dropped or pasted images go to the front first, then to the back.
+  function takeCardImage(files: FileList | File[] | null | undefined) {
+    const file = Array.from(files ?? []).find((item) => item.type.startsWith("image/"));
+    if (!file) return false;
+    void scanCard(file, cardSides[0] ? 1 : 0);
+    return true;
+  }
+
+  async function scanCard(file: File, side: 0 | 1) {
+    if (cardScanning) return;
+    if (!OCR_CARD_TYPES.includes(file.type)) {
+      setCardError("Use a JPG, PNG, WebP, BMP, or TIFF image of the card.");
+      return;
+    }
     setCardScanning(true);
     setCardError("");
-    setCardResult(null);
     let dataUrl = "";
+    const name = file.name || (side === 0 ? "business-card-front" : "business-card-back");
+    const store = (result: OcrResult | null) => {
+      const next = [...cardSides];
+      next[side] = { dataUrl, name, result };
+      setCardSides(next);
+      return mergeOcrResults(next.map((item) => item.result));
+    };
     try {
       dataUrl = await readFileAsDataUrl(file);
+      // Both sides travel in one contact request, which the server caps (post_max_size=32M).
+      if (dataUrl.length + (cardSides[side === 0 ? 1 : 0]?.dataUrl.length ?? 0) > CARD_IMAGES_MAX_CHARS) {
+        setCardError("The two card photos are too large together. Use smaller photos (about 10 MB each).");
+        return;
+      }
       const body = new FormData();
       body.append("file", file);
-      const response = await apiRequest<{ data: OcrResult }>("/ocr/business-card", { method: "POST", body });
-      setBusinessCardFile({ dataUrl, name: file.name || "business-card" });
-      setCardResult(response.data);
-      applyOcrResult(response.data);
+      // On CPU a phone photo takes up to a minute (two passes for Latin cards); the server allows OCR_TIMEOUT_SECONDS=300.
+      const response = await apiRequest<{ data: OcrResult }>("/ocr/business-card", { method: "POST", body }, "", 300_000);
+      const merged = store(response.data);
+      if (merged) applyOcrResult(response.data, merged, side === 1);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "ocr_no_text" && dataUrl) {
-        setBusinessCardFile({ dataUrl, name: file.name || "business-card" });
+        store(null);
         setCardError("No text was recognized. The card image is attached; enter the contact details manually or try a clearer photo.");
       } else {
         setCardError(apiMessage(caught));
@@ -4529,35 +4598,68 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
     }
   }
 
+  function startOver() {
+    contactCreateDraft.clear();
+    formRef.current?.reset();
+    setDraftRestored(false);
+    setCardSides([]);
+    setCardError("");
+    setCompanyId(initialCompany?.id ?? "");
+    setCompanyQuery(initialCompany?.name ?? "");
+    setSource("");
+    setPhotoDataUrl("");
+    setInitiatorChoice(defaultInitiator);
+  }
+
   const cardCompanyMatch = cardResult ? matchOcrCompany(companies, cardResult) : undefined;
+  const cardCompanyMissing = Boolean(cardResult?.draft.company && !cardCompanyMatch && companyQuery.trim() === cardResult.draft.company.trim() && !companyId);
 
   return (
-    <Modal title="Add contact manually" eyebrow="Contacts" onClose={onClose}>
-      <form ref={formRef} {...contactCreateDraft.formProps} onSubmit={(event) => void submit(event)} className="entity-form contact-entry-form">
-        {OCR_INPUT_ENABLED && <section className="ai-capture-panel field-full">
+    <Modal title="Add contact manually" eyebrow="Contacts" onClose={onClose} closeOnBackdrop={false}>
+      <form ref={formRef} {...contactCreateDraft.formProps} onSubmit={(event) => void submit(event)} onPaste={(event) => { if (OCR_INPUT_ENABLED && takeCardImage(event.clipboardData.files)) event.preventDefault(); }} className="entity-form contact-entry-form">
+        {draftRestored && <div className="draft-restored-note field-full" role="status"><span>Your unsaved entries from the last time were restored.</span><button className="text-button" type="button" onClick={startOver}>Start over</button></div>}
+        {OCR_INPUT_ENABLED && <section
+          className={`ai-capture-panel field-full${cardDropActive ? " card-drop-active" : ""}`}
+          onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setCardDropActive(true); } }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setCardDropActive(false); }}
+          onDrop={(event) => { event.preventDefault(); setCardDropActive(false); if (!takeCardImage(event.dataTransfer.files)) setCardError("Drop an image of the card: JPG, PNG, WebP, BMP, or TIFF."); }}
+        >
           <div>
             <b>Scan business card</b>
-            <small>Photo or scan up to 20 MB → PaddleOCR PP-OCRv5 → draft fields. Review everything before saving.</small>
+            <small>Drop a photo here, paste it with Ctrl+V, or choose a file (up to 20 MB); PaddleOCR PP-OCRv5 fills the draft fields. Add the back side to fill in what the front lacks. Review everything before saving.</small>
           </div>
           <div className="ai-capture-actions">
-            <button className="secondary-button" type="button" disabled={cardScanning} onClick={() => cardInputRef.current?.click()}>{cardScanning ? "Scanning…" : "📷 Scan / upload card"}</button>
-            <input ref={cardInputRef} className="image-input" type="file" accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff" capture="environment" onChange={(event) => void scanCard(event)} />
+            {cardSides.length < 2 && canUseCamera && <button className="secondary-button" type="button" disabled={cardScanning} onClick={() => chooseCardFile(cardSides[0] ? 1 : 0, true)}>{cardScanning ? "Scanning…" : cardSides[0] ? "📸 Photo of back side" : "📸 Take photo"}</button>}
+            {cardSides.length < 2 && <button className="secondary-button" type="button" disabled={cardScanning} onClick={() => chooseCardFile(cardSides[0] ? 1 : 0)}>{cardScanning ? "Scanning…" : cardSides[0] ? "📷 Add back side" : "📷 Scan / upload card"}</button>}
+            <input ref={cardCameraRef} className="image-input" type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void scanCard(file, cardSideRef.current); }} />
+            <input ref={cardInputRef} className="image-input" type="file" accept={OCR_CARD_TYPES.join(",")} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void scanCard(file, cardSideRef.current); }} />
           </div>
+          {cardSides.length > 0 && <div className="card-sides">{cardSides.map((side, index) => <div className="card-side" key={index}>
+            <img src={side.dataUrl} alt={index === 0 ? "Front of the card" : "Back of the card"} />
+            <div>
+              <b>{index === 0 ? "Front" : "Back"}</b>
+              <small>{side.result ? `${side.result.confidence} confidence` : "No text recognized"}</small>
+              <span>
+                <button className="text-button" type="button" disabled={cardScanning} onClick={() => chooseCardFile(index === 0 ? 0 : 1)}>Replace photo</button>
+                {index === 1 && <> · <button className="text-button" type="button" disabled={cardScanning} onClick={() => setCardSides((current) => current.slice(0, 1))}>Remove</button></>}
+              </span>
+            </div>
+          </div>)}</div>}
           {cardError && <div className="form-error" role="alert">{cardError}</div>}
           {cardResult && <div className="ocr-preview" aria-live="polite">
             <b>Recognized text · {cardResult.confidence} confidence</b>
             <ul className="ocr-lines">{(cardResult.lines ?? cardResult.raw_text.split("\n").map((text) => ({ text, type: "other" as const }))).map((line, index) => <li key={`${index}-${line.text}`} className={OCR_FILLED_LINE_TYPES.has(line.type) ? "ocr-line-filled" : ""}><span className={`ocr-tag ocr-tag-${line.type}`}>{OCR_LINE_LABELS[line.type] ?? OCR_LINE_LABELS.other}</span><span>{line.text}</span></li>)}</ul>
             <small>Highlighted lines were filled into the form; the rest is kept for reference.</small>
-            {cardCompanyMatch
-              ? <small>Company matched to “{cardCompanyMatch.name}” in the CRM.</small>
-              : cardResult.draft.company && <div className="ocr-company-missing"><small>Company “{cardResult.draft.company}” was recognized, but it is not in the CRM list yet.</small>{onCreateCompany && <button className="secondary-button" type="button" onClick={() => createCompany(cardResult.draft.company ?? "")}>＋ Create company from card</button>}</div>}
+            {cardCompanyMatch && <small>Company matched to “{cardCompanyMatch.name}” in the CRM.</small>}
           </div>}
         </section>}
-        {OCR_INPUT_ENABLED && <input name="businessCardDataUrl" type="hidden" value={businessCardFile.dataUrl} />}
-        {OCR_INPUT_ENABLED && <input name="businessCardFileName" type="hidden" value={businessCardFile.name} />}
+        {OCR_INPUT_ENABLED && <input name="businessCardDataUrl" type="hidden" value={cardSides[0]?.dataUrl ?? ""} />}
+        {OCR_INPUT_ENABLED && <input name="businessCardFileName" type="hidden" value={cardSides[0]?.name ?? ""} />}
+        {OCR_INPUT_ENABLED && <input name="businessCardBackDataUrl" type="hidden" value={cardSides[1]?.dataUrl ?? ""} />}
+        {OCR_INPUT_ENABLED && <input name="businessCardBackFileName" type="hidden" value={cardSides[1]?.name ?? ""} />}
         <ImageField label="Contact photo" name="contactPhoto" value={photoDataUrl} onChange={setPhotoDataUrl} onProcessingChange={setImageProcessing} />
         <CompanyCombobox inputId="contact-create-company" label="Company *" companies={companies} value={companyQuery} onChange={selectCompany} required />
-        {onCreateCompany && !companyId && companyQuery.trim().length >= 2 && !(cardResult && !cardCompanyMatch && companyQuery.trim() === cardResult.draft.company?.trim()) && <div className="company-missing-action field-full"><small>“{companyQuery.trim()}” is not in the CRM.</small><button className="text-button" type="button" onClick={() => createCompany(companyQuery)}>＋ Create this company{cardResult ? " from the scanned card" : ""}</button></div>}
+        {onCreateCompany && !companyId && companyQuery.trim().length >= 2 && <div className="company-missing-action field-full"><small>{cardCompanyMissing ? <>New company from the card: <b>{companyQuery.trim()}</b>.</> : <>“{companyQuery.trim()}” is not in the CRM yet.</>} “Create contact” first asks you to confirm the company details, then saves both.</small><button className="text-button" type="button" onClick={() => createCompany(companyQuery)}>Review company details</button></div>}
         <label className="field"><span>First name *</span><input name="firstName" required minLength={2} maxLength={100} autoFocus /></label>
         <label className="field"><span>Last name</span><input name="lastName" maxLength={100} /></label>
         <label className="field"><span>Position</span><input name="position" maxLength={150} placeholder="External Relations Director" /></label>
@@ -4651,7 +4753,7 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
   }
 
   return (
-    <Modal title="New task" eyebrow="Activity" onClose={onClose}>
+    <Modal title="New task" eyebrow="Activity" onClose={onClose} closeOnBackdrop={false}>
       <form {...taskCreateDraft.formProps} onSubmit={(event) => { if (quickContactOpen) { event.preventDefault(); setQuickError("Save or cancel the quick contact before creating the task."); } else if (!companies.some((company) => company.id === companyId)) { event.preventDefault(); setFieldError(event.currentTarget, "companyName", "Select an existing company from the list."); } else { setSubmitting(true); setRetry(false); void onSubmit(event).then((saved) => { if (saved) { taskCreateDraft.clear(); clearNoteDraft(); } setRetry(!saved); }).finally(() => setSubmitting(false)); } }} className="entity-form">
         <input name="companyId" type="hidden" value={companyId} />
         <label className="field field-full"><span>Task title *</span><input name="title" list="task-title-options" required minLength={3} maxLength={255} autoFocus placeholder="Choose or enter a task title" /><datalist id="task-title-options"><option value="Follow Up" /><option value="Introductory meeting" /></datalist></label>
@@ -4696,7 +4798,7 @@ function UserForm({ onClose, onSubmit }: { onClose: () => void; onSubmit: (event
   const [submitting, setSubmitting] = useState(false);
   const [retry, setRetry] = useState(false);
   return (
-    <Modal title="New user" eyebrow="Team access" onClose={onClose}>
+    <Modal title="New user" eyebrow="Team access" onClose={onClose} closeOnBackdrop={false}>
       <form {...userCreateDraft.formProps} className="entity-form" onSubmit={(event) => { setSubmitting(true); setRetry(false); void onSubmit(event).then((saved) => { if (saved) userCreateDraft.clear(); setRetry(!saved); }).finally(() => setSubmitting(false)); }}>
         <label className="field field-full"><span>Full name *</span><input name="name" required minLength={2} maxLength={120} autoFocus placeholder="First and last name" /></label>
         <label className="field field-full"><span>Work email *</span><input name="email" type="email" required maxLength={254} placeholder="name@company.com" /></label>

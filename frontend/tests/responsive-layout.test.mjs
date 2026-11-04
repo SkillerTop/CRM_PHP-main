@@ -82,7 +82,7 @@ async function readBuiltAssets() {
 test("keeps Lookups controls contained at the 360 px and 768 px breakpoints", async () => {
   const [component, css] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
   ]);
 
   assert.match(component, /className="lookup-add-form"[\s\S]*?<span>New option<\/span>[\s\S]*?name="lookupValue"[\s\S]*?Add option/);
@@ -129,7 +129,7 @@ test("keeps Lookups controls contained at the 360 px and 768 px breakpoints", as
 });
 
 test("contains wide content inside its own responsive scroller", async () => {
-  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
 
   const appShell = blockAfter(css, ".app-shell");
   assert.match(appShell, /min-width:\s*0/);
@@ -144,10 +144,7 @@ test("contains wide content inside its own responsive scroller", async () => {
   assert.match(tableScroll, /overflow-x:\s*auto/);
   assert.match(tableScroll, /overflow-y:\s*hidden/);
 
-  const kanban = blockAfter(css, ".kanban");
-  assert.match(kanban, /width:\s*100%/);
-  assert.match(kanban, /overflow-x:\s*auto/);
-  assert.match(kanban, /overscroll-behavior-x:\s*contain/);
+  assert.doesNotMatch(css, /\.(?:kanban|pipeline-card|pipeline-stage-select)\b/, "Removed board styles must stay out of the shipped stylesheet");
 
   const mobile = blockAfter(css, "@media (max-width: 700px)");
   assert.match(mobile, /\.modal-backdrop\s*\{[^}]*align-items:\s*stretch[^}]*padding:\s*0/s);
@@ -157,7 +154,7 @@ test("contains wide content inside its own responsive scroller", async () => {
 test("reflows all nine Companies fields into contained cards below 1280 px", async () => {
   const [component, css] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
   ]);
   const companiesView = sectionBetween(component, "function Companies(", "function Contacts(");
 
@@ -253,7 +250,7 @@ test("keeps Contacts, Users, and Audit card rows fully labelled", async () => {
 });
 
 test("keeps the Companies page contained at 360, 768, 901, 1024, and 1280 px", async () => {
-  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
   const viewportContract = [
     { width: 360, mode: "cards", cardColumns: 1 },
     { width: 768, mode: "cards", cardColumns: 2 },
@@ -316,7 +313,7 @@ test("keeps the Companies page contained at 360, 768, 901, 1024, and 1280 px", a
 });
 
 test("keeps the desktop header and session footer pinned while records scroll", async () => {
-  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
   const crmApp = blockAfter(css, ".crm-app");
   const topbar = blockAfter(css, ".topbar");
   const appShell = blockAfter(css, ".app-shell");
@@ -344,7 +341,7 @@ test("keeps the desktop header and session footer pinned while records scroll", 
 test("removes the Priority panel and keeps Recent changes contained", async () => {
   const [component, css] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
   ]);
 
   assert.doesNotMatch(component, /Priority tasks|priority-panel|priority-row|dashboard-grid/);
@@ -363,9 +360,10 @@ test("removes the Priority panel and keeps Recent changes contained", async () =
 });
 
 test("keeps seeded statuses while allowing Admin to manage the workflow", async () => {
-  const [component, css] = await Promise.all([
+  const [component, css, dashboardController] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("../backend/src/Controller/DashboardController.php", root), "utf8"),
   ]);
   const expectedStatuses = [
     "New Lead",
@@ -380,19 +378,12 @@ test("keeps seeded statuses while allowing Admin to manage the workflow", async 
   assert.deepEqual(seededStatuses, expectedStatuses);
   assert.equal(new Set(seededStatuses).size, 6, "Relationship statuses must be unique");
 
-  const initialCompanies = sectionBetween(component, "const INITIAL_COMPANIES: Company[] = [", "const INITIAL_CONTACTS");
-  const initialCompanyStatuses = [...initialCompanies.matchAll(/\bstatus:\s*"([^"]+)"/g)].map((match) => match[1]);
-  assert.ok(initialCompanyStatuses.length > 0, "Initial companies must include relationship statuses");
-  for (const status of initialCompanyStatuses) {
-    assert.ok(expectedStatuses.includes(status), `Initial company uses an unsupported relationship status: ${status}`);
-  }
+  assert.doesNotMatch(component, /const INITIAL_COMPANIES:/, "Demo company data must stay out of the app");
 
-  const dashboard = sectionBetween(component, "function Dashboard(", "function Pipeline(");
-  assert.match(dashboard, /const stageCounts = statusOrder\.map\(/);
+  const dashboard = sectionBetween(component, "function Dashboard(", "function Companies(");
+  assert.match(dashboard, /const stageCounts = summary\?\.funnel \?\? \[\]/);
   assert.match(dashboard, /\{stageCounts\.map\(\(item\) =>/);
-  const stageCountsDeclaration = dashboard.match(/const stageCounts = ([^;\n]+);/)?.[1] ?? "";
-  assert.match(stageCountsDeclaration, /^statusOrder\.map\(/);
-  assert.match(stageCountsDeclaration, /\.filter\(\(item\) => item\.count > 0\)/, "Dashboard must hide empty statuses");
+  assert.match(dashboardController, /HAVING COUNT\(c\.id\) > 0 ORDER BY s\.sort_order/, "Dashboard must hide empty statuses and preserve lookup order");
 
   const lookups = sectionBetween(component, "function Lookups(", "function Users(");
   assert.doesNotMatch(lookups, /fixedRelationshipWorkflow|Five-status workflow/);
@@ -409,18 +400,12 @@ test("keeps seeded statuses while allowing Admin to manage the workflow", async 
   assert.match(tablet, /\.funnel-list\s*\{[^}]*grid-template-columns:\s*1fr/s);
 });
 
-test("keeps Pipeline status changes explicit and disables card drag-and-drop", async () => {
+test("removes the obsolete Relationship Board implementation", async () => {
   const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
-  const pipeline = sectionBetween(component, "function Pipeline(", "function Companies(");
   const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
 
-  assert.doesNotMatch(pipeline, /draggable=/);
-  assert.doesNotMatch(pipeline, /onDragStart|onDragEnd|onDragOver|onDrop|dataTransfer|draggedCompanyId/);
-  assert.doesNotMatch(pipeline, /Drag a company card/);
-  assert.match(pipeline, /\{canMove && <select className="pipeline-stage-select" value=\{company\.status\}[\s\S]*?onChange=\{\(event\) => \{ event\.stopPropagation\(\); moveCompany\(company\.id, event\.target\.value\); \}\}/);
-  assert.match(pipeline, /\{items\.length === 0 && <div className="kanban-empty">No companies<\/div>\}/);
-  assert.match(component, /function Pipeline\(/);
-  assert.doesNotMatch(app, /<Pipeline|view === "pipeline"/);
+  assert.doesNotMatch(component, /function Pipeline\(|function moveCompany\(/);
+  assert.doesNotMatch(app, /<Pipeline|view === "pipeline"|navigate\("pipeline"\)/);
 });
 
 test("keeps Activity contact creation permissioned and selects quick-created contacts", async () => {
@@ -563,7 +548,7 @@ test("persists Low task priority and migrates legacy Normal values", async () =>
 test("validates, processes, previews, and wires profile and entity images", async () => {
   const [component, css] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
   ]);
   const identity = await readFile(new URL("src/shared/components/identity.tsx", root), "utf8");
   const imageHelpers = `${identity}\n${sectionBetween(component, "const ACCEPTED_IMAGE_TYPES", "const INFO_TEXT")}`;
@@ -613,7 +598,7 @@ test("validates, processes, previews, and wires profile and entity images", asyn
   assert.match(contactForm, /async function submit\(event: FormEvent<HTMLFormElement>\)[\s\S]*?if \(imageProcessing \|\| cardScanning\) return;[\s\S]*?const saved = await onSubmit\(event, photoDataUrl\)/);
   assert.match(contactForm, /onSubmit=\{\(event\) => void submit\(event\)\}/);
   assert.match(contactForm, /<ImageField label="Contact photo"[^>]*value=\{photoDataUrl\}[^>]*onChange=\{setPhotoDataUrl\}/);
-  assert.match(contactForm, /apiRequest<\{ data: OcrResult \}>\("\/ocr\/business-card", \{ method: "POST", body \}\)/);
+  assert.match(contactForm, /apiRequest<\{ data: OcrResult \}>\("\/ocr\/business-card", \{ method: "POST", body \}, "", 300_000\)/);
   assert.match(component, /const OCR_INPUT_ENABLED = true/);
   assert.match(contactForm, /PaddleOCR PP-OCRv5/);
   assert.match(contactForm, /Review everything before saving/);
@@ -643,7 +628,7 @@ test("validates, processes, previews, and wires profile and entity images", asyn
 test("provides contained 44 px page scroll controls and suppresses them behind overlays", async () => {
   const [component, css] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
   ]);
   const controls = sectionBetween(component, "function PageScrollControls(", "const INFO_TEXT");
 
@@ -669,7 +654,9 @@ test("provides contained 44 px page scroll controls and suppresses them behind o
 
 test("centralizes overlay scroll locking and traps keyboard focus inside modals", async () => {
   const component = await readFile(new URL("src/app/CRMApp.tsx", root), "utf8");
+  const focusTrap = sectionBetween(component, "function useDialogFocusTrap(", "function Modal(");
   const modal = sectionBetween(component, "function Modal(", "function AuthScreen(");
+  const auth = sectionBetween(component, "function AuthScreen(", "function readFileAsDataUrl(");
   const app = sectionBetween(component, "export function CRMApp()", "function Dashboard(");
 
   assert.match(app, /const overlayOpen = Boolean\(modal \|\| selectedCompany \|\| selectedContact \|\| selectedTask \|\| selectedUser \|\| \(sidebarOpen && isMobileNavigation\)\)/);
@@ -681,33 +668,36 @@ test("centralizes overlay scroll locking and traps keyboard focus inside modals"
   assert.doesNotMatch(modal, /style\.overflow/, "Modal must rely on the root overlay lock");
 
   assert.match(modal, /const dialogRef = useRef<HTMLElement>\(null\)/);
-  assert.match(modal, /const onCloseRef = useRef\(onClose\)/);
-  assert.match(modal, /onCloseRef\.current = onClose;[\s\S]*?\}, \[onClose\]\)/);
-  assert.match(modal, /const focusableSelector = ['"]button:not\(:disabled\)/);
-  assert.match(modal, /const initialFocusFrame = window\.requestAnimationFrame\(\(\) => \{[\s\S]*?querySelector<HTMLElement>\("\[autofocus\]"\)[\s\S]*?\(preferred \?\? first\)\?\.focus\(\)/);
-  assert.match(modal, /onCloseRef\.current\(\)/);
-  assert.match(modal, /event\.key !== "Tab" \|\| !dialogRef\.current/);
-  assert.match(modal, /querySelectorAll<HTMLElement>\(focusableSelector\)/);
-  assert.match(modal, /event\.shiftKey && document\.activeElement === first[\s\S]*?last\.focus\(\)/);
-  assert.match(modal, /!event\.shiftKey && document\.activeElement === last[\s\S]*?first\.focus\(\)/);
-  assert.match(modal, /window\.cancelAnimationFrame\(initialFocusFrame\)/);
-  assert.match(modal, /anotherModalIsOpen = Boolean\(document\.querySelector\('\[role="dialog"\]\[aria-modal="true"\]'\)\)/);
-  assert.match(modal, /if \(!anotherModalIsOpen && previousFocus\?\.isConnected\) previousFocus\.focus\(\)/);
-  assert.match(modal, /\}, \[\]\);/, "The keyboard/focus lifecycle must mount only once");
+  assert.match(modal, /useDialogFocusTrap\(dialogRef, onClose\)/);
+  assert.match(auth, /useDialogFocusTrap\(recoveryDialogRef, \(\) => setRecoveryOpen\(false\), recoveryOpen, recoveryTriggerRef\)/);
+  assert.match(auth, /ref=\{recoveryTriggerRef\}[\s\S]*?Forgot password\?/);
+  assert.match(auth, /ref=\{recoveryDialogRef\}[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"/);
+  assert.match(focusTrap, /const onCloseRef = useRef\(onClose\)/);
+  assert.match(focusTrap, /onCloseRef\.current = onClose;[\s\S]*?\}, \[onClose\]\)/);
+  assert.match(focusTrap, /const focusableSelector = ['"]button:not\(:disabled\)/);
+  assert.match(focusTrap, /const initialFocusFrame = window\.requestAnimationFrame\(\(\) => \{[\s\S]*?querySelector<HTMLElement>\("\[data-dialog-initial-focus\], \[autofocus\]"\)[\s\S]*?\(preferred \?\? first\)\?\.focus\(\)/);
+  assert.match(focusTrap, /onCloseRef\.current\(\)/);
+  assert.match(focusTrap, /event\.key !== "Tab" \|\| !dialogRef\.current/);
+  assert.match(focusTrap, /querySelectorAll<HTMLElement>\(focusableSelector\)/);
+  assert.match(focusTrap, /event\.shiftKey && document\.activeElement === first[\s\S]*?last\.focus\(\)/);
+  assert.match(focusTrap, /!event\.shiftKey && document\.activeElement === last[\s\S]*?first\.focus\(\)/);
+  assert.match(focusTrap, /window\.cancelAnimationFrame\(initialFocusFrame\)/);
+  assert.match(focusTrap, /\[\.\.\.focusHistory\]\.reverse\(\)\.find/);
+  assert.match(app, /document\.addEventListener\("focusin", rememberFocus, true\)/);
+  assert.match(focusTrap, /if \(previousFocus\?\.isConnected && \(!remainingDialog \|\| remainingDialog\.contains\(previousFocus\)\)\) previousFocus\.focus\(\)/);
+  assert.match(focusTrap, /\}, \[active, dialogRef, returnFocusRef\]\);/);
   assert.match(modal, /ref=\{dialogRef\}[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"/);
 });
 
 test("reserves bottom clearance for page controls at every viewport width", async () => {
-  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
-  const selector = ".crm-app:has(.page-scroll-controls) .main-content";
-  const reserve = blockAfter(css, selector);
-  const pixels = Number(reserve.match(/padding-bottom:\s*calc\((\d+)px/)?.[1]);
-
-  assert.ok(Number.isFinite(pixels) && pixels >= 132, "Page content must clear both floating controls and their gaps");
-  assert.match(reserve, /env\(safe-area-inset-bottom,\s*0px\)/);
-  const reserveIndex = css.indexOf(selector);
-  const reserveClose = css.indexOf("}", reserveIndex);
-  assert.doesNotMatch(css.slice(reserveClose + 1), /\.main-content\s*\{[^}]*padding-bottom\s*:/s, "Later media rules must not remove the all-width control clearance");
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
+  const reserves = [...css.matchAll(/\.crm-app:has\(\.page-scroll-controls\) \.main-content\s*\{([^}]*)\}/g)];
+  assert.ok(reserves.length >= 2, "Desktop and mobile clearances must be defined");
+  for (const [, reserve] of reserves) {
+    const pixels = Number(reserve.match(/padding-bottom:\s*calc\((\d+)px/)?.[1]);
+    assert.ok(Number.isFinite(pixels) && pixels >= 132, "Page content must clear both floating controls and their gaps");
+    assert.match(reserve, /env\(safe-area-inset-bottom,\s*0px\)/);
+  }
 });
 
 test("derives each company next activity from the earliest open task", async () => {
@@ -719,9 +709,6 @@ test("derives each company next activity from the earliest open task", async () 
   assert.match(helper, /\.sort\(\(a, b\) => a\.deadline\.localeCompare\(b\.deadline\)\)\[0\]/);
   assert.match(helper, /return nextTask \? [^\n]*formatDateTime\(nextTask\.deadline\)[^\n]* : "No open activity"/);
 
-  const pipeline = sectionBetween(component, "function Pipeline(", "function Companies(");
-  assert.match(pipeline, /Next activity: \{nextActivityLabel\(tasks, company\.id\)\}/);
-  assert.match(pipeline, /No open activity/);
   const companyDetail = sectionBetween(component, "function CompanyDetail(", "function ContactDetail(");
   assert.match(companyDetail, /<small>Next activity<\/small><b>\{nextActivityLabel\(tasks\)\}<\/b>/);
 });
@@ -784,7 +771,7 @@ test("sends profile changes to server-side validation", async () => {
 });
 
 test("keeps primary mobile CRM copy readable at 360 px", async () => {
-  const css = await readFile(new URL("src/styles/globals.css", root), "utf8");
+  const css = await readFile(new URL("app/globals.css", root), "utf8");
   const phone = blocksAfter(css, "@media (max-width: 700px)").join("\n");
 
   assert.match(phone, /\.crm-app\s*\{[^}]*font-size:\s*15px[^}]*line-height:\s*1\.45/s);
@@ -830,10 +817,7 @@ test("ships the Lookups, Dashboard, and workflow containment rules in the compil
   assert.match(builtTableScroll, /max-width:100%/);
   assert.match(builtTableScroll, /overflow:(?:auto hidden|auto)(?:;|$)/);
 
-  const builtKanban = blockAfter(builtCss, ".kanban{");
-  assert.match(builtKanban, /width:100%/);
-  assert.match(builtKanban, /overflow-x:auto/);
-  assert.match(builtKanban, /overscroll-behavior-x:contain/);
+  assert.doesNotMatch(builtCss, /\.(?:kanban|pipeline-card|pipeline-stage-select)\b/);
 });
 
 test("ships the Companies card breakpoint and containment rules in compiled CSS", async () => {
@@ -917,7 +901,7 @@ test("covers the v3.1 audit gaps in the integrated frontend", async () => {
 test("omits location punctuation when a company city is empty", async () => {
   const app = await readFile(new URL("../src/app/CRMApp.tsx", import.meta.url), "utf8");
   assert.match(app, /function companyLocation[\s\S]*?filter\(\(value\) => value\.trim\(\) !== ""\)\.join\(", "\)/);
-  assert.match(app, /<p>\{companyLocation\(company\)\}<\/p>/);
+  assert.match(app, /<small>\{companyLocation\(company\) \|\| "Location not specified"\}<\/small>/);
   assert.doesNotMatch(app, /\{company\.city\}, \{company\.country\}/);
 });
 
@@ -938,28 +922,58 @@ test("selects the signed-in user's linked manager for new records", async () => 
   assert.match(app, /<select name="owner" required value=\{responsibleManager\}/);
 });
 
-test("reloads persisted contact photos from the paginated API", async () => {
-  const controller = await readFile(new URL("../backend/src/Controller/ContactController.php", root), "utf8");
-  const listSelections = controller.match(/k\.manager_lookup_id, k\.initiated_by_text, k\.photo_data_url/g) ?? [];
-  assert.equal(listSelections.length, 2, "Both contact list queries must return the persisted photo_data_url column");
+test("loads persisted contact photos separately from paginated JSON", async () => {
+  const [controller, mapper, routes, app] = await Promise.all([
+    readFile(new URL("../backend/src/Controller/ContactController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8"),
+    readFile(new URL("../backend/src/Http/Routes.php", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+  ]);
+  assert.equal((controller.match(/\(k\.photo_data_url IS NOT NULL\) AS has_photo/g) ?? []).length, 2);
+  assert.match(mapper, /'photo_data_url' => \$row\['photo_data_url'\] \?\? \(!empty\(\$row\['has_photo'\]\)/);
+  assert.match(routes, /GET', '\/api\/contacts\/\{id\}\/photo'/);
+  assert.match(app, /contact\.photoDataUrl\?\.startsWith\("\/api\/"\) \? \{\} : \{ photo_data_url:/);
 });
 
-test("reloads persisted company logos from the paginated API", async () => {
-  const controller = await readFile(new URL("../backend/src/Controller/CompanyController.php", root), "utf8");
-  const mapper = await readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8");
-  assert.match(controller, /c\.manager_lookup_id, c\.last_contact_date, c\.website, c\.linkedin, c\.nda_status, c\.logo_data_url, c\.description/);
-  assert.match(mapper, /'logo_data_url' => \$row\['logo_data_url'\] \?\? null/);
+test("loads persisted company logos separately from paginated JSON", async () => {
+  const [controller, mapper, routes, app] = await Promise.all([
+    readFile(new URL("../backend/src/Controller/CompanyController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8"),
+    readFile(new URL("../backend/src/Http/Routes.php", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+  ]);
+  assert.match(controller, /\(c\.logo_data_url IS NOT NULL\) AS has_logo/);
+  assert.match(mapper, /'logo_data_url' => \$row\['logo_data_url'\] \?\? \(!empty\(\$row\['has_logo'\]\)/);
+  assert.match(routes, /GET', '\/api\/companies\/\{id\}\/logo'/);
+  assert.match(app, /company\.logoDataUrl\?\.startsWith\("\/api\/"\) \? \{\} : \{ logo_data_url:/);
+});
+
+test("keeps profile photos out of session and bootstrap JSON", async () => {
+  const [authContext, auth, bootstrap, users, routes, app] = await Promise.all([
+    readFile(new URL("../backend/src/Security/AuthContext.php", root), "utf8"),
+    readFile(new URL("../backend/src/Controller/AuthController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Controller/AppController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Controller/UserController.php", root), "utf8"),
+    readFile(new URL("../backend/src/Http/Routes.php", root), "utf8"),
+    readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
+  ]);
+  assert.match(authContext, /\(u\.photo_data_url IS NOT NULL\) AS has_photo/);
+  assert.match(auth, /\(photo_data_url IS NOT NULL\) AS has_photo/);
+  assert.match(bootstrap, /\(photo_data_url IS NOT NULL\) AS has_photo/);
+  assert.match(users, /public function photo\(int \$id\): never[\s\S]*?requireAdmin\(\)[\s\S]*?SELECT photo_data_url FROM users/);
+  assert.match(routes, /GET', '\/api\/users\/\{id\}\/photo'/);
+  assert.match(app, /nextIdentity\.photoDataUrl\?\.startsWith\("\/api\/"\) \? \{\} : \{ photo_data_url:/);
 });
 
 test("covers the requested company, dashboard, NDA, and linked-record improvements", async () => {
   const [app, css, controller, mapper, migration] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("../backend/src/Controller/CompanyController.php", root), "utf8"),
     readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8"),
     readFile(new URL("../backend/database/migrations/008_requested_crm_updates.sql", root), "utf8"),
   ]);
-  const dashboard = sectionBetween(app, "function Dashboard(", "function Pipeline(");
+  const dashboard = sectionBetween(app, "function Dashboard(", "function Companies(");
   const companies = sectionBetween(app, "function Companies(", "function Contacts(");
   const companyDetail = sectionBetween(app, "function CompanyDetail(", "function ContactDetail(");
   const taskForm = sectionBetween(app, "function TaskForm(", "function UserForm(");
@@ -998,7 +1012,7 @@ test("uses a three-column contact information grid and combines source with its 
 test("groups activities into company task sequences without parent tasks", async () => {
   const [app, css, controller, mapper, migration] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("../backend/src/Controller/TaskController.php", root), "utf8"),
     readFile(new URL("../backend/src/Domain/EntityMapper.php", root), "utf8"),
     readFile(new URL("../backend/database/migrations/009_task_threads.sql", root), "utf8"),
@@ -1024,7 +1038,7 @@ test("groups activities into company task sequences without parent tasks", async
 test("covers inline CRM updates, editable comments, task defaults, countries, and Black List", async () => {
   const [app, css, taskController, routes, upload, migration] = await Promise.all([
     readFile(new URL("src/app/CRMApp.tsx", root), "utf8"),
-    readFile(new URL("src/styles/globals.css", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("../backend/src/Controller/TaskController.php", root), "utf8"),
     readFile(new URL("../backend/src/Http/Routes.php", root), "utf8"),
     readFile(new URL("../backend/src/Support/UploadedFile.php", root), "utf8"),
@@ -1167,9 +1181,13 @@ test("creates missing companies from scanned cards and fills them from the compa
     readFile(new URL("../backend/src/Domain/CompanyWebsiteLookupService.php", root), "utf8"),
   ]);
 
-  // Contact form → stacked "New company from business card" → back with the company selected.
-  assert.match(app, /createCompany\(draft\.company, result\)/);
-  assert.match(app, /prefill: companyPrefillFromCard\(name, card, countries\)/);
+  // Contact form → "Create contact" with an unknown company → stacked "New company from business card"
+  // → back with the company selected, and the contact is saved.
+  assert.match(app, /createCompany\(companyQuery, true\)/);
+  assert.match(app, /submitAfterCompanyRef\.current[\s\S]*?formRef\.current\?\.requestSubmit\(\)/);
+  assert.match(app, /prefill: companyPrefillFromCard\(name, card, countries, companyTypeOptions, cardImages\)/);
+  assert.match(app, /<option value="" disabled>Select a type…<\/option>/);
+  assert.match(app, /closeOnBackdrop \? onClose\(\) : setNudged\(true\)/);
   assert.match(app, /addCompany\(event, logoDataUrl, \(company\) => \{ cardCompany\.onCreated\(company\); setCardCompany\(null\); \}\)/);
   assert.match(app, /if \(dialogs\[dialogs\.length - 1\] !== dialogRef\.current\) return;/);
 

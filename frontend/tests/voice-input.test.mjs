@@ -6,6 +6,7 @@ import en from "dictionary-en";
 import ru from "dictionary-ru";
 import uk from "dictionary-uk";
 import { findSpellingIssues, replaceSpellingIssue } from "../src/shared/utils/spellcheck.ts";
+import { retryableCachedPromise } from "../src/shared/utils/retryable-promise-cache.ts";
 import {
   clearSecureVoiceDraft,
   clearVoiceDraft,
@@ -81,6 +82,24 @@ test("stores voice drafts in encrypted account-scoped cookies", async () => {
   assert.equal(await readSecureVoiceDraft("account-42", "voice:task-comment", target, storage, 2_000), null);
 });
 
+test("retries a failed dictionary load and shares successful loads", async () => {
+  const cache = new Map();
+  let attempts = 0;
+  const load = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary network failure");
+    return "dictionary";
+  };
+  const first = retryableCachedPromise(cache, "en", load);
+  const concurrent = retryableCachedPromise(cache, "en", load);
+  assert.strictEqual(first, concurrent);
+  await assert.rejects(Promise.all([first, concurrent]), /temporary network failure/);
+  assert.equal(cache.has("en"), false);
+  assert.equal(await retryableCachedPromise(cache, "en", load), "dictionary");
+  assert.equal(await retryableCachedPromise(cache, "en", load), "dictionary");
+  assert.equal(attempts, 2);
+});
+
 test("finds and replaces spelling errors in Ukrainian, Russian, and English text", () => {
   const checkers = { en: nspell(en), ru: nspell(ru), uk: nspell(uk) };
   const text = "Нужно соглосовать детали. Треба узгодити документи. Pleese confirm.";
@@ -136,7 +155,7 @@ test("exposes voice recording in company, task, and comment forms", async () => 
   assert.match(voice, /className={`spellcheck-panel/);
   assert.match(voice, /replaceSpellingIssue\(value, issue, suggestion\)/);
   assert.match(draftHook, /readSecureVoiceDraft\(scope, secureKey\)/);
-  assert.match(draftHook, /writeSecureVoiceDraft\(scope, secureKey, draft\.value\)/);
+  assert.match(draftHook, /writeSecureVoiceDraft\(scope, secureKey, currentDraft\.value\)/);
   assert.doesNotMatch(app, /<VoiceTextTools\b/);
   assert.match(app, /shared\/components\/voice-input/);
   assert.equal((app.match(/<VoiceInputButton\b/g) ?? []).length, 5);

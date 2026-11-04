@@ -56,4 +56,10 @@ foreach ([
     }
 }
 
+// Without ext-curl responses are read from a socket: chunked bodies are decoded there.
+$dechunk = (new ReflectionClass($client))->getMethod('dechunk');
+if (($actual = $dechunk->invoke($client, "5\r\nHello\r\n7;ext=1\r\n, world\r\n0\r\n\r\n")) !== 'Hello, world') {
+    throw new RuntimeException("Chunked body decoded as {$actual}");
+}
+
 echo "Safe HTTP client checks passed.\n";

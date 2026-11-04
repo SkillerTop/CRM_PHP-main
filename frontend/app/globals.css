@@ -1656,7 +1656,6 @@ button:disabled {
   text-align: right;
 }
 
-.page-actions-row,
 .activity-toolbar {
   display: flex;
   align-items: center;
@@ -1673,180 +1672,6 @@ button:disabled {
   line-height: 1.55;
 }
 
-.legend {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  color: var(--muted);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.legend span {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.legend-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.legend-dot.hot {
-  background: #4fbd7e;
-}
-
-.legend-dot.quiet {
-  background: #b4c0c6;
-}
-
-.kanban {
-  display: flex;
-  gap: 12px;
-  width: 100%;
-  padding-bottom: 16px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-color: #b8c9d1 transparent;
-}
-
-.kanban-column {
-  flex: 0 0 244px;
-  width: 244px;
-  min-height: 520px;
-  padding: 11px;
-  background: #eaf0f3;
-  border: 1px solid #dce6eb;
-  border-radius: 12px;
-}
-
-.kanban-column > header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  min-height: 29px;
-  padding: 0 3px;
-}
-
-.kanban-column > header .info-popover-wrap,
-.pipeline-card-meta .info-popover-wrap {
-  display: inline-grid;
-  justify-items: end;
-}
-
-.kanban-column > header .info-popover,
-.pipeline-card-meta .info-popover {
-  position: static;
-  margin-top: 6px;
-}
-
-.kanban-column > header .info-popover {
-  width: 210px;
-}
-
-.pipeline-card-meta {
-  flex-wrap: wrap;
-}
-
-.pipeline-card-meta .info-popover {
-  width: 165px;
-}
-
-.kanban-column > header > span:first-child {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--navy-900);
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.kanban-column > header > b {
-  display: grid;
-  min-width: 20px;
-  height: 20px;
-  place-items: center;
-  color: var(--muted);
-  font-size: 9px;
-  background: #fff;
-  border: 1px solid var(--line);
-  border-radius: 20px;
-}
-
-.stage-dot {
-  width: 7px;
-  height: 7px;
-  background: var(--cyan-500);
-  border-radius: 50%;
-}
-
-.stage-new-organization {
-  background: #5c78b4;
-}
-
-.stage-follow-up-active {
-  background: #da9a30;
-}
-
-.stage-awaiting-response {
-  background: #8a65b8;
-}
-
-.stage-active-relationship {
-  background: #51a875;
-}
-
-.stage-inactive {
-  background: #8c9ba3;
-}
-
-.column-total {
-  margin: 1px 3px 10px 17px;
-  color: #748692;
-  font-size: 9px;
-}
-
-.kanban-stack {
-  min-height: 445px;
-}
-
-.pipeline-card {
-  margin: 8px 0;
-  padding: 12px;
-  background: #fff;
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--cyan-500);
-  border-radius: 9px;
-  box-shadow: 0 2px 7px rgba(7, 31, 48, 0.045);
-}
-
-.pipeline-card:hover {
-  border-color: #b9d1dc;
-  box-shadow: 0 7px 18px rgba(7, 31, 48, 0.09);
-  transform: translateY(-1px);
-}
-
-.pipeline-card-top,
-.pipeline-card-meta,
-.pipeline-card footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.pipeline-card-top > span {
-  color: #8b9ba4;
-  font-size: 8px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-}
-
-.pipeline-card-top button,
 .row-menu {
   display: grid;
   width: 44px;
@@ -1859,55 +1684,9 @@ button:disabled {
   border-radius: 7px;
 }
 
-.pipeline-card-top button:hover,
 .row-menu:hover {
   color: var(--navy-800);
   background: #edf4f7;
-}
-
-.pipeline-card h3 {
-  margin: 6px 0 3px;
-  color: var(--navy-900);
-  font-size: 12px;
-}
-
-.pipeline-card > p {
-  margin: 0 0 12px;
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.pipeline-card-meta {
-  padding: 8px 0;
-  color: #4e6673;
-  font-size: 9px;
-  border-top: 1px solid #edf1f3;
-  border-bottom: 1px solid #edf1f3;
-}
-
-.pipeline-card-meta span:first-child {
-  color: var(--navy-800);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.pipeline-stage-select {
-  width: 100%;
-  min-height: 44px;
-  margin-top: 9px;
-  padding: 0 34px 0 10px;
-  color: #405966;
-  font-size: 12px;
-  background: #f8fafb;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.pipeline-card footer {
-  justify-content: flex-start;
-  margin-top: 9px;
-  color: #748692;
-  font-size: 8px;
 }
 
 .mini-avatar {
@@ -1921,17 +1700,6 @@ button:disabled {
   font-weight: 850;
   background: #e4f1f6;
   border-radius: 7px;
-}
-
-.kanban-empty {
-  display: grid;
-  min-height: 88px;
-  margin-top: 8px;
-  place-items: center;
-  color: #98a8b0;
-  font-size: 9px;
-  border: 1px dashed #c6d3da;
-  border-radius: 9px;
 }
 
 .data-panel {
@@ -3168,6 +2936,11 @@ select option[value="High"] {
   grid-column: 1 / -1;
 }
 
+/* Paired fields whose labels may wrap: controls line up at the bottom of the row. */
+.field.field-align-end {
+  justify-content: flex-end;
+}
+
 .field > span,
 .website-lookup-field > label > span,
 .detail-grid small,
@@ -4063,20 +3836,14 @@ select option[value="High"] {
     padding: 16px 14px;
   }
 
-  .page-actions-row,
   .activity-toolbar,
   .data-toolbar {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .page-actions-row,
   .activity-toolbar {
     gap: 11px;
-  }
-
-  .legend {
-    min-height: 32px;
   }
 
   .data-toolbar {
@@ -4315,8 +4082,7 @@ select option[value="High"] {
   }
 
   .data-toolbar select,
-  .filter-drawer select,
-  .pipeline-stage-select {
+  .filter-drawer select {
     font-size: 16px;
   }
 
@@ -4855,8 +4621,7 @@ select option[value="High"] {
   table-layout: fixed;
 }
 
-.data-toolbar select,
-.pipeline-stage-select {
+.data-toolbar select {
   font-size: 16px;
 }
 
@@ -4904,12 +4669,6 @@ select option[value="High"] {
 .app-shell {
   overflow-x: hidden;
   overflow-x: clip;
-}
-
-.kanban {
-  max-width: 100%;
-  min-width: 0;
-  -webkit-overflow-scrolling: touch;
 }
 
 .modal-backdrop,
@@ -6522,13 +6281,8 @@ img.detail-logo {
 }
 
 .page-description,
-.legend,
 .timeline-event small,
 .timeline-event em,
-.pipeline-card > p,
-.pipeline-card-meta,
-.pipeline-card footer,
-.column-total,
 .task-company,
 .task-note,
 .task-card-side,
@@ -6595,7 +6349,6 @@ img.detail-logo {
 .contact-person b,
 .timeline-event b,
 .task-title-row > b,
-.pipeline-card h3,
 .detail-contact b,
 .detail-task b,
 .comment-stream article b,
@@ -6632,10 +6385,7 @@ img.detail-logo {
 
 .data-table th,
 .responsive-card-table td::before,
-.cell-sub,
-.kanban-empty,
-.pipeline-card-top > span,
-.column-total {
+.cell-sub {
   color: var(--muted);
 }
 
@@ -7004,33 +6754,8 @@ img.detail-logo {
   font-size: 13px;
 }
 
-.kanban-column {
-  min-height: 380px;
-  padding: 9px;
-}
-
-.kanban-stack {
-  min-height: 300px;
-}
-
-.pipeline-card {
-  margin: 7px 0;
-  padding: 10px;
-}
-
-.pipeline-card-top > span,
-.kanban-column > header > span:first-child,
-.kanban-column > header > b,
 .mini-avatar {
   font-size: 10px;
-}
-
-.pipeline-card > p {
-  margin-bottom: 8px;
-}
-
-.pipeline-card-meta {
-  padding: 6px 0;
 }
 
 .modal-header {
@@ -7380,7 +7105,7 @@ img.detail-logo {
   }
 
   .crm-app:has(.page-scroll-controls) .main-content {
-    padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(132px + env(safe-area-inset-bottom, 0px));
   }
 
   .page-topline {
@@ -7489,7 +7214,6 @@ img.detail-logo {
 
   .timeline-event b,
   .timeline-event small,
-  .pipeline-card h3,
   .company-cell b,
   .contact-person b,
   .detail-contact b,
@@ -7531,9 +7255,6 @@ img.detail-logo {
 
 /* Final readability pass: keep the CRM copy comfortable on both laptop and phone. */
 .page-description,
-.pipeline-card > p,
-.pipeline-card-meta,
-.pipeline-card footer,
 .task-company,
 .task-note,
 .task-card-side,
@@ -7550,7 +7271,6 @@ img.detail-logo {
 
 .company-cell b,
 .contact-person b,
-.pipeline-card h3,
 .task-title-row > b {
   font-size: 16px;
   line-height: 1.4;
@@ -7966,6 +7686,121 @@ img.detail-logo {
 .company-missing-action small {
   color: var(--muted);
   font-size: 11px;
+}
+
+/* Forms ignore clicks on the backdrop: the card nudges and says how to close it. */
+.modal-card.modal-nudged {
+  animation: modal-nudge 0.32s ease;
+}
+
+@keyframes modal-nudge {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  75% { transform: translateX(6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-card.modal-nudged {
+    animation: none;
+  }
+}
+
+.modal-stay-hint {
+  margin: 0 18px;
+  padding: 7px 10px;
+  color: var(--navy-800);
+  font-size: 11px;
+  background: #fff8ec;
+  border: 1px solid #f0dcb4;
+  border-radius: 8px;
+}
+
+/* Business-card drop zone, card sides, and the restored-draft note. */
+.ai-capture-panel.card-drop-active {
+  background: #e6f4f9;
+  border-color: var(--cyan-600);
+  border-style: dashed;
+}
+
+.card-sides {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.card-side {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.card-side img {
+  width: 72px;
+  height: 46px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+
+.card-side > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.draft-restored-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 10px;
+  font-size: 11px;
+  background: #f4fafc;
+  border: 1px solid #d6e8ef;
+  border-radius: 8px;
+}
+
+/* "Take logo from card": drag a rectangle over the card image. */
+.logo-crop {
+  display: grid;
+  gap: 8px;
+}
+
+.logo-crop-stage {
+  position: relative;
+  justify-self: start;
+  max-width: 100%;
+  touch-action: none;
+  cursor: crosshair;
+  user-select: none;
+}
+
+.logo-crop-stage img {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: 6px;
+}
+
+.logo-crop-selection {
+  position: absolute;
+  border: 2px solid var(--cyan-600);
+  background: rgba(14, 145, 186, 0.12);
+  box-shadow: 0 0 0 9999px rgba(10, 30, 45, 0.35);
+  pointer-events: none;
+}
+
+.logo-crop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 /* "Fill from website" under the company Website field. */
