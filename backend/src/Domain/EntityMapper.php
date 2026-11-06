@@ -102,6 +102,11 @@ final class EntityMapper
             'reminder_possible' => isset($row['reminder_possible']) ? (bool) $row['reminder_possible'] : null,
             'comment_count' => isset($row['comment_count']) ? (int) $row['comment_count'] : null,
             'change_count' => isset($row['change_count']) ? (int) $row['change_count'] : null,
+            // Only rows from the task selects carry participants; other callers omit the keys, and an omitted list is left unchanged on save.
+            ...(array_key_exists('participant_contact_ids', $row) ? [
+                'participant_contact_ids' => $row['participant_contact_ids'] === null ? [] : array_map('intval', explode(',', (string) $row['participant_contact_ids'])),
+                'participant_managers' => $row['participant_managers'] === null ? [] : explode("\x1F", (string) $row['participant_managers']),
+            ] : []),
             'is_archived' => (bool) $row['is_archived'],
             'created_at' => Clock::api($row['created_at'] ?? null),
             'updated_at' => Clock::api($row['updated_at'] ?? null),

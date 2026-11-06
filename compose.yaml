@@ -42,23 +42,32 @@ services:
       WHISPER_MODEL_DIR: storage/whisper-cache
       WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      # Business cards: Qwen3-VL in the "ollama" service; the OCR venv only resizes the photo.
       OCR_PYTHON_BIN: /opt/ai/ocr/bin/python
-      OCR_PADDLE_SCRIPT: ai/paddleocr_business_card.py
-      OCR_MODEL_DIR: ai/models/paddleocr
-      OCR_DEVICE: ${OCR_DEVICE:-gpu}
+      OCR_SCRIPT: ai/qwen_vl_business_card.py
+      OCR_VLM_URL: http://ollama:11434
+      OCR_VLM_MODEL: ${OCR_VLM_MODEL:-qwen3-vl:4b-instruct}
     # Published on the host's loopback by default: put a reverse proxy in front
     # (the "https" profile below, or the host's own nginx/Apache).
     ports:
       - "${CRM_BIND:-127.0.0.1}:${CRM_PORT:-8080}:80"
     volumes:
       # Model weights are not baked into the image (1.7 GB). Point CRM_MODELS_DIR at a
-      # directory with faster-whisper-large-v3-turbo/ and paddleocr/official_models/.
+      # directory with faster-whisper-large-v3-turbo/ (Qwen3-VL lives in the ollama-data volume).
       - ${CRM_MODELS_DIR:-./.runtime/models}:/var/www/backend/ai/models:ro
       - app-storage:/var/www/backend/storage
+      # Qwen3-VL OCR files over the image's copies, so the switch needs no rebuild.
+      # Harmless after a rebuild: the image then contains the same files.
+      - ./backend/src/Domain/BusinessCardOcrService.php:/var/www/backend/src/Domain/BusinessCardOcrService.php:ro
+      - ./backend/ai/qwen_vl_business_card.py:/var/www/backend/ai/qwen_vl_business_card.py:ro
+      - ./backend/ai/check_runtime.py:/var/www/backend/ai/check_runtime.py:ro
+      - ./deploy/check-ai.php:/var/www/deploy/check-ai.php:ro
     depends_on:
       db:
         condition: service_healthy
         required: false
+      ollama:
+        condition: service_started
     deploy:
       resources:
         reservations:
@@ -72,6 +81,47 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
+
+  # Qwen3-VL for business-card OCR. Pull the model once:
+  #   docker compose --env-file .env.docker exec ollama ollama pull qwen3-vl:4b-instruct
+  ollama:
+    image: ollama/ollama:0.40.4
+    restart: unless-stopped
+    # Host loopback only: a CRM run outside Docker (php -S) reaches it at 127.0.0.1:11434.
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    environment:
+      # Keep the model in VRAM between scans; the first scan after a pause loads it (~10 s).
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    volumes:
+      - ollama-data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # One-off OCR check of the repository's code; never touches "app". Put card photos
+  # into OCR_TEST_DIR and run:
+  #   docker compose --env-file .env.docker --profile ocr-test run --rm ocr-test
+  ocr-test:
+    profiles: ["ocr-test"]
+    image: ${CRM_IMAGE:-client-data-crm:latest}
+    entrypoint: ["php", "/repo/tests/ocr_local.php"]
+    environment:
+      OCR_PYTHON_BIN: /opt/ai/ocr/bin/python
+      OCR_SCRIPT: /repo/backend/ai/qwen_vl_business_card.py
+      OCR_VLM_URL: http://ollama:11434
+      OCR_VLM_MODEL: ${OCR_VLM_MODEL:-qwen3-vl:4b-instruct}
+      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-300}
+    volumes:
+      - ./:/repo:ro
+      - ${OCR_TEST_DIR:-./.runtime/ocr-test}:/cards:ro
+    depends_on:
+      ollama:
+        condition: service_started
 
   # Reminders and cleanup every 15 minutes (replaces the host crontab).
   scheduler:
@@ -114,5 +164,6 @@ services:
 volumes:
   db-data:
   app-storage:
+  ollama-data:
   caddy-data:
   caddy-config:

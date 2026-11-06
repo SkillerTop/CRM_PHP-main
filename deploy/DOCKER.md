@@ -1,12 +1,13 @@
 # Docker deployment
 
 One image runs the whole CRM: Apache + PHP 8.3 backend, the built React
-frontend, Faster-Whisper (voice input) and PaddleOCR (business-card scan) on an
-NVIDIA GPU, and outbound website lookup for new companies. Compose adds:
+frontend, Faster-Whisper (voice input) on an NVIDIA GPU, and outbound website
+lookup for new companies. Compose adds:
 
 | Service     | Starts                        | Purpose |
 |-------------|-------------------------------|---------|
 | `app`       | always                        | Web app on `CRM_BIND:CRM_PORT` (default `127.0.0.1:8080`); applies DB migrations on start |
+| `ollama`    | always                        | Qwen3-VL (`OCR_VLM_MODEL`, default `qwen3-vl:4b-instruct`) for the business-card scan; internal only |
 | `scheduler` | always                        | `reminders:run` + `cleanup` every 15 minutes (replaces the host crontab) |
 | `db`        | `--profile local-db`          | MySQL 8.4 in a volume; leave it off to use an existing database server |
 | `proxy`     | `--profile https`             | Caddy with automatic HTTPS for `CRM_DOMAIN` |
@@ -20,9 +21,9 @@ NVIDIA GPU, and outbound website lookup for new companies. Compose adds:
 - Model weights on the host (not baked into the image), in `CRM_MODELS_DIR`
   (default `./.runtime/models`):
   - `faster-whisper-large-v3-turbo/` (model.bin, config.json, tokenizer.json, …)
-  - `paddleocr/official_models/` with `PP-LCNet_x1_0_doc_ori`,
-    `PP-LCNet_x1_0_textline_ori`, `PP-OCRv5_server_det`, `eslav_PP-OCRv5_mobile_rec`
-  Copy them from the development machine's `.runtime/models` (≈1.7 GB).
+  Copy it from the development machine's `.runtime/models`.
+- Qwen3-VL is pulled into the `ollama-data` volume once (≈3.3 GB for 4b, ≈6 GB for 8b):
+  `docker compose --env-file .env.docker exec ollama ollama pull qwen3-vl:4b-instruct`
 - About 20 GB free disk space for the image (CUDA, PaddlePaddle, two Python environments).
 - Outbound HTTPS from the container for the company website lookup.
 
@@ -59,6 +60,18 @@ docker compose --env-file .env.docker exec -u www-data app php /var/www/deploy/c
 
 `check-ai.php` runs real inference with both models and must print
 `"ok": true` with `"device": "cuda"` (speech) and `"device": "gpu"` (OCR).
+
+The OCR files are bind-mounted into `app` (see `compose.yaml`), so switching the OCR
+model or editing its runner needs only `up -d` (without `--build`), not a rebuild.
+
+To try the repository's OCR code on your own photos without touching `app`, put them
+into `.runtime/ocr-test/` (or set `OCR_TEST_DIR`) and run a one-off container; it
+prints what `POST /api/ocr/business-card` would return for each card:
+
+```sh
+docker compose --env-file .env.docker --profile ocr-test run --rm ocr-test
+docker compose --env-file .env.docker --profile ocr-test run --rm ocr-test "/cards/Image (2).jpg"
+```
 
 Without `--profile https`, put your own reverse proxy (nginx, Apache, Traefik) in
 front of `127.0.0.1:8080`. It must terminate TLS, allow 32 MB request bodies and
@@ -97,8 +110,8 @@ procedure; the image itself holds no data or secrets.
 
 ## Without an NVIDIA GPU
 
-Set `WHISPER_DEVICE=cpu`, `WHISPER_COMPUTE_TYPE=int8`, `OCR_DEVICE=cpu` in
-`.env.docker` and remove the `deploy.resources` block from the `app` service.
+Set `WHISPER_DEVICE=cpu`, `WHISPER_COMPUTE_TYPE=int8` in `.env.docker` and remove
+the `deploy.resources` blocks from the `app` and `ollama` services.
 Expect OCR to take tens of seconds and voice input minutes per recording.
 
 ## Troubleshooting

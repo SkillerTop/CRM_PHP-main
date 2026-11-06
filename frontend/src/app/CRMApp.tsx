@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, Suspense, type RefObject, lazy, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { type Dispatch, FormEvent, ReactNode, type SetStateAction, Suspense, type RefObject, lazy, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { ApiError, apiDownload, apiMessage, apiRequest, loadAllPages, setCsrfToken } from "../shared/api/api-client";
 import { Avatar, EntityLogo } from "../shared/components/identity";
 import { appendVoiceText } from "../shared/utils/voice-text";
@@ -119,6 +119,8 @@ type Task = {
   reminderPossible?: boolean;
   commentCount?: number;
   changeCount?: number;
+  participantContactIds?: string[];
+  participantManagers?: string[];
 };
 
 const NDA_STATUSES = ["Not Signed", "Company-wide", "Project-specific", "Expired"] as const;
@@ -437,6 +439,8 @@ function mapTask(record: ApiRecord): Task {
     contactPerson: apiString(record, "contact_person") || undefined,
     reminderPossible: record.reminder_possible == null ? undefined : apiBoolean(record, "reminder_possible"),
     commentCount: apiNumber(record, "comment_count"), changeCount: apiNumber(record, "change_count"),
+    participantContactIds: Array.isArray(record.participant_contact_ids) ? (record.participant_contact_ids as unknown[]).map(String) : undefined,
+    participantManagers: Array.isArray(record.participant_managers) ? (record.participant_managers as unknown[]).map(String) : undefined,
   };
 }
 
@@ -803,17 +807,70 @@ function taskDeadlineParts(value: string) {
 }
 
 function taskDeadlineDraftValue(initialValue: (name: string, fallback?: string) => string, fallback: string) {
-  const fallbackParts = taskDeadlineParts(initialValue("deadline", fallback));
+  const drafted = initialValue("deadline", fallback);
+  // A draft saved with the deadline switched off stays off.
+  if (!drafted) return "";
+  const fallbackParts = taskDeadlineParts(drafted);
   const date = initialValue("deadlineDate", fallbackParts.date);
+  if (!date) return "";
   const hour = initialValue("deadlineHour", fallbackParts.hour);
   const minute = initialValue("deadlineMinute", fallbackParts.minute) === "30" ? "30" : "00";
   return `${date}T${TASK_DEADLINE_HOURS.includes(hour) ? hour : "14"}:${minute}`;
 }
 
 function TaskDeadlineInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const { date, hour, minute } = taskDeadlineParts(value);
-  const update = (nextDate: string, nextHour: string, nextMinute: string) => onChange(`${nextDate}T${nextHour}:${nextMinute}`);
-  return <label className="task-deadline-control"><span>Deadline · {CLIENT_TIME_ZONE_LABEL}</span><div className="task-deadline-input"><input name="deadline" type="hidden" value={`${date}T${hour}:${minute}`} /><input name="deadlineDate" type="date" value={date} required aria-label="Deadline date" onChange={(event) => update(event.target.value, hour, minute)} /><select name="deadlineHour" value={hour} aria-label="Deadline hour" onChange={(event) => update(date, event.target.value, minute)}>{TASK_DEADLINE_HOURS.map((option) => <option key={option} value={option}>{option}</option>)}</select><span aria-hidden="true">:</span><select name="deadlineMinute" value={minute} aria-label="Deadline minutes" onChange={(event) => update(date, hour, event.target.value)}><option value="00">00</option><option value="30">30</option></select></div></label>;
+  // An empty value means "no deadline": the checkbox is off and the date/time inputs are locked.
+  // Switching it back on restores the last date shown, or 14:00 today.
+  const [remembered, setRemembered] = useState(value);
+  const enabled = Boolean(value);
+  const { date, hour, minute } = taskDeadlineParts(value || remembered);
+  const update = (nextDate: string, nextHour: string, nextMinute: string) => {
+    const next = nextDate ? `${nextDate}T${nextHour}:${nextMinute}` : "";
+    if (next) setRemembered(next);
+    onChange(next);
+  };
+  return <div className="task-deadline-control"><label className="task-deadline-toggle"><input type="checkbox" checked={enabled} onChange={(event) => { if (event.target.checked) onChange(`${date}T${hour}:${minute}`); else { setRemembered(value); onChange(""); } }} /><span>Deadline · {CLIENT_TIME_ZONE_LABEL}</span></label><div className="task-deadline-input"><input name="deadline" type="hidden" value={enabled ? `${date}T${hour}:${minute}` : ""} /><input name="deadlineDate" type="date" value={date} disabled={!enabled} required={enabled} aria-label="Deadline date" onChange={(event) => update(event.target.value, hour, minute)} /><select name="deadlineHour" value={hour} disabled={!enabled} aria-label="Deadline hour" onChange={(event) => update(date, event.target.value, minute)}>{TASK_DEADLINE_HOURS.map((option) => <option key={option} value={option}>{option}</option>)}</select><span aria-hidden="true">:</span><select name="deadlineMinute" value={minute} disabled={!enabled} aria-label="Deadline minutes" onChange={(event) => update(date, hour, event.target.value)}><option value="00">00</option><option value="30">30</option></select></div></div>;
+}
+
+function linkedRecordFromUrl(search: string): { type: "Company" | "Contact" | "Task"; id: string } | null {
+  const params = new URLSearchParams(search);
+  for (const [param, type] of [["task", "Task"], ["contact", "Contact"], ["company", "Company"]] as const) {
+    const id = params.get(param) ?? "";
+    if (/^\d+$/.test(id)) return { type, id };
+  }
+  return null;
+}
+
+// Extra people on a task: the company's other contacts plus every CJN manager.
+// Picked from one dropdown, shown as removable chips; hidden inputs carry them into the form data.
+function TaskParticipantsField({ contacts, contactPersonId, managers, selectedContactIds = [], selectedManagers = [] }: { contacts: Contact[]; contactPersonId?: string; managers: string[]; selectedContactIds?: string[]; selectedManagers?: string[] }) {
+  const [contactIds, setContactIds] = useState(selectedContactIds);
+  const [managerNames, setManagerNames] = useState(selectedManagers);
+  // Contacts of another company (after a company change) or the chosen contact person drop out on their own.
+  const contactOptions = contacts.filter((contact) => contact.id !== contactPersonId);
+  const managerOptions = Array.from(new Set([...managers, ...selectedManagers]));
+  const chosenContacts = contactOptions.filter((contact) => contactIds.includes(contact.id));
+  const chosenManagers = managerOptions.filter((manager) => managerNames.includes(manager));
+  const freeContacts = contactOptions.filter((contact) => !contactIds.includes(contact.id));
+  const freeManagers = managerOptions.filter((manager) => !managerNames.includes(manager));
+  const nothingLeft = freeContacts.length + freeManagers.length === 0;
+  function add(value: string) {
+    const separator = value.indexOf(":");
+    const id = value.slice(separator + 1);
+    if (value.startsWith("contact:")) setContactIds((current) => [...current, id]);
+    else if (value.startsWith("manager:")) setManagerNames((current) => [...current, id]);
+  }
+  return <div className="field field-full task-participants">
+    <label><span>Additional participants</span><select value="" disabled={nothingLeft} onChange={(event) => add(event.target.value)}>
+      <option value="">{nothingLeft ? "Everyone is already added" : "Add a participant…"}</option>
+      {freeContacts.length > 0 && <optgroup label="Contacts">{freeContacts.map((contact) => <option key={contact.id} value={`contact:${contact.id}`}>{contact.name}</option>)}</optgroup>}
+      {freeManagers.length > 0 && <optgroup label="Managers">{freeManagers.map((manager) => <option key={manager} value={`manager:${manager}`}>{manager}</option>)}</optgroup>}
+    </select></label>
+    {chosenContacts.length + chosenManagers.length > 0 && <div className="participant-chips">
+      {chosenContacts.map((contact) => <span className="participant-chip" key={`contact-${contact.id}`}><b>{contact.name}</b><small>contact</small><button type="button" aria-label={`Remove ${contact.name}`} onClick={() => setContactIds((current) => current.filter((id) => id !== contact.id))}>×</button><input type="hidden" name="participantContactIds" value={contact.id} /></span>)}
+      {chosenManagers.map((manager) => <span className="participant-chip" key={`manager-${manager}`}><b>{manager}</b><small>manager</small><button type="button" aria-label={`Remove ${manager}`} onClick={() => setManagerNames((current) => current.filter((name) => name !== manager))}>×</button><input type="hidden" name="participantManagers" value={manager} /></span>)}
+    </div>}
+  </div>;
 }
 
 function TranslateToEnglishButton({ text, onChange }: { text: string; onChange: (value: string) => void }) {
@@ -1685,6 +1742,18 @@ export function CRMApp() {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [selectedUser, setSelectedUser] = useState<CRMUser | null>(null);
+  // Read before the sync below rewrites the address, so a pasted card link survives the sign-in screen.
+  const linkedRecordRef = useRef(typeof window === "undefined" ? null : linkedRecordFromUrl(window.location.search));
+  // The open company/contact/task card lives in the address bar, so it can be copied and shared as-is.
+  useEffect(() => {
+    if (linkedRecordRef.current) return;
+    const url = new URL(window.location.href);
+    for (const [param, id] of [["company", selectedCompany?.id], ["contact", selectedContact?.id], ["task", selectedTask?.id]] as const) {
+      if (id) url.searchParams.set(param, id);
+      else url.searchParams.delete(param);
+    }
+    if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);
+  }, [selectedCompany?.id, selectedContact?.id, selectedTask?.id]);
   const [modal, setModal] = useState<"company" | "contact" | "task" | "user" | "profile" | "settings" | null>(null);
   const [modalCompanyId, setModalCompanyId] = useState<string | undefined>();
   const [cardCompany, setCardCompany] = useState<{ prefill: CompanyPrefill; onCreated: (company: Company) => void } | null>(null);
@@ -1791,6 +1860,10 @@ export function CRMApp() {
     if (recordsLoadedRef.current || ["companies", "contacts", "activity", "lookups"].includes(requestedView)) {
       await loadRecords(includeArchived, true).catch((error) => notify(apiMessage(error), "warning"));
     }
+    // A card address (?company=12, ?contact=5 or ?task=34) opens that card once after sign-in.
+    const linked = linkedRecordRef.current;
+    linkedRecordRef.current = null;
+    if (linked) void openRecordById(linked.type, linked.id);
   }
 
   async function loadRecords(includeArchived: boolean, refresh = false): Promise<void> {
@@ -1959,7 +2032,7 @@ export function CRMApp() {
     const initiatedById = lookupId("cjn-manager", contact.initiatedBy);
     return { company_id: Number(contact.companyId), first_name: names[0] ?? "", last_name: names[1] || null, position: contact.position || null, phone: contact.phone && contact.phone !== "—" ? contact.phone : null, email: contact.email || null, linkedin: contact.linkedin || null, source_id: lookupId("contact-source", contact.source), source_detail: contact.sourceDetail || null, referred_by: contact.referredBy || null, initiated_by_id: initiatedById, initiated_by_text: initiatedById ? null : contact.initiatedBy || identity?.name || null, status: contact.contactStatus ?? "active", manager_id: lookupId("cjn-manager", contact.owner) ?? initiatedById ?? lookupId("cjn-manager", identity?.name) ?? Number(lookups.find((group) => group.type === "cjn-manager")?.items.find((item) => item.active)?.id || 0), ...(contact.photoDataUrl?.startsWith("/api/") ? {} : { photo_data_url: contact.photoDataUrl || null }), business_card_data_url: contact.businessCardDataUrl || null, business_card_file_name: contact.businessCardFileName || null, business_card_back_data_url: contact.businessCardBackDataUrl || null, business_card_back_file_name: contact.businessCardBackFileName || null, updated_at: contact.updatedAt };
   };
-  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), parent_task_id: null, name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatusId ?? (task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null), outcome_notes: task.outcomeNotes || null, deadline: localDateTimeToUtc(task.deadline), reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), updated_at: task.updatedAt });
+  const taskPayload = (task: Task) => ({ company_id: Number(task.companyId), parent_task_id: null, name: task.title, contact_date: task.contactDate, manager_id: lookupId("cjn-manager", task.owner), contact_person_id: task.contactPersonId ? Number(task.contactPersonId) : null, description: task.note || null, status_id: lookupId("task-status", task.status), priority: task.priority, outcome_status_id: task.outcomeStatusId ?? (task.outcomeStatus ? lookupId("outcome-status", task.outcomeStatus) : null), outcome_notes: task.outcomeNotes || null, deadline: localDateTimeToUtc(task.deadline), reminder_lead_ids: (task.reminderLeads ?? []).map((lead) => lookupId("reminder-lead", lead)).filter(Boolean), ...(task.participantContactIds ? { participant_contact_ids: task.participantContactIds.map(Number), participant_manager_ids: (task.participantManagers ?? []).map((manager) => lookupId("cjn-manager", manager)).filter(Boolean) } : {}), updated_at: task.updatedAt });
   const reportServerError = (error: unknown) => { notify(apiMessage(error), "warning"); void loadWorkspace().catch(() => undefined); };
 
   const notifications = useMemo<AppNotification[]>(() => {
@@ -1985,7 +2058,7 @@ export function CRMApp() {
         }))
       : [];
     const deadlineItems: AppNotification[] = preferences.deadlineReminders
-      ? relatedOpenTasks.filter((task) => !isOverdue(task)).sort((a, b) => a.deadline.localeCompare(b.deadline)).slice(0, 2).map((task) => ({
+      ? relatedOpenTasks.filter((task) => Boolean(task.deadline) && !isOverdue(task)).sort((a, b) => a.deadline.localeCompare(b.deadline)).slice(0, 2).map((task) => ({
           id: `deadline:${task.id}:${task.deadline}`,
           kind: "update",
           title: "Upcoming deadline",
@@ -2512,6 +2585,8 @@ export function CRMApp() {
       priority: String(data.get("priority") ?? "Low") as Task["priority"],
       note: String(data.get("note") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
+      participantContactIds: data.getAll("participantContactIds").map(String),
+      participantManagers: data.getAll("participantManagers").map(String),
     };
     if (task.title.length < 3) return setFieldError(form, "title", "Enter at least 3 characters.");
     if (!companies.some((company) => company.id === task.companyId)) return setFieldError(form, "companyId", "Select an existing company.");
@@ -2533,7 +2608,7 @@ export function CRMApp() {
       setModalCompanyId(undefined);
       setModalParentTaskId(undefined);
       const past = isLocalDateTimePast(mapped.deadline);
-      notify(past ? "Task saved. Its past deadline will not generate reminders." : "Task saved. Calendar download is available.", past ? "warning" : "success");
+      notify(past ? "Task saved. Its past deadline will not generate reminders." : mapped.deadline ? "Task saved. Calendar download is available." : "Task saved.", past ? "warning" : "success");
       return true;
     } catch (error) {
       notify(`${apiMessage(error)} Use Try again to resubmit without losing the form.`, "warning");
@@ -3094,6 +3169,7 @@ export function CRMApp() {
           )}
         </div>
         <div className="topbar-actions" ref={topbarActionsRef}>
+          <div className="date-chip"><span>●</span> {userWeekQuarter()} · {todayUser()} · {CLIENT_TIME_ZONE_LABEL}</div>
           <button
             ref={notificationButtonRef}
             className={`topbar-icon notification-button${notificationsOpen ? " active" : ""}`}
@@ -3176,7 +3252,6 @@ export function CRMApp() {
               <p className="eyebrow">{VIEW_META[view].eyebrow}</p>
               <h1>{VIEW_META[view].label}</h1>
             </div>
-            <div className="date-chip"><span>●</span> {userWeekQuarter()} · {todayUser()} · {CLIENT_TIME_ZONE_LABEL}</div>
           </div>
 
           {forbiddenAdminView ? <section className="empty-state forbidden-state" role="alert"><b>403 · Access forbidden</b><span>This administration section is available only to Admin users.</span><button className="primary-button" type="button" onClick={() => navigate("dashboard")}>Return to Dashboard</button></section> : <>
@@ -3274,6 +3349,7 @@ export function CRMApp() {
           company={companies.find((company) => company.id === selectedCompany.id) ?? selectedCompany}
           contacts={liveContacts.filter((contact) => contact.companyId === selectedCompany.id)}
           tasks={liveTasks.filter((task) => task.companyId === selectedCompany.id)}
+          countries={countries}
           showInternalIds={currentRole === "Admin"}
           onClose={() => setSelectedCompany(null)}
           openTask={(task) => { setSelectedCompany(null); void openTaskDetail(task); }}
@@ -3893,10 +3969,11 @@ function Audit({ events, users, canExport }: { events: AuditEvent[]; users: CRMU
   );
 }
 
-function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, openTask, openContact, updateCompany, canEdit, canMovePipeline, canAddContact, canAddTask, canArchive, archive, statusOptions, companyTypeOptions, addContact, addTask }: {
+function CompanyDetail({ company, contacts, tasks, countries, showInternalIds, onClose, openTask, openContact, updateCompany, canEdit, canMovePipeline, canAddContact, canAddTask, canArchive, archive, statusOptions, companyTypeOptions, addContact, addTask }: {
   company: Company;
   contacts: Contact[];
   tasks: Task[];
+  countries: string[];
   showInternalIds: boolean;
   onClose: () => void;
   openTask: (task: Task) => void;
@@ -3918,6 +3995,9 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
   const [logoDataUrl, setLogoDataUrl] = useState(company.logoDataUrl ?? "");
   const [imageProcessing, setImageProcessing] = useState(false);
   const [descriptionDraft, setDescriptionDraft, clearDescriptionDraft] = useCookieDraft(`company-${company.id}-description`, company.description);
+  const [nameDraft, setNameDraft] = useState(() => companyFormDraft.initialValue("name", company.name));
+  const editFormRef = useRef<HTMLFormElement>(null);
+  const [websiteLookup, lookupWebsite] = useWebsiteLookup({ formRef: editFormRef, countries, maxDescription: 2000, getName: () => nameDraft, setName: setNameDraft, setDescription: setDescriptionDraft, setLogo: setLogoDataUrl });
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3966,18 +4046,18 @@ function CompanyDetail({ company, contacts, tasks, showInternalIds, onClose, ope
   return (
     <Modal title={company.name} eyebrow={showInternalIds ? `${company.id} · ${company.kind}` : company.kind} onClose={onClose} wide>
       {editing ? (
-        <form {...companyFormDraft.formProps} className="entity-form detail-edit-form" onSubmit={save}>
+        <form ref={editFormRef} {...companyFormDraft.formProps} className="entity-form detail-edit-form" onSubmit={save}>
           <ImageField label="Company logo" name="companyLogo" value={logoDataUrl} onChange={setLogoDataUrl} onProcessingChange={setImageProcessing} kind="company" />
-          <label className="field field-full"><span>Company name</span><input name="name" defaultValue={company.name} required minLength={2} maxLength={120} autoFocus /></label>
+          <label className="field field-full"><span>Company name</span><input name="name" value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} required minLength={2} maxLength={120} autoFocus /></label>
           <label className="field"><span>Company type</span><select name="kind" defaultValue={company.kind}>{Array.from(new Set([...companyTypeOptions, company.kind])).map((kind) => <option key={kind}>{kind}</option>)}</select></label>
           <label className="field"><span>Relationship status</span>{canMovePipeline ? <select name="status" defaultValue={company.status}>{Array.from(new Set([...statusOptions, company.status])).map((status) => <option key={status}>{status}</option>)}</select> : <input value={company.status} readOnly aria-label="Relationship status" />}</label>
           <label className="field"><span>Country</span><input name="country" defaultValue={company.country} required maxLength={80} /></label>
           <label className="field"><span>City</span><input name="city" defaultValue={company.city} maxLength={80} /></label>
-          <label className="field"><span>Website</span><input name="website" inputMode="url" defaultValue={company.website} maxLength={300} /></label>
+          <div className="field website-lookup-field"><label><span>Website</span><input name="website" inputMode="url" defaultValue={company.website} maxLength={300} /></label><WebsiteLookupStatus lookup={websiteLookup} onLookup={lookupWebsite} /></div>
           <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" defaultValue={company.linkedin ?? ""} maxLength={300} /></label>
           <label className="field"><span>NDA</span><select name="ndaStatus" defaultValue={company.ndaStatus ?? NDA_STATUSES[0]}>{NDA_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label>
           <label className="field field-full"><span>Description</span><textarea name="description" value={descriptionDraft} onChange={(event) => setDescriptionDraft(event.target.value)} rows={4} maxLength={2000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton disabled={imageProcessing} onText={(text) => setDescriptionDraft((current) => appendVoiceText(current, text, 2000))} /></label>
-          <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { companyFormDraft.clear(); clearDescriptionDraft(); setLogoDataUrl(company.logoDataUrl ?? ""); setDescriptionDraft(company.description); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save changes"}</button></div>
+          <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { companyFormDraft.clear(); clearDescriptionDraft(); setLogoDataUrl(company.logoDataUrl ?? ""); setDescriptionDraft(company.description); setNameDraft(company.name); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save changes"}</button></div>
         </form>
       ) : (
         <>
@@ -4229,6 +4309,8 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
       priority: editCompanyBlacklisted ? task.priority : String(data.get("priority") ?? task.priority) as Task["priority"],
       note: String(data.get("note") ?? "").trim(),
       reminderLeads: data.getAll("reminderLeads").map(String),
+      participantContactIds: data.getAll("participantContactIds").map(String),
+      participantManagers: data.getAll("participantManagers").map(String),
     };
     if (await updateTask(updated)) {
       clearEditNoteDraft();
@@ -4296,6 +4378,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
           <label className="field"><span>Status</span><select name="status" defaultValue={task.status}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>
           {editCompanyBlacklisted ? <div className="field priority-locked-field"><span>Priority</span><b>Unavailable for Black List companies</b></div> : <label className="field"><span>Priority</span><select className={priorityToneClass(editPriority)} name="priority" value={editPriority} onChange={(event) => setEditPriority(event.target.value as Task["priority"])}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>}
           <label className="field field-full"><span>Description</span><textarea name="note" value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={4} maxLength={4000} spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton onText={(text) => setEditNote((current) => appendVoiceText(current, text, 4000))} /><TranslateToEnglishButton text={editNote} onChange={setEditNote} /></label>
+          <TaskParticipantsField contacts={editCompanyContacts} contactPersonId={editContactPersonId} managers={managerOptions} selectedContactIds={task.participantContactIds} selectedManagers={task.participantManagers} />
           <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} defaultChecked={(task.reminderLeads ?? []).includes(lead)} /><span>{lead}</span></label>)}</fieldset>
           <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { taskEditFormDraft.clear(); clearEditNoteDraft(); setEditNote(task.note); setEditDeadline(task.deadline); setEditPriority(task.priority); setEditing(false); }}>Cancel</button><button className="primary-button" type="submit">Save task</button></div>
         </form>
@@ -4305,7 +4388,7 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
             <div className="task-detail-status">{taskCanEdit ? <><label className="inline-task-field"><span>Status</span><select value={task.status} onChange={(event) => updateStatus(task, event.target.value)}>{Array.from(new Set([...taskStatusOptions, task.status])).map((status) => <option key={status}>{status}</option>)}</select></label>{taskCompanyBlacklisted ? <span className="inline-priority-locked" title="Priority is unavailable for Black List companies">Priority unavailable</span> : <label className="inline-task-field"><span>Priority</span><select className={priorityToneClass(task.priority)} value={task.priority} onChange={(event) => void updateTask({ ...task, priority: event.target.value as Task["priority"] })}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>}</> : <><StatusBadge value={task.status} />{!taskCompanyBlacklisted && <StatusBadge value={`${task.priority} priority`} />}</>}{isOverdue(displayedTask) && <StaticStatusBadge value="Overdue" />}<div className="task-detail-actions">{taskCanEdit && <label className="secondary-button attachment-upload attachment-tooltip" data-tooltip="PDF, Word, Excel, Outlook MSG/EML, JPG, PNG, or WebP · up to 20 MB">{attachmentUploading ? "Uploading…" : "＋ Upload"}<input type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.msg,.eml,image/*" disabled={attachmentUploading} onChange={(event) => void attach(event)} /></label>}{attachments.length > 0 && <StaticStatusBadge value={`${attachments.length} ${attachments.length === 1 ? "file" : "files"}`} />}{taskCanEdit && <button className="secondary-button task-edit-button" type="button" onClick={openEditor}>Edit</button>}</div></div>
             {attachments.length > 0 && <div className="task-attachment-bar" aria-label="Attachments"><div className="task-attachment-chips">{attachments.map((attachment) => <article key={attachment.id}><button type="button" onClick={() => void downloadAttachment(attachment)}><b>{attachment.name}</b><small>{(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB · {attachment.author}</small></button>{taskCanEdit && (isAdmin || attachment.authorUserId === currentUserId) && <button className="attachment-delete" type="button" aria-label={`Delete ${attachment.name}`} onClick={() => void deleteAttachment(attachment)}>×</button>}</article>)}</div></div>}
             {taskCompanyBlacklisted ? <p className="task-completion-window locked">Black List company · task editing is locked</p> : isCompletedTask(task) && <p className={`task-completion-window${taskEditLocked ? " locked" : ""}`}>{taskCompletionEditLabel(task)}</p>}
-            <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? displayedTask.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE_LABEL}</small><b className={isOverdue(displayedTask) ? "overdue-text" : ""}>{formatDateTime(displayedTask.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small>{taskContact ? <button className="table-link task-contact-link" type="button" onClick={() => openContact(taskContact)}>{taskContact.name}</button> : <b>—</b>}</div><div className="task-calendar-field"><small>Calendar</small>{displayedTask.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(displayedTask)}>Add to Outlook</button> : <b>Set a deadline first</b>}</div></div>
+            <div className="detail-grid task-info-grid"><div><small>Contact date</small><b>{task.contactDate ?? displayedTask.deadline.slice(0, 10)}</b></div><div><small>Deadline · {CLIENT_TIME_ZONE_LABEL}</small><b className={isOverdue(displayedTask) ? "overdue-text" : ""}>{formatDateTime(displayedTask.deadline)}</b></div><div><small>Responsible manager</small><b>{task.owner}</b></div><div><small>Contact person</small>{taskContact ? <button className="table-link task-contact-link" type="button" onClick={() => openContact(taskContact)}>{taskContact.name}</button> : <b>—</b>}</div><div><small>Participants</small><b>{[...contacts.filter((contact) => task.participantContactIds?.includes(contact.id)).map((contact) => contact.name), ...(task.participantManagers ?? [])].join(", ") || "—"}</b></div><div className="task-calendar-field"><small>Calendar</small>{displayedTask.deadline ? <button className="detail-action-button" type="button" onClick={() => void downloadIcs(displayedTask)}>Add to Outlook</button> : <b>Set a deadline first</b>}</div></div>
             <div className="detail-description"><small>Description</small><p>{task.note || "No description."}</p></div>
           </div>
           <section className={`comment-stream branch-comments${taskReadOnly ? " task-inactive" : ""}`}>
@@ -4338,6 +4421,84 @@ function TaskDetail({ task, company, companies, contacts, comments, attachments,
   );
 }
 
+type WebsiteLookupState = { state: "idle" | "loading" | "done" | "error"; message: string };
+
+// Reads description, address and logo from the company's own site. Only empty fields
+// are filled; site text is appended to the description, labelled, for review.
+function useWebsiteLookup({ formRef, countries, maxDescription, getName, setName, setDescription, setLogo }: {
+  formRef: RefObject<HTMLFormElement | null>;
+  countries: string[];
+  maxDescription: number;
+  getName: () => string;
+  setName: (name: string) => void;
+  setDescription: Dispatch<SetStateAction<string>>;
+  setLogo: Dispatch<SetStateAction<string>>;
+}) {
+  const requestRef = useRef(0);
+  const [lookup, setLookup] = useState<WebsiteLookupState>({ state: "idle", message: "" });
+
+  useEffect(() => () => { requestRef.current += 1; }, []);
+
+  function setFormField(name: string, value: string, onlyIfEmpty: boolean) {
+    const element = formRef.current?.elements.namedItem(name);
+    if (!(element instanceof HTMLInputElement) || !value || (onlyIfEmpty && element.value.trim())) return false;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+
+  async function run() {
+    const websiteInput = formRef.current?.elements.namedItem("website");
+    const website = websiteInput instanceof HTMLInputElement ? websiteInput.value.trim() : "";
+    if (!website) {
+      setLookup({ state: "error", message: "Enter the company website first." });
+      return;
+    }
+    const request = ++requestRef.current;
+    setLookup({ state: "loading", message: `Reading ${websiteHost(website)}…` });
+    try {
+      const { data } = await apiRequest<{ data: CompanyWebsiteInfo }>("/company-lookup", { method: "POST", body: JSON.stringify({ website }) });
+      if (request !== requestRef.current) return;
+      const filled: string[] = [];
+      // A misread card name ("NGINEERING AS") lacks the domain's brand ("kvernevik"); the site's own name has it.
+      const brand = websiteHost(data.website).split(".")[0].split("-")[0];
+      const letters = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+      if (data.name && brand.length >= 4 && !letters(getName()).includes(brand) && letters(data.name).includes(brand)) {
+        setName(data.name);
+        filled.push("name");
+      }
+      if (setFormField("city", data.city ?? "", true)) filled.push("city");
+      if (setFormField("country", countryFromWebsite(data.country, countries), true)) filled.push("country");
+      setFormField("website", data.website, false);
+      const additions = [data.description && `About (website): ${data.description}`, data.address && `Address (website): ${data.address}`].filter((line): line is string => Boolean(line));
+      if (additions.length > 0) {
+        setDescription((current) => [current.trim(), ...additions.filter((line) => !current.includes(line))].filter(Boolean).join("\n").slice(0, maxDescription));
+        if (data.description) filled.push("description");
+        if (data.address) filled.push("address");
+      }
+      if (data.logo_data_url) {
+        try {
+          const logo = await rasterizeLogo(data.logo_data_url);
+          if (request !== requestRef.current) return;
+          setLogo((current) => current || logo);
+          filled.push("logo");
+        } catch {
+          // An unreadable logo does not block the rest of the lookup.
+        }
+      }
+      setLookup({ state: "done", message: filled.length > 0 ? `Filled from ${websiteHost(data.website)}: ${filled.join(", ")}. Review before saving.` : `Nothing new found on ${websiteHost(data.website)}.` });
+    } catch (caught) {
+      if (request === requestRef.current) setLookup({ state: "error", message: apiMessage(caught) });
+    }
+  }
+
+  return [lookup, run] as const;
+}
+
+function WebsiteLookupStatus({ lookup, onLookup }: { lookup: WebsiteLookupState; onLookup: () => Promise<void> }) {
+  return <div className="website-lookup"><button className="text-button" type="button" disabled={lookup.state === "loading"} onClick={() => void onLookup()}>{lookup.state === "loading" ? "Reading website…" : "🔎 Fill from website"}</button>{lookup.message && <small className={lookup.state === "error" ? "website-lookup-error" : ""} role="status">{lookup.message}</small>}</div>;
+}
+
 function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, defaultOwner, openExistingCompany, onClose, onSubmit, prefill }: { companies: Company[]; countries: string[]; statusOptions: string[]; companyTypeOptions: string[]; defaultOwner: string; openExistingCompany: (company: Company) => void; onClose: () => void; onSubmit: (event: FormEvent<HTMLFormElement>, logoDataUrl: string) => Promise<boolean>; prefill?: CompanyPrefill }) {
   const companyCreateDraft = useFormDraft("company-create");
   const [logoDataUrl, setLogoDataUrl] = useState("");
@@ -4351,66 +4512,8 @@ function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, 
     if (prefill) setDescriptionDraft(prefill.description);
   }, [prefill, setDescriptionDraft]);
   const formRef = useRef<HTMLFormElement>(null);
-  const lookupRequestRef = useRef(0);
   const autoLookupStartedRef = useRef(false);
-  const [websiteLookup, setWebsiteLookup] = useState<{ state: "idle" | "loading" | "done" | "error"; message: string }>({ state: "idle", message: "" });
-
-  useEffect(() => () => { lookupRequestRef.current += 1; }, []);
-
-  function setFormField(name: string, value: string, onlyIfEmpty: boolean) {
-    const element = formRef.current?.elements.namedItem(name);
-    if (!(element instanceof HTMLInputElement) || !value || (onlyIfEmpty && element.value.trim())) return false;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(element, value);
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-    return true;
-  }
-
-  // Reads description, address and logo from the company's own site. Only empty fields
-  // are filled; site text is appended to the description, labelled, for review.
-  async function lookupWebsite() {
-    const websiteInput = formRef.current?.elements.namedItem("website");
-    const website = websiteInput instanceof HTMLInputElement ? websiteInput.value.trim() : "";
-    if (!website) {
-      setWebsiteLookup({ state: "error", message: "Enter the company website first." });
-      return;
-    }
-    const request = ++lookupRequestRef.current;
-    setWebsiteLookup({ state: "loading", message: `Reading ${websiteHost(website)}…` });
-    try {
-      const { data } = await apiRequest<{ data: CompanyWebsiteInfo }>("/company-lookup", { method: "POST", body: JSON.stringify({ website }) });
-      if (request !== lookupRequestRef.current) return;
-      const filled: string[] = [];
-      // A misread card name ("NGINEERING AS") lacks the domain's brand ("kvernevik"); the site's own name has it.
-      const brand = websiteHost(data.website).split(".")[0].split("-")[0];
-      const letters = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
-      if (data.name && brand.length >= 4 && !letters(companyNameDraft).includes(brand) && letters(data.name).includes(brand)) {
-        setCompanyNameDraft(data.name);
-        filled.push("name");
-      }
-      if (setFormField("city", data.city ?? "", true)) filled.push("city");
-      if (setFormField("country", countryFromWebsite(data.country, countries), true)) filled.push("country");
-      setFormField("website", data.website, false);
-      const additions = [data.description && `About (website): ${data.description}`, data.address && `Address (website): ${data.address}`].filter((line): line is string => Boolean(line));
-      if (additions.length > 0) {
-        setDescriptionDraft((current) => [current.trim(), ...additions.filter((line) => !current.includes(line))].filter(Boolean).join("\n").slice(0, 4000));
-        if (data.description) filled.push("description");
-        if (data.address) filled.push("address");
-      }
-      if (data.logo_data_url) {
-        try {
-          const logo = await rasterizeLogo(data.logo_data_url);
-          if (request !== lookupRequestRef.current) return;
-          setLogoDataUrl((current) => current || logo);
-          filled.push("logo");
-        } catch {
-          // An unreadable logo does not block the rest of the lookup.
-        }
-      }
-      setWebsiteLookup({ state: "done", message: filled.length > 0 ? `Filled from ${websiteHost(data.website)}: ${filled.join(", ")}. Review before saving.` : `Nothing new found on ${websiteHost(data.website)}.` });
-    } catch (caught) {
-      if (request === lookupRequestRef.current) setWebsiteLookup({ state: "error", message: apiMessage(caught) });
-    }
-  }
+  const [websiteLookup, lookupWebsite] = useWebsiteLookup({ formRef, countries, maxDescription: 4000, getName: () => companyNameDraft, setName: setCompanyNameDraft, setDescription: setDescriptionDraft, setLogo: setLogoDataUrl });
 
   // A company created from a scanned card looks up the card's website right away.
   useEffect(() => {
@@ -4430,7 +4533,7 @@ function CompanyForm({ companies, countries, statusOptions, companyTypeOptions, 
         <label className="field field-align-end"><span>Relationship status *</span><select name="status" required>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
         <label className="field"><span>Country *</span><input name="country" list="company-country-options" required maxLength={100} placeholder="Select or type a country" defaultValue={prefill?.country} /><datalist id="company-country-options">{countries.map((country) => <option key={country} value={country} />)}</datalist></label>
         <label className="field"><span>City</span><input name="city" maxLength={100} placeholder="Kyiv" defaultValue={prefill?.city} /></label>
-        <div className="field website-lookup-field"><label><span>Website</span><input name="website" inputMode="url" maxLength={255} placeholder="example.com" defaultValue={prefill?.website} /></label><div className="website-lookup"><button className="text-button" type="button" disabled={websiteLookup.state === "loading"} onClick={() => void lookupWebsite()}>{websiteLookup.state === "loading" ? "Reading website…" : "🔎 Fill from website"}</button>{websiteLookup.message && <small className={websiteLookup.state === "error" ? "website-lookup-error" : ""} role="status">{websiteLookup.message}</small>}</div></div>
+        <div className="field website-lookup-field"><label><span>Website</span><input name="website" inputMode="url" maxLength={255} placeholder="example.com" defaultValue={prefill?.website} /></label><WebsiteLookupStatus lookup={websiteLookup} onLookup={lookupWebsite} /></div>
         <label className="field"><span>LinkedIn</span><input name="linkedin" inputMode="url" maxLength={255} placeholder="linkedin.com/company/..." defaultValue={prefill?.linkedin} /></label>
         <label className="field"><span>NDA</span><select name="ndaStatus" defaultValue={NDA_STATUSES[0]}>{NDA_STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label>
         <input name="owner" type="hidden" value={defaultOwner} />
@@ -4626,7 +4729,7 @@ function ContactForm({ companies, sourceOptions, initiatorOptions, initialCompan
         >
           <div>
             <b>Scan business card</b>
-            <small>Drop a photo here, paste it with Ctrl+V, or choose a file (up to 20 MB); PaddleOCR PP-OCRv5 fills the draft fields. Add the back side to fill in what the front lacks. Review everything before saving.</small>
+            <small>Drop a photo here, paste it with Ctrl+V, or choose a file (up to 20 MB); Qwen3-VL fills the draft fields. Add the back side to fill in what the front lacks. Review everything before saving.</small>
           </div>
           <div className="ai-capture-actions">
             {cardSides.length < 2 && canUseCamera && <button className="secondary-button" type="button" disabled={cardScanning} onClick={() => chooseCardFile(cardSides[0] ? 1 : 0, true)}>{cardScanning ? "Scanning…" : cardSides[0] ? "📸 Photo of back side" : "📸 Take photo"}</button>}
@@ -4777,12 +4880,13 @@ function TaskForm({ companies, contacts, taskStatusOptions, reminderLeadOptions,
           {quickError && <div className="form-error" role="alert">{quickError}</div>}
           <div className="quick-contact-actions"><button className="secondary-button" type="button" onClick={resetQuickContact}>Cancel</button><button className="primary-button" type="button" disabled={quickPhotoProcessing} onClick={saveQuickContact}>{quickPhotoProcessing ? "Processing image…" : "Save contact"}</button></div>
         </section>}
-        <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required value={contactDate} onChange={(event) => { const value = event.target.value; setContactDate(value); setDeadline(taskDeadlineFromContactDate(value, "month")); }} /></label>
-        <div className="field field-full task-deadline-field"><div className="task-deadline-row"><TaskDeadlineInput value={deadline} onChange={setDeadline} /><div className="deadline-presets" aria-label="Quick deadline choices"><button type="button" onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "week"))}>1 week</button><button type="button" onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "two-weeks"))}>2 weeks</button><button type="button" onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "month"))}>1 month</button></div></div></div>
+        <label className="field"><span>Contact date *</span><input name="contactDate" type="date" required value={contactDate} onChange={(event) => { const value = event.target.value; setContactDate(value); setDeadline((current) => current ? taskDeadlineFromContactDate(value, "month") : ""); }} /></label>
+        <div className="field field-full task-deadline-field"><div className="task-deadline-row"><TaskDeadlineInput value={deadline} onChange={setDeadline} /><div className="deadline-presets" aria-label="Quick deadline choices"><button type="button" disabled={!deadline} onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "week"))}>1 week</button><button type="button" disabled={!deadline} onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "two-weeks"))}>2 weeks</button><button type="button" disabled={!deadline} onClick={() => setDeadline(taskDeadlineFromContactDate(contactDate, "month"))}>1 month</button></div></div></div>
         <label className="field"><span>Responsible manager *</span><select name="owner" required value={responsibleManager} onChange={(event) => { setResponsibleManager(event.target.value); window.localStorage.setItem(managerStorageKey, event.target.value); }}>{managerOptions.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
         <label className="field"><span>Status *</span><select name="status" defaultValue={taskStatusOptions[0] ?? ""}>{taskStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
         {selectedCompanyBlacklisted ? <div className="field priority-locked-field"><span>Priority</span><b>Unavailable for Black List companies</b></div> : <label className="field"><span>Priority *</span><select className={priorityToneClass(priorityDraft)} name="priority" value={priorityDraft} onChange={(event) => setPriorityDraft(event.target.value as Task["priority"])}>{TASK_PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>}
         <label className="field field-full"><span>Description</span><textarea name="note" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} rows={4} maxLength={4000} placeholder="Context, expected result, and links" spellCheck autoCorrect="on" autoCapitalize="sentences" /><VoiceInputButton disabled={submitting} onText={(text) => setNoteDraft((current) => appendVoiceText(current, text, 4000))} /><TranslateToEnglishButton text={noteDraft} onChange={setNoteDraft} /></label>
+        <TaskParticipantsField contacts={companyContacts} contactPersonId={contactPersonId} managers={managerOptions} />
         <fieldset className="settings-list field-full"><legend>Reminder advance notice</legend>{reminderLeadOptions.map((lead) => <label key={lead}><input name="reminderLeads" type="checkbox" value={lead} /><span>{lead}</span></label>)}</fieldset>
         <div className="reminder-note field-full"><span>◷</span><p><b>Calendar and email reminders</b><small>The CRM provides an .ics file. Scheduled email delivery requires an active User linked to the selected CJN Manager.</small></p></div>
         {retry && <div className="form-error field-full" role="alert">The task was not saved. Your entries are preserved; try again when the connection is available.</div>}

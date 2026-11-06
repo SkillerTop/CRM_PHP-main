@@ -36,21 +36,21 @@ final class BusinessCardOcrService
     public function recognize(array $file): array
     {
         $this->validateUpload($file);
+        return $this->recognizeFile((string) $file['tmp_name']);
+    }
 
+    /** Engine + card classifier on an image already on disk (validated upload, or tests/ocr_local.php). */
+    public function recognizeFile(string $path): array
+    {
         $python = AiRuntimePaths::python(trim((string) Config::get('OCR_PYTHON_BIN', 'python3')));
-        $script = $this->localPath(trim((string) Config::get('OCR_PADDLE_SCRIPT', 'ai/paddleocr_business_card.py')));
-        $language = trim((string) Config::get('OCR_LANGUAGE', 'uk'));
-        $device = trim((string) Config::get('OCR_DEVICE', 'gpu'));
-        $latinModel = trim((string) Config::get('OCR_LATIN_REC_MODEL', 'latin_PP-OCRv5_mobile_rec'));
-        $modelDirectory = $this->localPath(trim((string) Config::get('OCR_MODEL_DIR', '.runtime/paddleocr-models')));
-        $timeout = Config::int('OCR_TIMEOUT_SECONDS', 45);
+        $script = $this->localPath(trim((string) Config::get('OCR_SCRIPT', 'ai/qwen_vl_business_card.py')));
+        $url = trim((string) Config::get('OCR_VLM_URL', 'http://127.0.0.1:11434'));
+        $model = trim((string) Config::get('OCR_VLM_MODEL', 'qwen3-vl:4b-instruct'));
+        $timeout = Config::int('OCR_TIMEOUT_SECONDS', 180);
         if (!is_file($script)) {
-            throw new ApiException(503, 'ocr_engine_not_configured', 'Скрипт PaddleOCR не найден по указанному пути.');
+            throw new ApiException(503, 'ocr_engine_not_configured', 'Скрипт OCR (Qwen3-VL) не найден по указанному пути.');
         }
-        if (!is_dir($modelDirectory) && !mkdir($modelDirectory, 0770, true) && !is_dir($modelDirectory)) {
-            throw new ApiException(500, 'model_storage_unavailable', 'Не удалось подготовить папку моделей PaddleOCR.');
-        }
-        $recognition = $this->runPaddleOcr($python, $script, (string) $file['tmp_name'], $language, $device, $modelDirectory, $latinModel, $timeout);
+        $recognition = $this->runVisionModel($python, $script, $path, $url, $model, $timeout);
         $text = $recognition['text'];
         $classified = $this->classifyBusinessCard($text);
         $draft = $classified['draft'];
@@ -63,7 +63,7 @@ final class BusinessCardOcrService
             'company_domain' => $classified['company_domain'],
             'confidence' => $this->confidence($draft, $text),
             'ocr_confidence' => $recognition['average_confidence'],
-            'engine' => 'PaddleOCR PP-OCRv5',
+            'engine' => 'Qwen3-VL (' . $model . ')',
         ];
     }
 
@@ -100,39 +100,27 @@ final class BusinessCardOcrService
     }
 
     /** @return array{text:string,average_confidence:?float} */
-    private function runPaddleOcr(
-        string $python,
-        string $script,
-        string $path,
-        string $language,
-        string $device,
-        string $modelDirectory,
-        string $latinModel,
-        int $timeout
-    ): array
+    private function runVisionModel(string $python, string $script, string $path, string $url, string $model, int $timeout): array
     {
-        $command = [
+        $result = $this->runner->run([
             $python,
             $script,
             '--input',
             $path,
-            '--language',
-            $language,
-            '--device',
-            $device,
-            '--model-dir',
-            $modelDirectory,
-        ];
-        if ($latinModel !== '') {
-            array_push($command, '--latin-rec-model', $latinModel);
-        }
-        $result = $this->runner->run($command, $timeout);
+            '--url',
+            $url,
+            '--model',
+            $model,
+            // The script's own HTTP timeout fires first, so it exits with a clean error.
+            '--timeout',
+            (string) max(5, $timeout - 10),
+        ], $timeout);
         if ($result->exitCode !== 0) {
-            throw new ApiException(503, 'ocr_engine_failed', 'PaddleOCR не смог обработать визитку.');
+            throw new ApiException(503, 'ocr_engine_failed', 'Qwen3-VL не смог обработать визитку: проверьте, что сервис Ollama запущен и модель ' . $model . ' загружена.');
         }
         $payload = json_decode(trim($result->stdout), true);
         if (!is_array($payload)) {
-            throw new ApiException(503, 'ocr_engine_failed', 'PaddleOCR вернул некорректный ответ.');
+            throw new ApiException(503, 'ocr_engine_failed', 'Qwen3-VL вернул некорректный ответ.');
         }
         $text = $this->normalizeText((string) ($payload['text'] ?? ''));
         if ($text === '') {

@@ -66,7 +66,9 @@ final class TaskController
                         ELSE m.email IS NOT NULL AND m.email <> ''
                      END) AS reminder_possible,
                     (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = t.id) AS comment_count,
-                    (SELECT COUNT(*) FROM change_events ce WHERE ce.entity_type = 'Task' AND ce.entity_id = t.id) AS change_count
+                    (SELECT COUNT(*) FROM change_events ce WHERE ce.entity_type = 'Task' AND ce.entity_id = t.id) AS change_count,
+                    (SELECT GROUP_CONCAT(tp.contact_id ORDER BY tp.id) FROM task_participants tp WHERE tp.task_id = t.id AND tp.contact_id IS NOT NULL) AS participant_contact_ids,
+                    (SELECT GROUP_CONCAT(pm.value ORDER BY tp.id SEPARATOR '\x1F') FROM task_participants tp JOIN lookups pm ON pm.id = tp.manager_lookup_id WHERE tp.task_id = t.id) AS participant_managers
              FROM tasks t
              JOIN companies c ON c.id = t.company_id
              JOIN lookups m ON m.id = t.manager_lookup_id
@@ -131,6 +133,7 @@ final class TaskController
             ]);
             $id = (int) $this->db->lastInsertId();
             $this->reminders->syncTask($id, $data['reminder_lead_ids']);
+            $this->syncParticipants($id, $data['participants']);
             $this->recalculateLastContact((int) $data['record']['company_id']);
             $this->audit->log('CREATE', 'Task', $id, (string) $data['record']['name'], detail: ['company_id' => $data['record']['company_id']]);
             $this->db->commit();
@@ -157,7 +160,8 @@ final class TaskController
             $this->assertTaskEditable($before);
             RecordGuard::optimistic($before, Arr::string($input, 'updated_at'));
             $oldLeads = $this->leadIds($id);
-            $data = $this->validated($input, $before, $oldLeads);
+            $oldParticipants = $this->participantIds($id);
+            $data = $this->validated($input, $before, $oldLeads, $oldParticipants);
             $this->assertCompanyAllowsTaskEditing((int) $data['record']['company_id']);
             $now = Clock::dbNow();
             $completedAt = $data['status_key'] === 'completed'
@@ -204,6 +208,13 @@ final class TaskController
                 );
             }
             $this->reminders->syncTask($id, $data['reminder_lead_ids']);
+            if ($oldParticipants !== $data['participants']) {
+                $this->audit->log(
+                    'FIELD CHANGE', 'Task', $id, (string) $data['record']['name'], 'Participants',
+                    $this->participantLabels($oldParticipants), $this->participantLabels($data['participants'])
+                );
+                $this->syncParticipants($id, $data['participants']);
+            }
             $this->recalculateLastContact((int) $before['company_id']);
             if ((int) $before['company_id'] !== (int) $data['record']['company_id']) {
                 $this->recalculateLastContact((int) $data['record']['company_id']);
@@ -482,7 +493,8 @@ final class TaskController
     }
 
     /** @return array<string, mixed> */
-    private function validated(array $input, ?array $current = null, array $currentLeadIds = []): array
+    /** @param array{contacts:list<int>,managers:list<int>} $currentParticipants */
+    private function validated(array $input, ?array $current = null, array $currentLeadIds = [], array $currentParticipants = ['contacts' => [], 'managers' => []]): array
     {
         $companyId = Arr::int($input, 'company_id');
         $parentTaskId = array_key_exists('parent_task_id', $input)
@@ -505,6 +517,11 @@ final class TaskController
         $deadline = $deadlineDate ? Clock::db($deadlineDate) : null;
         $leadIds = Arr::intList($input, 'reminder_lead_ids');
         sort($leadIds);
+        // Omitted lists keep the stored participants, so partial updates never wipe them.
+        $participantContactIds = array_key_exists('participant_contact_ids', $input)
+            ? Arr::intList($input, 'participant_contact_ids') : $currentParticipants['contacts'];
+        $participantManagerIds = array_key_exists('participant_manager_ids', $input)
+            ? Arr::intList($input, 'participant_manager_ids') : $currentParticipants['managers'];
         Validator::ensure([
             'company_id' => $companyId === null ? 'Обязательное поле.' : '',
             'name' => Validator::required($name) ?: Validator::max($name, 255),
@@ -593,7 +610,24 @@ final class TaskController
                 throw new ApiException(400, 'invalid_contact_person', 'Контактное лицо должно принадлежать выбранной компании.');
             }
         }
+        $participantContactIds = array_values(array_diff($participantContactIds, [$contactPersonId]));
+        sort($participantContactIds);
+        sort($participantManagerIds);
+        foreach ($participantContactIds as $participantId) {
+            $allowArchived = in_array($participantId, $currentParticipants['contacts'], true);
+            $stmt = $this->db->prepare(
+                'SELECT id FROM contacts WHERE id = :id AND company_id = :company_id' . ($allowArchived ? '' : ' AND is_archived = 0')
+            );
+            $stmt->execute(['id' => $participantId, 'company_id' => $companyId]);
+            if ($stmt->fetchColumn() === false) {
+                throw new ApiException(400, 'invalid_participant', 'Участники-контакты должны принадлежать выбранной компании.');
+            }
+        }
+        foreach ($participantManagerIds as $participantId) {
+            $this->lookups->get($participantId, 'cjn_manager', in_array($participantId, $currentParticipants['managers'], true));
+        }
         return [
+            'participants' => ['contacts' => $participantContactIds, 'managers' => $participantManagerIds],
             'record' => [
                 'company_id' => $companyId, 'parent_task_id' => $parentTaskId, 'name' => $name, 'contact_date' => $contactDate,
                 'manager_id' => $managerId, 'contact_person_id' => $contactPersonId,
@@ -644,7 +678,9 @@ final class TaskController
                             ELSE m.email IS NOT NULL AND m.email <> ''
                         END) AS reminder_possible,
                        (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = t.id) AS comment_count,
-                       (SELECT COUNT(*) FROM change_events ce WHERE ce.entity_type = 'Task' AND ce.entity_id = t.id) AS change_count
+                       (SELECT COUNT(*) FROM change_events ce WHERE ce.entity_type = 'Task' AND ce.entity_id = t.id) AS change_count,
+                    (SELECT GROUP_CONCAT(tp.contact_id ORDER BY tp.id) FROM task_participants tp WHERE tp.task_id = t.id AND tp.contact_id IS NOT NULL) AS participant_contact_ids,
+                    (SELECT GROUP_CONCAT(pm.value ORDER BY tp.id SEPARATOR '\x1F') FROM task_participants tp JOIN lookups pm ON pm.id = tp.manager_lookup_id WHERE tp.task_id = t.id) AS participant_managers
                 FROM tasks t JOIN companies c ON c.id = t.company_id JOIN lookups m ON m.id = t.manager_lookup_id
                 LEFT JOIN users u ON u.id = m.user_id
                 LEFT JOIN users creator ON creator.id = t.created_by
@@ -827,6 +863,50 @@ final class TaskController
         $stmt = $this->db->prepare('SELECT reminder_lead_lookup_id FROM task_reminder_leads WHERE task_id = :task_id ORDER BY reminder_lead_lookup_id');
         $stmt->execute(['task_id' => $taskId]);
         return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /** @return array{contacts:list<int>,managers:list<int>} */
+    private function participantIds(int $taskId): array
+    {
+        $stmt = $this->db->prepare('SELECT contact_id, manager_lookup_id FROM task_participants WHERE task_id = :task_id');
+        $stmt->execute(['task_id' => $taskId]);
+        $participants = ['contacts' => [], 'managers' => []];
+        foreach ($stmt->fetchAll() as $row) {
+            if ($row['contact_id'] !== null) {
+                $participants['contacts'][] = (int) $row['contact_id'];
+            } else {
+                $participants['managers'][] = (int) $row['manager_lookup_id'];
+            }
+        }
+        sort($participants['contacts']);
+        sort($participants['managers']);
+        return $participants;
+    }
+
+    /** @param array{contacts:list<int>,managers:list<int>} $participants */
+    private function syncParticipants(int $taskId, array $participants): void
+    {
+        $this->db->prepare('DELETE FROM task_participants WHERE task_id = :task_id')->execute(['task_id' => $taskId]);
+        $insert = $this->db->prepare(
+            'INSERT INTO task_participants (task_id, contact_id, manager_lookup_id, created_at) VALUES (:task_id, :contact_id, :manager_id, :now)'
+        );
+        $now = Clock::dbNow();
+        foreach ($participants['contacts'] as $contactId) {
+            $insert->execute(['task_id' => $taskId, 'contact_id' => $contactId, 'manager_id' => null, 'now' => $now]);
+        }
+        foreach ($participants['managers'] as $managerId) {
+            $insert->execute(['task_id' => $taskId, 'contact_id' => null, 'manager_id' => $managerId, 'now' => $now]);
+        }
+    }
+
+    /** @param array{contacts:list<int>,managers:list<int>} $participants */
+    private function participantLabels(array $participants): string
+    {
+        $labels = array_map(fn (int $id): string => $this->contactLabel($id), $participants['contacts']);
+        if ($participants['managers'] !== []) {
+            $labels[] = $this->lookups->labels($participants['managers']);
+        }
+        return $labels === [] ? '—' : implode(', ', $labels);
     }
 
     private function contactLabel(?int $id): string

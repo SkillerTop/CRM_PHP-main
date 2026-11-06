@@ -11,23 +11,25 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--engine", choices=["speech", "ocr"], required=True)
-    parser.add_argument("--model-dir", required=True)
-    parser.add_argument("--device", required=True)
+    parser.add_argument("--model-dir", default="")
+    parser.add_argument("--device", default="cuda")
     parser.add_argument("--compute-type", default="float16")
-    parser.add_argument("--language", default="uk")
+    parser.add_argument("--url", default="http://127.0.0.1:11434")
+    parser.add_argument("--model", default="qwen3-vl:4b-instruct")
     args = parser.parse_args()
     started = time.perf_counter()
     model_dir = Path(args.model_dir).resolve()
     try:
-        if not model_dir.is_dir():
-            raise RuntimeError("Bundled model directory is missing")
         os.environ["HF_HUB_OFFLINE"] = "1"
         if args.engine == "speech":
+            if not model_dir.is_dir():
+                raise RuntimeError("Bundled model directory is missing")
             import ctranslate2
             import numpy as np
             from faster_whisper import WhisperModel
@@ -42,30 +44,28 @@ def main() -> int:
             list(segments)
             device = args.device
         else:
-            import paddle
             from PIL import Image, ImageDraw
 
-            if args.device.startswith("gpu") and (
-                not paddle.is_compiled_with_cuda() or paddle.device.cuda.device_count() == 0
-            ):
-                raise RuntimeError("GPU is configured but no NVIDIA GPU is visible to PaddleOCR")
             with tempfile.TemporaryDirectory(prefix="crm-ocr-check-") as tmp:
                 image = Path(tmp) / "card.png"
                 card = Image.new("RGB", (700, 240), "white")
                 ImageDraw.Draw(card).text((40, 80), "CRM TEST 123", fill="black", font_size=40)
                 card.save(image)
-                command = [sys.executable, str(Path(__file__).with_name("paddleocr_business_card.py")),
-                           "--input", str(image), "--model-dir", str(model_dir),
-                           "--language", args.language, "--device", args.device]
+                command = [sys.executable, str(Path(__file__).with_name("qwen_vl_business_card.py")),
+                           "--input", str(image), "--url", args.url, "--model", args.model]
                 result = subprocess.run(command, capture_output=True, text=True, timeout=300)
                 if result.returncode:
-                    raise RuntimeError("PaddleOCR inference failed; verify its runtime and model files")
-                payload = json.loads(result.stdout)
-                device = payload.get("device")
-                if args.device.startswith("gpu") and not str(device).startswith("gpu"):
-                    raise RuntimeError("PaddleOCR fell back to CPU")
-                if not payload.get("text", "").strip():
-                    raise RuntimeError("PaddleOCR returned no text for the test card")
+                    raise RuntimeError("Qwen3-VL inference failed (is Ollama running and the model pulled?): "
+                                       + result.stderr.strip()[:200])
+                if "CRM" not in json.loads(result.stdout).get("text", "").upper():
+                    raise RuntimeError("Qwen3-VL did not read the test card")
+            # Ollama reports how much of the loaded model sits in VRAM.
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(args.url.rstrip("/") + "/api/ps", timeout=10) as response:
+                loaded = [m for m in json.load(response).get("models", []) if args.model in (m.get("name"), m.get("model"))]
+            device = "gpu" if loaded and loaded[0].get("size_vram", 0) > 0 else "cpu"
+            if device == "cpu":
+                raise RuntimeError("Qwen3-VL runs on CPU: Ollama sees no NVIDIA GPU")
         print(json.dumps({"ok": True, "engine": args.engine, "device": device,
                           "seconds": round(time.perf_counter() - started, 2)}))
         return 0

@@ -8550,3 +8550,88 @@ img.detail-logo {
   justify-content: flex-end;
   padding: 12px 0;
 }
+
+/* Week/quarter chip lives in the dark top bar, left of the notification bell. */
+.topbar .date-chip {
+  margin-right: 6px;
+  color: #b7cbd6;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+@media (max-width: 900px) {
+  .topbar .date-chip {
+    display: none;
+  }
+}
+
+
+.task-deadline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.35;
+  letter-spacing: .025em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.task-deadline-toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.task-deadline-input :disabled,
+.deadline-presets button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.participant-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.participant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 10px;
+  color: var(--navy-900);
+  font-size: 13px;
+  background: #f4f8fa;
+  border: 1px solid #d7e3e8;
+  border-radius: 999px;
+}
+
+.participant-chip small {
+  color: var(--muted);
+}
+
+.participant-chip button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.participant-chip button:hover {
+  color: var(--navy-900);
+  background: #e3edf2;
+}

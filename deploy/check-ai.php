@@ -16,14 +16,17 @@ $ok = true;
 foreach (['speech', 'ocr'] as $engine) {
     $speech = $engine === 'speech';
     $prefix = $speech ? 'WHISPER' : 'OCR';
-    $model = (string) Config::get($speech ? 'WHISPER_MODEL' : 'OCR_MODEL_DIR', '');
-    $model = $speech ? AiRuntimePaths::model($model) : AiRuntimePaths::local($model);
     $command = [
         AiRuntimePaths::python((string) Config::get($prefix . '_PYTHON_BIN', 'python3')),
-        Config::root('ai/check_runtime.py'), '--engine', $engine, '--model-dir', $model,
-        '--device', (string) Config::get($prefix . '_DEVICE', $speech ? 'cuda' : 'gpu'),
-        '--compute-type', (string) Config::get('WHISPER_COMPUTE_TYPE', 'float16'),
-        '--language', (string) Config::get('OCR_LANGUAGE', 'uk'),
+        Config::root('ai/check_runtime.py'), '--engine', $engine,
+        ...($speech ? [
+            '--model-dir', AiRuntimePaths::model((string) Config::get('WHISPER_MODEL', '')),
+            '--device', (string) Config::get('WHISPER_DEVICE', 'cuda'),
+            '--compute-type', (string) Config::get('WHISPER_COMPUTE_TYPE', 'float16'),
+        ] : [
+            '--url', (string) Config::get('OCR_VLM_URL', 'http://127.0.0.1:11434'),
+            '--model', (string) Config::get('OCR_VLM_MODEL', 'qwen3-vl:4b-instruct'),
+        ]),
     ];
     try {
         $result = (new ProcessRunner())->run($command, 300, ['HF_HUB_OFFLINE' => '1']);

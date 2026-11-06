@@ -29,7 +29,7 @@
 | GET | `/companies/{id}/contacts` | вкладка карточки |
 | GET | `/companies/{id}/tasks` | вкладка карточки |
 | GET | `/companies/{id}/log` | ChangeEvent компании |
-| POST | `/ocr/business-card` | multipart `file`; локальный PaddleOCR PP-OCRv5, возвращает `raw_text`, `draft`, `confidence`, `ocr_confidence`; запись не сохраняется автоматически |
+| POST | `/ocr/business-card` | multipart `file`; локальная Qwen3-VL (Ollama), возвращает `raw_text`, `draft`, `confidence`, `ocr_confidence`; запись не сохраняется автоматически |
 | GET/POST | `/contacts` | `company`, `source`, `status`, `has_linkedin`, `q`, `page`, `sort`, `dir`; `include_archived=1` только Admin; contact `status`: `active`/`inactive` |
 | GET/PUT | `/contacts/{id}` | перенос в другую компанию — только Admin; `status` принимает `active` или `inactive` |
 | POST | `/contacts/{id}/archive` | Admin |
