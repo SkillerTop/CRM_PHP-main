@@ -87,7 +87,8 @@ try {
     }
 
     if ($command === 'cleanup') {
-        $db->exec("DELETE FROM user_sessions WHERE expires_at < UTC_TIMESTAMP(6) OR revoked_at < UTC_TIMESTAMP(6) - INTERVAL 30 DAY");
+        // Ended sessions stay 90 days as the per-user sign-in history (Users → user card → Sessions).
+        $db->exec("DELETE FROM user_sessions WHERE COALESCE(revoked_at, expires_at) < UTC_TIMESTAMP(6) - INTERVAL 90 DAY");
         $db->exec("DELETE FROM password_tokens WHERE expires_at < UTC_TIMESTAMP(6) - INTERVAL 7 DAY OR used_at < UTC_TIMESTAMP(6) - INTERVAL 7 DAY");
         $db->exec("DELETE FROM auth_attempts WHERE updated_at < UTC_TIMESTAMP(6) - INTERVAL 30 DAY");
         $purgedAttachments = 0;

@@ -8635,3 +8635,52 @@ img.detail-logo {
   color: var(--navy-900);
   background: #e3edf2;
 }
+
+/* Sessions list: a third column holds the per-device "Sign out" button. */
+.user-sessions article {
+  grid-template-columns: 110px minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+/* Compact red pill for both sign-out actions; overrides the 44px square "+" style of section-head buttons. */
+.user-sessions .session-signout,
+.user-sessions .detail-section-head .session-signout {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 12px;
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+  background: var(--red-soft);
+  border: 1px solid #efc7c1;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.user-sessions .session-signout:hover:not(:disabled) {
+  background: #f6d9d4;
+}
+
+.user-sessions .session-signout:disabled {
+  opacity: .55;
+  cursor: wait;
+}
+
+.user-sessions .detail-section-head {
+  gap: 12px;
+}
+
+@media (max-width: 520px) {
+  .user-sessions article {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .user-sessions article > button {
+    justify-self: start;
+  }
+}

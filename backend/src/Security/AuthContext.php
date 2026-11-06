@@ -8,6 +8,7 @@ use CRM\Config\Config;
 use CRM\Http\ApiException;
 use CRM\Http\Request;
 use CRM\Support\Clock;
+use CRM\Support\Pagination;
 use PDO;
 
 final class AuthContext
@@ -176,6 +177,53 @@ final class AuthContext
     {
         $stmt = $this->db->prepare('UPDATE user_sessions SET revoked_at = :now WHERE user_id = :user_id AND revoked_at IS NULL');
         $stmt->execute(['now' => Clock::dbNow(), 'user_id' => $userId]);
+    }
+
+    /** Ends one session of this user; false when it is not theirs or already ended. */
+    public function revokeUserSession(int $userId, int $sessionId): bool
+    {
+        $stmt = $this->db->prepare(
+            'UPDATE user_sessions SET revoked_at = :now
+             WHERE id = :id AND user_id = :user_id AND revoked_at IS NULL AND expires_at > UTC_TIMESTAMP(6)'
+        );
+        $stmt->execute(['now' => Clock::dbNow(), 'id' => $sessionId, 'user_id' => $userId]);
+        return $stmt->rowCount() === 1;
+    }
+
+    /**
+     * Sign-in history of one user, newest first. Tokens are never returned.
+     * @return array{data:list<array<string,mixed>>,total:int}
+     */
+    public function listSessions(int $userId, Pagination $pagination): array
+    {
+        $count = $this->db->prepare('SELECT COUNT(*) FROM user_sessions WHERE user_id = :id');
+        $count->execute(['id' => $userId]);
+        $stmt = $this->db->prepare(
+            "SELECT id, ip_address, user_agent, created_at, last_activity_at, revoked_at,
+                    CASE WHEN revoked_at IS NOT NULL AND revoked_at < expires_at THEN 'signed_out'
+                         WHEN expires_at <= UTC_TIMESTAMP(6) THEN 'expired'
+                         ELSE 'active' END AS state
+             FROM user_sessions WHERE user_id = :id
+             ORDER BY (revoked_at IS NULL AND expires_at > UTC_TIMESTAMP(6)) DESC, created_at DESC, id DESC
+             LIMIT :limit OFFSET :offset"
+        );
+        $stmt->bindValue(':id', $userId, PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $pagination->perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $pagination->offset(), PDO::PARAM_INT);
+        $stmt->execute();
+        $currentId = $this->sessionId();
+        return ['data' => array_map(static fn (array $row): array => [
+            'id' => (int) $row['id'],
+            'ip_address' => $row['ip_address'],
+            'user_agent' => $row['user_agent'],
+            'state' => (string) $row['state'],
+            'started_at' => Clock::api((string) $row['created_at']),
+            'last_activity_at' => Clock::api((string) $row['last_activity_at']),
+            // A sign-out ends the session at revoked_at; an idle one effectively ended at its last activity.
+            'ended_at' => $row['state'] === 'signed_out' ? Clock::api((string) $row['revoked_at'])
+                : ($row['state'] === 'expired' ? Clock::api((string) $row['last_activity_at']) : null),
+            'is_current' => (int) $row['id'] === $currentId,
+        ], $stmt->fetchAll()), 'total' => (int) $count->fetchColumn()];
     }
 
     private function revoke(int $sessionId): void

@@ -13,6 +13,7 @@ use CRM\Security\AuthContext;
 use CRM\Security\Password;
 use CRM\Support\Arr;
 use CRM\Support\Clock;
+use CRM\Support\Pagination;
 use CRM\Support\Validator;
 use CRM\Support\ImageDataUrl;
 use PDO;
@@ -31,6 +32,34 @@ final class ProfileController
     public function show(): never
     {
         Response::json(['data' => $this->auth->user()]);
+    }
+
+    /** The signed-in user's own sessions on all devices, active ones first. */
+    public function sessions(Request $request): never
+    {
+        $pagination = new Pagination($request->query);
+        $sessions = $this->auth->listSessions($this->auth->userId(), $pagination);
+        Response::json(['data' => $sessions['data'], 'meta' => $pagination->meta($sessions['total'])]);
+    }
+
+    /** Signs out one of the user's other devices. The current session uses the normal logout. */
+    public function revokeSession(int $sessionId): never
+    {
+        if ($sessionId === $this->auth->sessionId()) {
+            throw new ApiException(400, 'current_session', 'Для текущего устройства используйте обычный выход.');
+        }
+        if (!$this->auth->revokeUserSession($this->auth->userId(), $sessionId)) {
+            throw new ApiException(404, 'session_not_found', 'Сессия не найдена или уже завершена.');
+        }
+        $this->audit->log('SESSION REVOKED', 'User', $this->auth->userId(), $this->auth->actorName(), detail: ['session_id' => $sessionId]);
+        Response::noContent();
+    }
+
+    public function revokeOtherSessions(): never
+    {
+        $this->auth->revokeOtherSessions($this->auth->userId());
+        $this->audit->log('SESSION REVOKED', 'User', $this->auth->userId(), $this->auth->actorName(), detail: ['scope' => 'all_other_devices']);
+        Response::noContent();
     }
 
     public function update(Request $request): never

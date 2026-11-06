@@ -306,6 +306,16 @@ final class UserController
         Response::json(['data' => array_map([AuditLogger::class, 'redactEvent'], $stmt->fetchAll()), 'meta' => $pagination->meta((int) $count->fetchColumn())]);
     }
 
+    /** Sign-in history of any user, for admins. */
+    public function sessions(Request $request, int $id): never
+    {
+        $this->auth->requireAdmin();
+        $this->find($id);
+        $pagination = new Pagination($request->query);
+        $sessions = $this->auth->listSessions($id, $pagination);
+        Response::json(['data' => $sessions['data'], 'meta' => $pagination->meta($sessions['total'])]);
+    }
+
     private function protectLastAdmin(array $before, string $newRole, bool $newActive): void
     {
         if ($before['role'] !== 'admin' || !(bool) $before['is_active'] || ($newRole === 'admin' && $newActive)) {

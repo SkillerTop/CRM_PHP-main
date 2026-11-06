@@ -12,6 +12,7 @@ import { clearAccountDrafts, clearFormDraft, clearOtherAccountDrafts, draftScope
 import { clearAllSecureVoiceDrafts, clearAllVoiceDrafts, clearOtherSecureVoiceDrafts } from "../shared/utils/voice-draft";
 import { loadReadNotificationIds, saveReadNotificationIds, updateReadNotificationAccount } from "../shared/utils/notification-storage";
 import { readUrlFilter, urlWithFilter } from "../shared/utils/url-filters.mjs";
+import { describeUserAgent } from "../shared/utils/user-agent";
 
 const LazyVoiceInputButton = lazy(() => import("../shared/components/voice-input").then(({ VoiceInputButton }) => ({ default: VoiceInputButton })));
 
@@ -4190,6 +4191,51 @@ function ContactDetail({ contact, company, companies, canTransfer, onClose, upda
   );
 }
 
+type UserSession = { id: number; ip_address: string | null; user_agent: string | null; state: "active" | "signed_out" | "expired"; started_at: string; last_activity_at: string; ended_at: string | null; is_current: boolean };
+
+function sessionDuration(session: UserSession) {
+  const minutes = Math.max(0, Math.round((Date.parse(session.ended_at ?? new Date().toISOString()) - Date.parse(session.started_at)) / 60000));
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+// Sign-in sessions: device, IP, start, end and duration of each. With `manage` (My profile) the user
+// can sign out any of their other devices; admins see a user's list read-only in the user card.
+function SessionsList({ endpoint, manage = false }: { endpoint: string; manage?: boolean }) {
+  const [sessions, setSessions] = useState<UserSession[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState("");
+  const [reloads, setReloads] = useState(0);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    apiRequest<{ data: UserSession[]; meta: { total: number } }>(`${endpoint}?page=${page}&per_page=20`)
+      .then(({ data, meta }) => { if (!cancelled) { setSessions((current) => page === 1 ? data : [...current, ...data]); setTotal(meta.total); setError(""); } })
+      .catch((caught) => { if (!cancelled) setError(apiMessage(caught)); });
+    return () => { cancelled = true; };
+  }, [endpoint, page, reloads]);
+  async function signOut(path: string, method: "DELETE" | "POST") {
+    setBusy(true);
+    try {
+      await apiRequest(path, { method });
+      setPage(1);
+      setReloads((current) => current + 1);
+    } catch (caught) {
+      setError(apiMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const stateLabel = { active: "Active", signed_out: "Signed out", expired: "Expired" } as const;
+  const otherActive = sessions.some((session) => session.state === "active" && !session.is_current);
+  return <section className="change-log user-sessions field-full"><div className="detail-section-head"><h3>{manage ? "My devices" : "Sessions"}</h3>{manage && otherActive ? <button className="session-signout" type="button" disabled={busy} onClick={() => void signOut(`${endpoint}/revoke-others`, "POST")}>Sign out all other devices</button> : <small>{total} in the last 90 days</small>}</div>
+    {sessions.map((session) => <article key={session.id}><span>{session.is_current ? "This device" : stateLabel[session.state]}</span><p><b>{describeUserAgent(session.user_agent)}{session.ip_address ? ` · ${session.ip_address}` : ""}</b><small>{formatUserDateTime(session.started_at)} → {session.ended_at ? formatUserDateTime(session.ended_at) : `now (last activity ${formatUserDateTime(session.last_activity_at)})`} · {sessionDuration(session)} · {CLIENT_TIME_ZONE_LABEL}</small></p>{manage && session.state === "active" && !session.is_current && <button className="session-signout" type="button" disabled={busy} onClick={() => void signOut(`${endpoint}/${session.id}`, "DELETE")}>Sign out</button>}</article>)}
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {!error && sessions.length === 0 && <p className="muted-copy">No sessions recorded yet.</p>}
+    {sessions.length < total && <button className="text-button" type="button" onClick={() => setPage((current) => current + 1)}>Show older sessions</button>}
+  </section>;
+}
+
 function UserDetail({ user, onClose, updateUser, rejectUser, lastActiveAdmin }: { user: CRMUser; onClose: () => void; updateUser: (user: CRMUser, temporaryPassword?: string, resetDelivery?: "temporary_password" | "invite") => Promise<boolean>; rejectUser: (user: CRMUser) => Promise<boolean>; lastActiveAdmin: boolean }) {
   const userEditDraft = useFormDraft(`user-edit:${user.id ?? user.email.toLowerCase()}`);
   const [role, setRole] = useState<Role>(user.role);
@@ -4219,6 +4265,7 @@ function UserDetail({ user, onClose, updateUser, rejectUser, lastActiveAdmin }: 
         {resetDelivery === "temporary_password" && <label className="field field-full"><span>Temporary password</span><input name="temporaryPassword" type="password" required minLength={8} maxLength={128} placeholder="New temporary password" autoComplete="new-password" /></label>}
         <div className="reminder-note field-full"><span>i</span><p><b>{ROLE_DETAILS[role].summary}</b><small>{ROLE_DETAILS[role].permissions.join(" · ")}</small></p></div>
         {retry && <div className="form-error field-full" role="alert">Changes were not saved. Your selections are preserved; try again.</div>}
+        {user.id !== undefined && <SessionsList endpoint={`/users/${user.id}/sessions`} />}
         <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { userEditDraft.clear(); onClose(); }}>Cancel</button>{user.state === "Pending" && <button className="danger-button" type="button" onClick={() => void rejectUser(user)}>Reject registration</button>}<button className="primary-button" type="submit" disabled={submitting}>{submitting ? "Saving…" : retry ? "Try again" : user.state === "Pending" ? "Approve and save" : "Save access"}</button></div>
       </form>
     </Modal>
@@ -4960,6 +5007,7 @@ function ProfileModal({ identity, onClose, onSave }: { identity: AuthIdentity; o
         {error && <div className="form-error field-full" role="alert">{error}</div>}
         <div className="modal-actions field-full"><button className="secondary-button" type="button" onClick={() => { profileDraft.clear(); onClose(); }}>Cancel</button><button className="primary-button" type="submit" disabled={imageProcessing}>{imageProcessing ? "Processing image…" : "Save profile"}</button></div>
       </form>
+      <SessionsList endpoint="/profile/sessions" manage />
     </Modal>
   );
 }

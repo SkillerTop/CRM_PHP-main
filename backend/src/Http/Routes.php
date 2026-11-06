@@ -50,6 +50,9 @@ final class Routes
         $r->add('GET', '/api/profile', fn () => $profileController->show());
         $r->add('PUT', '/api/profile', fn (Request $request) => $profileController->update($request));
         $r->add('PUT', '/api/profile/password', fn (Request $request) => $profileController->password($request));
+        $r->add('GET', '/api/profile/sessions', fn (Request $request) => $profileController->sessions($request));
+        $r->add('POST', '/api/profile/sessions/revoke-others', fn () => $profileController->revokeOtherSessions());
+        $r->add('DELETE', '/api/profile/sessions/{id}', fn (Request $_, array $p) => $profileController->revokeSession((int) $p['id']));
 
         $r->add('GET', '/api/dashboard', fn () => $dashboardController->dashboard());
         $r->add('GET', '/api/app/bootstrap', fn (Request $request) => $appController->bootstrap($request));
@@ -107,6 +110,7 @@ final class Routes
         $r->add('DELETE', '/api/users/{id}', fn (Request $_, array $p) => $userController->reject((int) $p['id']));
         $r->add('POST', '/api/users/{id}/reset-password', fn (Request $request, array $p) => $userController->resetPassword($request, (int) $p['id']));
         $r->add('GET', '/api/users/{id}/log', fn (Request $request, array $p) => $userController->log($request, (int) $p['id']));
+        $r->add('GET', '/api/users/{id}/sessions', fn (Request $request, array $p) => $userController->sessions($request, (int) $p['id']));
 
         $r->add('GET', '/api/audit', fn (Request $request) => $auditController->index($request));
         $r->add('GET', '/api/settings', fn () => $settingsController->show());
