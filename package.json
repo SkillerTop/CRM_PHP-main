@@ -1,0 +1,9 @@
+{
+  "name": "client-data-crm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "npm --prefix backend-node ci && npm --prefix frontend ci",
+    "dev": "node scripts/dev.mjs"
+  }
+}

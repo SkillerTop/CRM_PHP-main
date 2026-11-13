@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "CRM: backend (Node.js)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend-node/dist/server.js",
+      "cwd": "${workspaceFolder}/backend-node",
+      "envFile": "${workspaceFolder}/backend/.env",
+      "preLaunchTask": "CRM: build backend",
+      "outFiles": ["${workspaceFolder}/backend-node/dist/**/*.js"],
+      "sourceMaps": true,
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}

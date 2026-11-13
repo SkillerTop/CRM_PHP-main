@@ -19,6 +19,8 @@ deploy/client-data-crm-backend.zip
 deploy/client-data-crm-frontend.zip
 deploy/package/
 frontend/node_modules/
+backend-node/node_modules/
+backend-node/dist/
 frontend/dist/
 frontend/.next/
 frontend/.wrangler/

@@ -1,9 +1,2 @@
-# Local HTTPS on this host: Apache in "app" terminates TLS with the internal-CA cert.
-# Auto-loaded by "docker compose"; needs .runtime/ssl/{fullchain.crt,crm.key}.
-services:
-  app:
-    ports:
-      - "${CRM_BIND:-127.0.0.1}:${CRM_HTTPS_PORT:-443}:443"
-    volumes:
-      - ./.runtime/ssl:/etc/ssl/crm:ro
-      - ./deploy/docker/apache-ssl.conf:/etc/apache2/sites-enabled/crm-ssl.conf:ro
+# Containerized TLS is provided by the `https` profile's Caddy service.
+services: {}

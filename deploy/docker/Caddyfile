@@ -8,7 +8,7 @@
 		max_size 32MB
 	}
 
-	reverse_proxy app:80 {
+	reverse_proxy app:8080 {
 		# The backend trusts X-Forwarded-For only with this secret (PROXY_SHARED_SECRET).
 		# Caddy overwrites any client-supplied value and sets X-Forwarded-For itself.
 		header_up X-CRM-Proxy-Secret {$PROXY_SHARED_SECRET}

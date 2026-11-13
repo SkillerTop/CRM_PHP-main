@@ -1,0 +1,36 @@
+{
+  "name": "crm-backend-node",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "cli": "node dist/cli.js",
+    "test": "node --import tsx --test test/*.test.ts",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\""
+  },
+  "dependencies": {
+    "argon2": "^0.44.0",
+    "bcryptjs": "^3.0.2",
+    "busboy": "^1.6.0",
+    "cheerio": "^1.2.0",
+    "html-entities": "^2.6.0",
+    "luxon": "^3.7.2",
+    "mysql2": "^3.15.0",
+    "nodemailer": "^10.5.0",
+    "unidecode": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/busboy": "^1.5.5",
+    "@types/luxon": "^3.7.6",
+    "@types/node": "^24.0.0",
+    "@types/nodemailer": "^8.0.2",
+    "@types/unidecode": "^1.1.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "yaml": "^2.9.1"
+  }
+}

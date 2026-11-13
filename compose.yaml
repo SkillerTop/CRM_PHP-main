@@ -1,4 +1,4 @@
-# Client Data CRM: web app (PHP + React + GPU speech/OCR), scheduler, and optional
+# Client Data CRM: web app (Node.js + React + GPU speech/OCR), scheduler, and optional
 # MySQL / HTTPS proxy. Always run with the env file:
 #   docker compose --env-file .env.docker [--profile local-db] [--profile https] up -d --build
 # See deploy/DOCKER.md.
@@ -50,18 +50,14 @@ services:
     # Published on the host's loopback by default: put a reverse proxy in front
     # (the "https" profile below, or the host's own nginx/Apache).
     ports:
-      - "${CRM_BIND:-127.0.0.1}:${CRM_PORT:-8080}:80"
+      - "${CRM_BIND:-127.0.0.1}:${CRM_PORT:-8080}:8080"
     volumes:
       # Model weights are not baked into the image (1.7 GB). Point CRM_MODELS_DIR at a
       # directory with faster-whisper-large-v3-turbo/ (Qwen3-VL lives in the ollama-data volume).
       - ${CRM_MODELS_DIR:-./.runtime/models}:/var/www/backend/ai/models:ro
       - app-storage:/var/www/backend/storage
-      # Qwen3-VL OCR files over the image's copies, so the switch needs no rebuild.
-      # Harmless after a rebuild: the image then contains the same files.
-      - ./backend/src/Domain/BusinessCardOcrService.php:/var/www/backend/src/Domain/BusinessCardOcrService.php:ro
       - ./backend/ai/qwen_vl_business_card.py:/var/www/backend/ai/qwen_vl_business_card.py:ro
       - ./backend/ai/check_runtime.py:/var/www/backend/ai/check_runtime.py:ro
-      - ./deploy/check-ai.php:/var/www/deploy/check-ai.php:ro
     depends_on:
       db:
         condition: service_healthy
@@ -76,7 +72,7 @@ services:
               count: 1
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1/api/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -87,7 +83,7 @@ services:
   ollama:
     image: ollama/ollama:0.40.4
     restart: unless-stopped
-    # Host loopback only: a CRM run outside Docker (php -S) reaches it at 127.0.0.1:11434.
+    # Host loopback only: a CRM run outside Docker reaches it at 127.0.0.1:11434.
     ports:
       - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     environment:
@@ -109,7 +105,7 @@ services:
   ocr-test:
     profiles: ["ocr-test"]
     image: ${CRM_IMAGE:-client-data-crm:latest}
-    entrypoint: ["php", "/repo/tests/ocr_local.php"]
+    entrypoint: ["node", "/var/www/backend-node/dist/ocr-local.js", "/cards"]
     environment:
       OCR_PYTHON_BIN: /opt/ai/ocr/bin/python
       OCR_SCRIPT: /repo/backend/ai/qwen_vl_business_card.py
@@ -138,7 +134,7 @@ services:
     depends_on:
       app:
         condition: service_healthy
-    command: ["sh", "-c", "while :; do php bin/console reminders:run; php bin/console cleanup; sleep 900; done"]
+    command: ["sh", "-c", "while :; do node dist/cli.js reminders:run; node dist/cli.js cleanup; sleep 900; done"]
 
   # HTTPS with automatic certificates, only with `--profile https`.
   # Requires CRM_DOMAIN pointing at this host and ports 80/443 open.

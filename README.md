@@ -1,19 +1,30 @@
+# Client Data CRM
 
-## Требования платформы
-- PHP 8.3 NTS для PHP-FPM;
-- расширения: `pdo_mysql`, `mbstring`, `json`, `openssl`, `fileinfo`;
-- MySQL 8.0+ с InnoDB;
-- Apache 2.4: `mod_rewrite`, `mod_headers`, `mod_ssl`, `mod_proxy`, `mod_proxy_fcgi`, `setenvif`;
-- cron/планировщик каждые 15 минут;
-- SMTP relay или настроенный `mail()`; `MAIL_TRANSPORT=log` подходит только для разработки.
-- Apache/PHP-FPM пример: `deploy/apache-vhost.conf.example`; production DocumentRoot — `backend/public`.
-- Перед перезагрузкой Apache обязательно выполните `apachectl configtest`; production-vhost отдаёт SPA и маршрутизирует `/api/*` через соседний `backend/public/index.php` без CORS.
-- Полный приватный архив создаётся через `deploy/build-package.ps1`: PHP и собранный frontend объединены в `backend/public`, настройки включены как `backend/.env` и `frontend/.env*`, веса AI — в `backend/ai/models`. После распаковки выполните `python deploy/setup-ai.py`; подробности — в `deploy/DEPLOY_WITH_MODELS.md`. Инкрементальный frontend-архив с той же структурой создаётся через `deploy/build-frontend-package.ps1`.
-- Загрузка выполняется `deploy/ftp-deploy.ps1`; хост по умолчанию — ` `, протокол — explicit FTPS.
-- Frontend обращается напрямую к same-origin `/api/*`; серверные адреса и `PROXY_SHARED_SECRET` в JavaScript не передаются. Backend-параметр `PROXY_SHARED_SECRET` остаётся только серверным секретом, а `TRUSTED_PROXIES` должен содержать исключительно реальные reverse proxy перед Apache/PHP.
-- Проверьте включённый в полный пакет `backend/.env` для целевой машины, установите права `0600` и выполните `php backend/bin/console config:check`. Production запускается fail-closed: HTTP/CLI не стартуют с HTTP URL, debug, root/пустым паролем БД, `MAIL_TRANSPORT=log`, небезопасной cookie или коротким proxy secret. Реальный `.env` исключён из Git, но включён в полный приватный deployment-архив по текущим требованиям. Публичным остаётся только `backend/public`.
+React frontend and Node.js 24 + TypeScript backend. The Node backend serves the frontend, implements all 67 `/api/*` routes, runs MySQL migrations, sends reminders, and handles scheduled cleanup. Existing MySQL tables and files in `backend/storage` are retained for migration compatibility. The Python model runners under `backend/ai` continue to perform OCR and speech inference; no PHP runtime is required by the Node app.
 
-## Резервные копии
-`deploy/backup.sh` удерживает общий maintenance-lock на время согласованного snapshot БД и вложений, проверяет SHA-256 manifest и сохраняет только зашифрованный `age`-bundle с отдельной контрольной суммой. Нужны `age`, `flock`, `mysqldump`, `tar`, `gzip`, `sha256sum` и публичный `BACKUP_AGE_RECIPIENT`; приватный ключ на сервере резервного копирования не хранится. `deploy/restore-backup.sh` проверяет внешний checksum, аутентифицированное шифрование `age`, внутренний manifest, безопасность путей архива и разрешает восстановление только в пустую БД/пустой каталог при `ALLOW_RESTORE=YES`. Перед production обязательно выполните тестовое восстановление в отдельном окружении.
+## Local development
 
-Полный перечень маршрутов находится в [docs/API.md].
+For Windows and Visual Studio Code without Docker, follow [docs/LOCAL-VSCODE.md](docs/LOCAL-VSCODE.md). It includes local MySQL setup, the `.env` file, migrations, and VS Code run tasks.
+
+After configuring `backend/.env` and installing dependencies with `npm run setup`, start the Node API and Vite frontend together with `npm run dev` from the repository root.
+
+```sh
+# Terminal 1 (from the repository root)
+cd frontend && npm ci && npm run dev
+# Terminal 2 (from the repository root)
+cd backend-node && npm ci && npm run build
+node --env-file=../backend/.env dist/cli.js migrate
+node --env-file=../backend/.env dist/server.js
+```
+
+The backend listens on `PORT` (default `8080`). Development CORS permits Vite on `localhost:5173`. Configure MySQL, mail, session security, and AI paths in `backend/.env`. Run `node --env-file=../backend/.env dist/cli.js config:check` to validate configuration. Run `npm test` in `backend-node` for route, OCR, authentication, and network safety checks.
+
+## Docker
+
+Use [deploy/DOCKER.md](deploy/DOCKER.md) and `.env.docker.example` to build the Node application and scheduler. The app container applies migrations at startup when `RUN_MIGRATIONS=true`; the scheduler runs `reminders:run` and `cleanup` every 15 minutes. The optional Caddy profile terminates HTTPS.
+
+## Existing deployments
+
+The PHP implementation in `backend/src` remains in this branch as a behavior reference and for comparison against the existing database. The Node entry points are `backend-node/dist/server.js` and `backend-node/dist/cli.js`. Existing Apache and FTP deployment scripts under `deploy/` target the former PHP runtime and are not Node deployment paths. Use the Docker deployment or configure a Node process and reverse proxy explicitly.
+
+Backups still use `deploy/backup.sh` and `deploy/restore-backup.sh` for the database and `backend/storage` volume. API routes are listed in [docs/API.md](docs/API.md).

@@ -1,6 +1,6 @@
 # Docker deployment
 
-One image runs the whole CRM: Apache + PHP 8.3 backend, the built React
+One image runs the whole CRM: Node.js + TypeScript backend, the built React
 frontend, Faster-Whisper (voice input) on an NVIDIA GPU, and outbound website
 lookup for new companies. Compose adds:
 
@@ -55,14 +55,12 @@ docker compose --env-file .env.docker config --quiet
 docker compose --env-file .env.docker build
 docker compose --env-file .env.docker --profile https up -d          # + --profile local-db if needed
 docker compose --env-file .env.docker ps
-docker compose --env-file .env.docker exec -u www-data app php /var/www/deploy/check-ai.php
+docker compose --env-file .env.docker exec -u www-data app node dist/cli.js config:check
 ```
 
-`check-ai.php` runs real inference with both models and must print
-`"ok": true` with `"device": "cuda"` (speech) and `"device": "gpu"` (OCR).
+The configuration check validates runtime settings. Use the OCR test profile below to exercise Qwen3-VL with sample cards and the application UI to test speech inference.
 
-The OCR files are bind-mounted into `app` (see `compose.yaml`), so switching the OCR
-model or editing its runner needs only `up -d` (without `--build`), not a rebuild.
+The Python OCR runner is bind-mounted into `app` (see `compose.yaml`). Changes to TypeScript backend code require rebuilding the image.
 
 To try the repository's OCR code on your own photos without touching `app`, put them
 into `.runtime/ocr-test/` (or set `OCR_TEST_DIR`) and run a one-off container; it
@@ -70,7 +68,6 @@ prints what `POST /api/ocr/business-card` would return for each card:
 
 ```sh
 docker compose --env-file .env.docker --profile ocr-test run --rm ocr-test
-docker compose --env-file .env.docker --profile ocr-test run --rm ocr-test "/cards/Image (2).jpg"
 ```
 
 Without `--profile https`, put your own reverse proxy (nginx, Apache, Traefik) in
@@ -82,7 +79,7 @@ First admin on a new database:
 
 ```sh
 docker compose --env-file .env.docker exec -e ADMIN_EMAIL=admin@example.com \
-  -e ADMIN_PASSWORD='temporary-password' -e ADMIN_NAME='Admin' app php bin/console create-admin
+  -e ADMIN_PASSWORD='temporary-password' -e ADMIN_NAME='Admin' app node dist/cli.js create-admin
 ```
 
 The password must be changed at first login.
@@ -97,7 +94,7 @@ docker compose --env-file .env.docker --profile https up -d
 
 Migrations run automatically when `app` starts (`RUN_MIGRATIONS=true`), including
 `012_contact_multiple_phones.sql`. Set `RUN_MIGRATIONS=false` to run them by hand
-with `docker compose … exec app php bin/console migrate`.
+with `docker compose … exec app node dist/cli.js migrate`.
 
 ## Data and backups
 
@@ -116,10 +113,10 @@ Expect OCR to take tens of seconds and voice input minutes per recording.
 
 ## Troubleshooting
 
-- `docker compose … logs -f app` shows Apache/PHP errors and migration output.
+- `docker compose … logs -f app` shows Node.js errors and migration output.
 - Health check: `curl -fsS http://127.0.0.1:8080/api/health`.
 - `Backend environment is invalid` at start: run
-  `docker compose … run --rm -e RUN_MIGRATIONS=false app php bin/console config:check`
+  `docker compose … run --rm -e RUN_MIGRATIONS=false app node dist/cli.js config:check`
   for the exact setting.
-- A GPU error in `check-ai.php`: check the driver, `nvidia-smi` inside a CUDA
+- A GPU inference error: check the driver, `nvidia-smi` inside a CUDA
   container, and the NVIDIA Container Toolkit.

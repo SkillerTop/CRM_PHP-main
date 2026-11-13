@@ -14,7 +14,7 @@ fi
 # The runner takes a database lock, so parallel starts cannot apply a migration twice.
 if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
     attempt=1
-    until php /var/www/backend/bin/console migrate; do
+    until gosu www-data node /var/www/backend-node/dist/cli.js migrate; do
         if [ "$attempt" -ge 10 ]; then
             echo "Database migrations failed after $attempt attempts." >&2
             exit 1
@@ -25,4 +25,7 @@ if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
     done
 fi
 
+if [ "$(id -u)" = "0" ]; then
+    exec gosu www-data "$@"
+fi
 exec "$@"
